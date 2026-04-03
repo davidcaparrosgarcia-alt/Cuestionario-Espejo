@@ -41,6 +41,8 @@ export interface PatientData {
 export interface DualAudio {
   male?: string;
   female?: string;
+  male2?: string;
+  female2?: string;
 }
 
 export interface Question {
@@ -74,6 +76,8 @@ export interface GlobalConfig {
   afterSendText: string; // Nuevo: Texto post envío
   afterSendAudio: DualAudio; // Nuevo: Audio post envío
   defaultVoiceMode: Voice;
+  femaleVoiceVariant?: 1 | 2;
+  maleVoiceVariant?: 1 | 2;
   defaultTheme?: 'light' | 'dark';
   backgrounds?: string[]; // Array de URLs (máximo 2)
   

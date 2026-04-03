@@ -41,6 +41,8 @@ const DEFAULT_CONFIG: GlobalConfig = {
   afterSendText: "Envio realizado {{nombre}}, analizaremos tus respuesta y te responderemos en breve.",
   afterSendAudio: {},
   defaultVoiceMode: Voice.FEMALE,
+  femaleVoiceVariant: 1,
+  maleVoiceVariant: 1,
   defaultTheme: 'light',
   backgrounds: []
 };
@@ -576,7 +578,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
 
       speechTimeoutRef.current = setTimeout(() => {
-          const customUrl = voice === Voice.MALE ? audioData?.male : audioData?.female;
+          let customUrl;
+          if (voice === Voice.MALE) {
+              customUrl = globalConfig.maleVoiceVariant === 2 ? (audioData?.male2 || audioData?.male) : audioData?.male;
+          } else {
+              customUrl = globalConfig.femaleVoiceVariant === 2 ? (audioData?.female2 || audioData?.female) : audioData?.female;
+          }
 
           if (customUrl) {
             const audio = new Audio(customUrl);
@@ -909,7 +916,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setTranscript(prev => [...prev, { text, sender }]);
   };
   
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: string, subIndex?: number, gender: 'male' | 'female' = 'female') => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, field: string, subIndex?: number, gender: 'male' | 'female' | 'male2' | 'female2' = 'female') => {
     const file = e.target.files?.[0];
     if (file) {
       if (field === 'background') {
@@ -1406,10 +1413,26 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
                         <label className="block text-[10px] font-black uppercase text-blue-400 mb-4">Voz por Defecto al Iniciar</label>
-                        <div className="flex gap-4">
+                        <div className="flex gap-4 mb-4">
                             {[Voice.FEMALE, Voice.MALE, Voice.NONE].map(v => (
                             <button key={v} onClick={() => setGlobalConfig({...globalConfig, defaultVoiceMode: v})} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase ${globalConfig.defaultVoiceMode === v ? 'bg-blue-600 text-white' : 'bg-white/10 text-slate-400'}`}>{v === 'none' ? 'Silencio' : v === 'male' ? 'Hombre' : 'Mujer'}</button>
                             ))}
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 border-t border-white/10 pt-4">
+                            <div>
+                                <label className="block text-[10px] font-bold text-slate-400 mb-2">Variante Mujer</label>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.femaleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
+                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.femaleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] font-bold text-slate-400 mb-2">Variante Hombre</label>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.maleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
+                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.maleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -1485,8 +1508,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                        <label className="block text-sm font-bold text-indigo-300">{section.label}</label>
                        <textarea className="w-full bg-white/5 border-2 border-white/10 rounded-xl p-3 text-sm font-medium outline-none focus:border-blue-500 text-white" value={(globalConfig as any)[`${section.id}Text`]} onChange={e => setGlobalConfig({...globalConfig, [`${section.id}Text`]: e.target.value})} rows={3} />
                        <div className="flex flex-wrap gap-4">
-                          <AudioUploadButton label="Audio Mujer" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.female} onChange={(e) => handleFileUpload(e, section.id, undefined, 'female')} />
-                          <AudioUploadButton label="Audio Hombre" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.male} onChange={(e) => handleFileUpload(e, section.id, undefined, 'male')} />
+                          <AudioUploadButton label="Audio Mujer 1" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.female} onChange={(e) => handleFileUpload(e, section.id, undefined, 'female')} />
+                          <AudioUploadButton label="Audio Mujer 2" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.female2} onChange={(e) => handleFileUpload(e, section.id, undefined, 'female2')} />
+                          <AudioUploadButton label="Audio Hombre 1" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.male} onChange={(e) => handleFileUpload(e, section.id, undefined, 'male')} />
+                          <AudioUploadButton label="Audio Hombre 2" hasAudio={!!(globalConfig as any)[`${section.id}Audio`]?.male2} onChange={(e) => handleFileUpload(e, section.id, undefined, 'male2')} />
                        </div>
                     </div>
                  ))}
@@ -1520,9 +1545,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 <div>
                   <label className="block text-[10px] font-black uppercase text-blue-400 mb-2">Escenario (Usa {'{{nombre}}'} o @)</label>
                   <textarea className="w-full border-2 border-white/10 bg-white/5 p-4 rounded-2xl text-sm font-black min-h-[160px] outline-none focus:border-blue-500 text-white leading-relaxed" value={editingQuestion.scenario} onChange={e => setEditingQuestion({...editingQuestion, scenario: e.target.value})} />
-                  <div className="flex gap-4 mt-3">
-                     <AudioUploadButton label="Audio Escenario (Mujer)" hasAudio={!!editingQuestion.audio?.female} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'female')} />
-                     <AudioUploadButton label="Audio Escenario (Hombre)" hasAudio={!!editingQuestion.audio?.male} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'male')} />
+                  <div className="flex flex-wrap gap-4 mt-3">
+                     <AudioUploadButton label="Audio Escenario (Mujer 1)" hasAudio={!!editingQuestion.audio?.female} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'female')} />
+                     <AudioUploadButton label="Audio Escenario (Mujer 2)" hasAudio={!!editingQuestion.audio?.female2} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'female2')} />
+                     <AudioUploadButton label="Audio Escenario (Hombre 1)" hasAudio={!!editingQuestion.audio?.male} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'male')} />
+                     <AudioUploadButton label="Audio Escenario (Hombre 2)" hasAudio={!!editingQuestion.audio?.male2} onChange={(e) => handleFileUpload(e, 'scenario', undefined, 'male2')} />
                   </div>
                 </div>
 
@@ -1535,9 +1562,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                       value={editingQuestion.postOptionsText || ''} 
                       onChange={e => setEditingQuestion({...editingQuestion, postOptionsText: e.target.value})} 
                     />
-                    <div className="flex gap-4 mt-3">
-                       <AudioUploadButton label="Audio Mensaje (Mujer)" hasAudio={!!editingQuestion.postOptionsAudio?.female} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'female')} />
-                       <AudioUploadButton label="Audio Mensaje (Hombre)" hasAudio={!!editingQuestion.postOptionsAudio?.male} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'male')} />
+                    <div className="flex flex-wrap gap-4 mt-3">
+                       <AudioUploadButton label="Audio Mensaje (Mujer 1)" hasAudio={!!editingQuestion.postOptionsAudio?.female} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'female')} />
+                       <AudioUploadButton label="Audio Mensaje (Mujer 2)" hasAudio={!!editingQuestion.postOptionsAudio?.female2} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'female2')} />
+                       <AudioUploadButton label="Audio Mensaje (Hombre 1)" hasAudio={!!editingQuestion.postOptionsAudio?.male} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'male')} />
+                       <AudioUploadButton label="Audio Mensaje (Hombre 2)" hasAudio={!!editingQuestion.postOptionsAudio?.male2} onChange={(e) => handleFileUpload(e, 'postOptions', undefined, 'male2')} />
                     </div>
                   </div>
                 )}
@@ -1584,9 +1613,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                                         <span className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center font-black text-xs shrink-0">{opt.key.toUpperCase()}</span>
                                         <input className="flex-1 border-2 border-white/10 bg-transparent px-3 py-1 rounded-lg text-sm text-white focus:border-blue-500 outline-none transition-all" value={opt.text} onChange={e => { const opts = [...editingQuestion.options]; opts[idx].text = e.target.value; setEditingQuestion({...editingQuestion, options: opts}); }} />
                                     </div>
-                                    <div className="flex gap-3 pl-11">
-                                        <AudioUploadButton label="Audio Opción (M)" hasAudio={!!opt.audio?.female} onChange={(e) => handleFileUpload(e, 'option', idx, 'female')} />
-                                        <AudioUploadButton label="Audio Opción (H)" hasAudio={!!opt.audio?.male} onChange={(e) => handleFileUpload(e, 'option', idx, 'male')} />
+                                    <div className="flex flex-wrap gap-3 pl-11">
+                                        <AudioUploadButton label="Audio Opción (M1)" hasAudio={!!opt.audio?.female} onChange={(e) => handleFileUpload(e, 'option', idx, 'female')} />
+                                        <AudioUploadButton label="Audio Opción (M2)" hasAudio={!!opt.audio?.female2} onChange={(e) => handleFileUpload(e, 'option', idx, 'female2')} />
+                                        <AudioUploadButton label="Audio Opción (H1)" hasAudio={!!opt.audio?.male} onChange={(e) => handleFileUpload(e, 'option', idx, 'male')} />
+                                        <AudioUploadButton label="Audio Opción (H2)" hasAudio={!!opt.audio?.male2} onChange={(e) => handleFileUpload(e, 'option', idx, 'male2')} />
                                     </div>
                                 </div>
                             ))}
