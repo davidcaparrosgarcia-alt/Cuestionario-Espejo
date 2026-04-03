@@ -1,0 +1,100 @@
+{
+  "entities": {
+    "AuthUser": {
+      "title": "AuthUser",
+      "description": "Datos del coordinador autenticado",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "pin": { "type": "string", "description": "PIN de 4 a 6 dígitos" },
+        "nombre": { "type": "string" },
+        "securityQuestion": { "type": "string" },
+        "securityAnswer": { "type": "string" }
+      },
+      "required": ["email", "pin", "nombre", "securityQuestion", "securityAnswer"]
+    },
+    "PatientData": {
+      "title": "PatientData",
+      "description": "Datos de un paciente y su progreso en el cuestionario",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nombre": { "type": "string" },
+        "edad": { "type": "string" },
+        "sexo": { "type": "string" },
+        "observaciones": { "type": "string" },
+        "telefono": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "coordinatorEmail": { "type": "string", "format": "email" },
+        "accessPin": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "sent", "viewed", "completed", "concluded", "finalized"] },
+        "answers": { "type": "object" },
+        "conversationSummary": { "type": "string" },
+        "finalConclusion": { "type": "string" },
+        "conclusionViews": { "type": "number" },
+        "dateSent": { "type": "number" },
+        "dateAnswered": { "type": "number" },
+        "dateConclusionSent": { "type": "number" },
+        "dateConclusionViewed": { "type": "number" },
+        "audioConclusion": { "type": "string" }
+      },
+      "required": ["id", "nombre", "status"]
+    },
+    "Questionnaire": {
+      "title": "Questionnaire",
+      "description": "Colección de preguntas del cuestionario",
+      "type": "object",
+      "properties": {
+        "questions": { "type": "array", "items": { "$ref": "Question" } }
+      }
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Una pregunta individual",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "scenario": { "type": "string" },
+        "options": { "type": "array" },
+        "isScale": { "type": "boolean" },
+        "scaleRange": { "type": "object" }
+      }
+    },
+    "GlobalConfig": {
+      "title": "GlobalConfig",
+      "description": "Configuración global de la aplicación",
+      "type": "object",
+      "properties": {
+        "welcomeText": { "type": "string" },
+        "welcomeAudio": { "type": "object" },
+        "nameQuestionText": { "type": "string" },
+        "nameQuestionAudio": { "type": "object" },
+        "startText": { "type": "string" },
+        "startAudio": { "type": "object" },
+        "finishText": { "type": "string" },
+        "finishAudio": { "type": "object" },
+        "afterSendText": { "type": "string" },
+        "afterSendAudio": { "type": "object" },
+        "defaultVoiceMode": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{email}": {
+      "schema": "AuthUser",
+      "description": "Perfiles de coordinadores"
+    },
+    "patients/{patientId}": {
+      "schema": "PatientData",
+      "description": "Datos de pacientes"
+    },
+    "questionnaires/active": {
+      "schema": "Questionnaire",
+      "description": "Preguntas activas del sistema"
+    },
+    "config/global_config": {
+      "schema": "GlobalConfig",
+      "description": "Configuración global de textos y audios"
+    }
+  }
+}

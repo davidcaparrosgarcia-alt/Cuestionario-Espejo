@@ -1,0 +1,5 @@
+{
+  "name": "GitHub Project Integrator",
+  "description": "Asistente para importar, sincronizar y continuar el desarrollo de proyectos alojados en GitHub.",
+  "requestFramePermissions": []
+}
