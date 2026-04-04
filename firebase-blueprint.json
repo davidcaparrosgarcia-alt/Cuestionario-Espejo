@@ -95,6 +95,16 @@
     "config/global_config": {
       "schema": "GlobalConfig",
       "description": "Configuración global de textos y audios"
+    },
+    "audios/{audioId}": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "string", "description": "Base64 audio data" }
+        },
+        "required": ["data"]
+      },
+      "description": "Almacenamiento de fragmentos de audio"
     }
   }
 }

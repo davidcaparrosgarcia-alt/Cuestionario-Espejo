@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, Button, Logo, ProgressBar } from './UI';
+import { Card, Button, Logo, ProgressBar, Toast } from './UI';
 import { QUESTIONS as INITIAL_QUESTIONS } from '../constants';
 import { gemini } from '../services/gemini';
 import { DataService } from '../services/dataService'; // Importamos el servicio
@@ -191,6 +191,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [isRecording, setIsRecording] = useState(false);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [sttMessage, setSttMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string, visible: boolean } | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -198,6 +199,47 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [isInteractionLocked, setIsInteractionLocked] = useState(false);
   
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
+
+  const showToast = (message: string) => {
+    setToast({ message, visible: true });
+  };
+
+  const hideToast = () => {
+    setToast(prev => prev ? { ...prev, visible: false } : null);
+  };
+
+  // --- Audio Preloading ---
+  const preloadedAudiosRef = useRef<Record<string, HTMLAudioElement>>({});
+
+  const preloadAudio = (url: string) => {
+    if (!url || preloadedAudiosRef.current[url]) return;
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    preloadedAudiosRef.current[url] = audio;
+  };
+
+  useEffect(() => {
+    // Preload next question audio
+    const nextIdx = currentQuestionIndex + 1;
+    if (nextIdx < questions.length) {
+      const nextQ = questions[nextIdx];
+      const urls = [
+        nextQ.audio?.female, nextQ.audio?.female2,
+        nextQ.audio?.male, nextQ.audio?.male2,
+        nextQ.postOptionsAudio?.female, nextQ.postOptionsAudio?.female2,
+        nextQ.postOptionsAudio?.male, nextQ.postOptionsAudio?.male2
+      ].filter(Boolean) as string[];
+      
+      nextQ.options.forEach(opt => {
+        if (opt.audio?.female) urls.push(opt.audio.female);
+        if (opt.audio?.female2) urls.push(opt.audio.female2);
+        if (opt.audio?.male) urls.push(opt.audio.male);
+        if (opt.audio?.male2) urls.push(opt.audio.male2);
+      });
+
+      urls.forEach(preloadAudio);
+    }
+  }, [currentQuestionIndex, questions]);
 
   // --- Lógica STT Local ---
   const handleMicClick = async () => {
@@ -532,7 +574,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   const sendResultsToCoordinator = () => {
     if (!currentPatientData.coordinatorEmail && !isEditorMode) {
-      alert("No se ha encontrado el email del coordinador.");
+      showToast("No se ha encontrado el email del coordinador.");
       return;
     }
     const email = currentPatientData.coordinatorEmail || 'cuestionarioespejo@gmail.com';
@@ -586,7 +628,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
           }
 
           if (customUrl) {
-            const audio = new Audio(customUrl);
+            let audio = preloadedAudiosRef.current[customUrl];
+            if (!audio) {
+              audio = new Audio(customUrl);
+            }
             currentAudioRef.current = audio;
             audio.onended = () => {
               setIsSpeaking(false);
@@ -970,7 +1015,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       }
 
       if (file.size > 1.5 * 1024 * 1024) {
-          alert("El archivo de audio es demasiado grande. Por favor, usa un archivo de menos de 1.5MB.");
+          showToast("El archivo de audio es demasiado grande. Por favor, usa un archivo de menos de 1.5MB.");
           return;
       }
 
@@ -1011,10 +1056,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         await DataService.saveGlobalConfig(globalConfig);
         localStorage.setItem('radar_global_config', JSON.stringify(globalConfig));
         setIsEditingGlobal(false);
-        alert("Configuración global guardada con éxito.");
+        showToast("Configuración global guardada con éxito.");
     } catch (error) {
         console.error("Error saving global config:", error);
-        alert("Error al guardar la configuración. Por favor, inténtalo de nuevo.");
+        showToast("Error al guardar la configuración. Por favor, inténtalo de nuevo.");
     } finally {
         setIsStarting(false);
     }
@@ -1065,10 +1110,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         localStorage.setItem('radar_custom_questions', JSON.stringify(updated));
         await DataService.saveQuestions(updated);
         setEditingQuestion(null);
-        alert("Pregunta guardada con éxito.");
+        showToast("Pregunta guardada con éxito.");
     } catch (error) {
         console.error("Error saving question:", error);
-        alert("Error al guardar la pregunta. Por favor, inténtalo de nuevo.");
+        showToast("Error al guardar la pregunta. Por favor, inténtalo de nuevo.");
     } finally {
         setIsStarting(false);
     }
@@ -1399,6 +1444,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       )}
       
       {/* Modals remain the same */}
+      {toast && <Toast message={toast.message} visible={toast.visible} onHide={hideToast} />}
       {showExitConfirm && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
            <Card className="max-w-sm w-full text-center space-y-6 bg-white shadow-2xl scale-100">

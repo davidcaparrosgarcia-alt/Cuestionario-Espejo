@@ -112,8 +112,7 @@ service cloud.firestore {
     }
 
     match /audios/{audioId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
+      allow read, write: if true;
     }
 
     match /test/{testId} {

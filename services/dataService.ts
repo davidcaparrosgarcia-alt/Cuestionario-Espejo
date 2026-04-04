@@ -43,25 +43,8 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  console.error(`[Firestore Error] Op: ${operationType}, Path: ${path} | Details:`, errorMessage);
   
   // Solo lanzamos el error si es una operación de escritura (para que el UI lo capture)
   // Para lecturas, solo logueamos para no romper el flujo inicial
@@ -69,7 +52,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
       operationType === OperationType.CREATE || 
       operationType === OperationType.UPDATE || 
       operationType === OperationType.DELETE) {
-    throw new Error(JSON.stringify(errInfo));
+    throw error instanceof Error ? error : new Error(errorMessage);
   }
 }
 
@@ -185,11 +168,13 @@ export const DataService = {
       // Copia profunda para no mutar el estado de la UI
       const processedQuestions = JSON.parse(JSON.stringify(questions));
       const audioPromises: Promise<void>[] = [];
+      let detectedAudios = 0;
 
       const processAudioField = (obj: any, field: string) => {
         if (obj && obj[field]) {
           if (typeof obj[field] === 'string') {
             if (isBase64Audio(obj[field])) {
+              detectedAudios++;
               const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
               const val = obj[field];
               obj[field] = audioId;
@@ -201,6 +186,7 @@ export const DataService = {
             for (const key of Object.keys(obj[field])) {
               const val = obj[field][key];
               if (isBase64Audio(val)) {
+                detectedAudios++;
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 obj[field][key] = audioId;
                 audioPromises.push(
@@ -222,17 +208,25 @@ export const DataService = {
         }
       }
 
+      console.log(`[TEST LOG] Audios detectados antes de guardar: ${detectedAudios}`);
+      console.log(`[TEST LOG] Intentando hacer ${audioPromises.length} setDoc a 'audios'`);
+
       // Esperar a que todos los audios se guarden individualmente
       try {
         await Promise.all(audioPromises);
+        console.log(`[TEST LOG] Promise.all(audioPromises) terminó correctamente.`);
       } catch (audioError) {
-        console.error("Error saving audios:", audioError);
+        console.error("[TEST LOG] Error en Promise.all(audioPromises):", audioError);
         handleFirestoreError(audioError, OperationType.WRITE, 'audios');
         return;
       }
 
+      const questionsString = JSON.stringify(processedQuestions);
+      console.log(`[TEST LOG] Tamaño aproximado de processedQuestions: ${questionsString.length} caracteres`);
+
       // Guardar el cuestionario con las referencias (mucho más ligero)
       await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
+      console.log(`[TEST LOG] Cuestionario guardado exitosamente en questionnaires/active`);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }

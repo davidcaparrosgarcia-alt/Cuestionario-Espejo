@@ -356,7 +356,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const handleGenerateAndSend = async (isResend: boolean = false, forceAction?: 'replace' | 'new' | 'resend') => {
-    if (!patient.nombre || !patient.email) return alert("Nombre y Email son requeridos.");
+    if (!patient.nombre || !patient.email) {
+      triggerToast("Nombre y Email son requeridos.");
+      return;
+    }
     if (isGenerating) return;
     
     setIsGenerating(true);
@@ -559,7 +562,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       const file = e.target.files?.[0];
       if (file) {
           if (file.size > 700000) {
-              alert("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 700KB).");
+              triggerToast("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 700KB).");
               return;
           }
           const reader = new FileReader();
@@ -644,7 +647,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const handleSendConclusionWhatsApp = () => {
-    if (!selectedPatientConclusion || !selectedPatientConclusion.telefono) return alert("El paciente no tiene teléfono registrado.");
+    if (!selectedPatientConclusion || !selectedPatientConclusion.telefono) {
+      triggerToast("El paciente no tiene teléfono registrado.");
+      return;
+    }
     const { body } = getConclusionUrlAndBody(selectedPatientConclusion);
     const cleanPhone = selectedPatientConclusion.telefono.replace(/\D/g, '');
     
@@ -658,7 +664,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!selectedPatientConclusion) return;
     const p = selectedPatientConclusion;
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert("Por favor, permite las ventanas emergentes.");
+    if (!printWindow) {
+      triggerToast("Por favor, permite las ventanas emergentes.");
+      return;
+    }
 
     const hasAudio = !!editingAudio;
 
@@ -764,7 +773,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!selectedPatientDetails) return;
     const p = selectedPatientDetails;
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert("Por favor, permite las ventanas emergentes.");
+    if (!printWindow) {
+      triggerToast("Por favor, permite las ventanas emergentes.");
+      return;
+    }
 
     const htmlContent = `
         <!DOCTYPE html>
@@ -876,7 +888,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!selectedPatientResults) return;
     const p = selectedPatientResults;
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert("Por favor, permite las ventanas emergentes.");
+    if (!printWindow) {
+      triggerToast("Por favor, permite las ventanas emergentes.");
+      return;
+    }
 
     const htmlContent = `
         <!DOCTYPE html>
@@ -934,7 +949,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const handleDownloadPDF = async () => {
     let questionsToPrint = await DataService.getQuestions();
     const printWindow = window.open('', '_blank');
-    if (!printWindow) return alert("Por favor, permite las ventanas emergentes.");
+    if (!printWindow) {
+      triggerToast("Por favor, permite las ventanas emergentes.");
+      return;
+    }
 
     const htmlContent = `
         <!DOCTYPE html>
