@@ -13,6 +13,9 @@ import {
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
+import { doc, getDocFromServer, setDoc } from 'firebase/firestore';
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
+import { db, storage } from './services/firebase';
 import { DataService } from './services/dataService';
 
 // Credenciales Maestras (Mantener como fallback o admin por defecto si es necesario)
@@ -56,6 +59,32 @@ const App: React.FC = () => {
   const [coordinatorData, setCoordinatorData] = useState<AuthUser | null>(null);
 
   useEffect(() => {
+    // Prueba de conexión a Firestore como se requiere en las instrucciones críticas
+    const testConnection = async () => {
+        if (!db) return;
+        try {
+            await getDocFromServer(doc(db, 'test', 'connection'));
+            
+            // Test Storage
+            if (storage) {
+                try {
+                    const testRef = ref(storage, 'test/audio.txt');
+                    await uploadString(testRef, 'test data');
+                    const url = await getDownloadURL(testRef);
+                    await setDoc(doc(db, 'test', 'storage_result'), { success: true, url, time: new Date().toISOString() });
+                } catch (e: any) {
+                    await setDoc(doc(db, 'test', 'storage_result'), { success: false, error: e.message, time: new Date().toISOString() });
+                }
+            }
+        } catch (error) {
+            if(error instanceof Error && error.message.includes('the client is offline')) {
+                console.error("Please check your Firebase configuration. ");
+            }
+            // Skip logging for other errors, as this is simply a connection test.
+        }
+    };
+    testConnection();
+
     const fetchConfig = async () => {
         try {
             const config = await DataService.getGlobalConfig({} as any);

@@ -46,12 +46,12 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth?.currentUser?.uid,
-      email: auth?.currentUser?.email,
-      emailVerified: auth?.currentUser?.emailVerified,
-      isAnonymous: auth?.currentUser?.isAnonymous,
-      tenantId: auth?.currentUser?.tenantId,
-      providerInfo: auth?.currentUser?.providerData.map((provider: any) => ({
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
         providerId: provider.providerId,
         displayName: provider.displayName,
         email: provider.email,
@@ -62,8 +62,19 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  
+  // Solo lanzamos el error si es una operación de escritura (para que el UI lo capture)
+  // Para lecturas, solo logueamos para no romper el flujo inicial
+  if (operationType === OperationType.WRITE || 
+      operationType === OperationType.CREATE || 
+      operationType === OperationType.UPDATE || 
+      operationType === OperationType.DELETE) {
+    throw new Error(JSON.stringify(errInfo));
+  }
 }
+
+const isBase64Audio = (str: any) => typeof str === 'string' && str.startsWith('data:');
+const isAudioRef = (str: any) => typeof str === 'string' && str.startsWith('audio_ref_');
 
 /**
  * Servicio unificado de datos.
@@ -89,16 +100,63 @@ export const DataService = {
       try {
         const docRef = doc(db, 'questionnaires', 'active');
         const docSnap = await getDoc(docRef);
-
         if (docSnap.exists()) {
           const data = docSnap.data();
           if (data.questions && Array.isArray(data.questions)) {
-             questions = data.questions.map((q: any) => ({
+             questions = data.questions.map((q: any, idx: number) => ({
                  ...q,
+                 index: idx,
                  scenario: q.text || q.scenario || "Pregunta sin texto",
-                 options: q.answers || q.options || [],
-                 id: q.id ? String(q.id) : Date.now().toString()
+                 id: q.id ? String(q.id) : `legacy_${idx}`
              }));
+
+             // Resolver referencias de audio
+             const resolveAudioField = async (obj: any, field: string) => {
+               if (obj && obj[field]) {
+                 if (typeof obj[field] === 'string') {
+                   if (isAudioRef(obj[field])) {
+                     try {
+                       const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
+                       if (audioDoc.exists()) {
+                         obj[field] = audioDoc.data().data;
+                       } else {
+                         obj[field] = undefined;
+                       }
+                     } catch (e) {
+                       console.error("Error loading audio ref", obj[field], e);
+                     }
+                   }
+                 } else if (typeof obj[field] === 'object') {
+                   for (const key of Object.keys(obj[field])) {
+                     const val = obj[field][key];
+                     if (isAudioRef(val)) {
+                       try {
+                         const audioDoc = await getDoc(doc(db!, 'audios', val));
+                         if (audioDoc.exists()) {
+                           obj[field][key] = audioDoc.data().data;
+                         } else {
+                           obj[field][key] = undefined;
+                         }
+                       } catch (e) {
+                         console.error("Error loading audio ref", val, e);
+                       }
+                     }
+                   }
+                 }
+               }
+             };
+
+             const resolvePromises: Promise<void>[] = [];
+             for (const q of questions) {
+               resolvePromises.push(resolveAudioField(q, 'audio'));
+               resolvePromises.push(resolveAudioField(q, 'postOptionsAudio'));
+               if (q.options) {
+                 for (const opt of q.options) {
+                   resolvePromises.push(resolveAudioField(opt, 'audio'));
+                 }
+               }
+             }
+             await Promise.all(resolvePromises);
           }
         }
       } catch (error) {
@@ -114,7 +172,7 @@ export const DataService = {
     }
 
     if (!questions || questions.length === 0) {
-      questions = INITIAL_QUESTIONS;
+      questions = INITIAL_QUESTIONS.map((q, idx) => ({ ...q, index: idx }));
     }
 
     return questions;
@@ -124,7 +182,57 @@ export const DataService = {
     if (!db) return;
     const path = 'questionnaires/active';
     try {
-      await setDoc(doc(db, 'questionnaires', 'active'), { questions });
+      // Copia profunda para no mutar el estado de la UI
+      const processedQuestions = JSON.parse(JSON.stringify(questions));
+      const audioPromises: Promise<void>[] = [];
+
+      const processAudioField = (obj: any, field: string) => {
+        if (obj && obj[field]) {
+          if (typeof obj[field] === 'string') {
+            if (isBase64Audio(obj[field])) {
+              const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+              const val = obj[field];
+              obj[field] = audioId;
+              audioPromises.push(
+                setDoc(doc(db!, 'audios', audioId), { data: val })
+              );
+            }
+          } else if (typeof obj[field] === 'object') {
+            for (const key of Object.keys(obj[field])) {
+              const val = obj[field][key];
+              if (isBase64Audio(val)) {
+                const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                obj[field][key] = audioId;
+                audioPromises.push(
+                  setDoc(doc(db!, 'audios', audioId), { data: val })
+                );
+              }
+            }
+          }
+        }
+      };
+
+      for (const q of processedQuestions) {
+        processAudioField(q, 'audio');
+        processAudioField(q, 'postOptionsAudio');
+        if (q.options) {
+          for (const opt of q.options) {
+            processAudioField(opt, 'audio');
+          }
+        }
+      }
+
+      // Esperar a que todos los audios se guarden individualmente
+      try {
+        await Promise.all(audioPromises);
+      } catch (audioError) {
+        console.error("Error saving audios:", audioError);
+        handleFirestoreError(audioError, OperationType.WRITE, 'audios');
+        return;
+      }
+
+      // Guardar el cuestionario con las referencias (mucho más ligero)
+      await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -142,6 +250,51 @@ export const DataService = {
               if (docSnap.exists()) {
                   config = { ...config, ...docSnap.data() };
                   foundRemote = true;
+
+                  // Resolver referencias de audio en la configuración
+                  const resolveAudioField = async (obj: any, field: string) => {
+                    if (obj && obj[field]) {
+                      if (typeof obj[field] === 'string') {
+                        if (isAudioRef(obj[field])) {
+                          try {
+                            const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
+                            if (audioDoc.exists()) {
+                              obj[field] = audioDoc.data().data;
+                            } else {
+                              obj[field] = undefined;
+                            }
+                          } catch (e) {
+                            console.error("Error loading audio ref in config", obj[field], e);
+                          }
+                        }
+                      } else if (typeof obj[field] === 'object') {
+                        for (const key of Object.keys(obj[field])) {
+                          const val = obj[field][key];
+                          if (isAudioRef(val)) {
+                            try {
+                              const audioDoc = await getDoc(doc(db!, 'audios', val));
+                              if (audioDoc.exists()) {
+                                obj[field][key] = audioDoc.data().data;
+                              } else {
+                                obj[field][key] = undefined;
+                              }
+                            } catch (e) {
+                              console.error("Error loading audio ref in config", val, e);
+                            }
+                          }
+                        }
+                      }
+                    }
+                  };
+
+                  const resolvePromises: Promise<void>[] = [
+                    resolveAudioField(config, 'welcomeAudio'),
+                    resolveAudioField(config, 'nameQuestionAudio'),
+                    resolveAudioField(config, 'startAudio'),
+                    resolveAudioField(config, 'finishAudio'),
+                    resolveAudioField(config, 'afterSendAudio')
+                  ];
+                  await Promise.all(resolvePromises);
               }
           } catch (error) {
               handleFirestoreError(error, OperationType.GET, path);
@@ -162,7 +315,44 @@ export const DataService = {
     if (!db) return;
     const path = 'config/global_config';
     try {
-      await setDoc(doc(db, 'config', 'global_config'), config);
+      const processedConfig = JSON.parse(JSON.stringify(config));
+      const audioPromises: Promise<void>[] = [];
+
+      const processAudioField = (obj: any, field: string) => {
+        if (obj && obj[field]) {
+          if (typeof obj[field] === 'string') {
+            if (isBase64Audio(obj[field])) {
+              const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+              const val = obj[field];
+              obj[field] = audioId;
+              audioPromises.push(
+                setDoc(doc(db!, 'audios', audioId), { data: val })
+              );
+            }
+          } else if (typeof obj[field] === 'object') {
+            for (const key of Object.keys(obj[field])) {
+              const val = obj[field][key];
+              if (isBase64Audio(val)) {
+                const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                obj[field][key] = audioId;
+                audioPromises.push(
+                  setDoc(doc(db!, 'audios', audioId), { data: val })
+                );
+              }
+            }
+          }
+        }
+      };
+
+      processAudioField(processedConfig, 'welcomeAudio');
+      processAudioField(processedConfig, 'nameQuestionAudio');
+      processAudioField(processedConfig, 'startAudio');
+      processAudioField(processedConfig, 'finishAudio');
+      processAudioField(processedConfig, 'afterSendAudio');
+
+      await Promise.all(audioPromises);
+
+      await setDoc(doc(db, 'config', 'global_config'), processedConfig);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -210,9 +400,30 @@ export const DataService = {
       const q = query(collection(db, 'patients'), where('coordinatorEmail', '==', coordinatorEmail));
       const querySnapshot = await getDocs(q);
       const patients: PatientData[] = [];
-      querySnapshot.forEach((doc) => {
-        patients.push(doc.data() as PatientData);
+      
+      const resolvePromises: Promise<void>[] = [];
+      
+      querySnapshot.forEach((docSnap) => {
+        const patient = docSnap.data() as PatientData;
+        patients.push(patient);
+        
+        if (isAudioRef(patient.audioConclusion)) {
+          resolvePromises.push((async () => {
+            try {
+              const audioDoc = await getDoc(doc(db!, 'audios', patient.audioConclusion!));
+              if (audioDoc.exists()) {
+                patient.audioConclusion = audioDoc.data().data;
+              } else {
+                patient.audioConclusion = undefined;
+              }
+            } catch (e) {
+              console.error("Error loading audioConclusion ref", patient.audioConclusion, e);
+            }
+          })());
+        }
       });
+      
+      await Promise.all(resolvePromises);
       return patients;
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, path);
@@ -224,7 +435,16 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patient.id}`;
     try {
-      await setDoc(doc(db, 'patients', patient.id), patient);
+      const processedPatient = JSON.parse(JSON.stringify(patient));
+
+      if (isBase64Audio(processedPatient.audioConclusion)) {
+        const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const audioData = processedPatient.audioConclusion;
+        processedPatient.audioConclusion = audioId;
+        await setDoc(doc(db, 'audios', audioId), { data: audioData });
+      }
+
+      await setDoc(doc(db, 'patients', patient.id), processedPatient);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -234,7 +454,16 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
-      await updateDoc(doc(db, 'patients', patientId), data);
+      const processedData = JSON.parse(JSON.stringify(data));
+
+      if (isBase64Audio(processedData.audioConclusion)) {
+        const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const audioData = processedData.audioConclusion;
+        processedData.audioConclusion = audioId;
+        await setDoc(doc(db, 'audios', audioId), { data: audioData });
+      }
+
+      await updateDoc(doc(db, 'patients', patientId), processedData);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
     }
@@ -256,7 +485,23 @@ export const DataService = {
     try {
       const docRef = doc(db, 'patients', patientId);
       const docSnap = await getDoc(docRef);
-      return docSnap.exists() ? docSnap.data() as PatientData : null;
+      if (docSnap.exists()) {
+        const patient = docSnap.data() as PatientData;
+        if (isAudioRef(patient.audioConclusion)) {
+          try {
+            const audioDoc = await getDoc(doc(db, 'audios', patient.audioConclusion));
+            if (audioDoc.exists()) {
+              patient.audioConclusion = audioDoc.data().data;
+            } else {
+              patient.audioConclusion = undefined;
+            }
+          } catch (e) {
+            console.error("Error loading audioConclusion ref", patient.audioConclusion, e);
+          }
+        }
+        return patient;
+      }
+      return null;
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
       return null;

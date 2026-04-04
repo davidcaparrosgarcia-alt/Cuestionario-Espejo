@@ -47,12 +47,12 @@ const DEFAULT_CONFIG: GlobalConfig = {
   backgrounds: []
 };
 
-const FALLBACK_TEXTURE = "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop";
+const FALLBACK_TEXTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // Transparent pixel fallback
 
 const BACKGROUNDS = {
-  intro: 'assets/fondo1.webp',        
-  verification: 'assets/fondo2.webp', 
-  general: 'assets/fondo3.webp'       
+  intro: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop",        
+  verification: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop", 
+  general: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop"       
 };
 
 // Aumentado a 800ms para asegurar que el navegador no corte el inicio (problema de palabras comidas)
@@ -769,36 +769,44 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   const startSession = async () => {
     if (isStarting) return;
+    
+    // Transición visual inmediata
+    if (isEditorMode) {
+        setStep('verification');
+    } else {
+        setStep('pin_validation');
+    }
+
     setIsStarting(true);
 
-    try {
-        if (isEditorMode) {
-            const welcome = processText(globalConfig.welcomeText);
-            if (welcome) {
-                addMessage(welcome, 'ia');
-                await playOrSpeak(welcome, globalConfig.welcomeAudio);
-            }
-            
-            const nameQ = processText(globalConfig.nameQuestionText);
-            if (nameQ) {
-                setStep('verification');
-                addMessage(nameQ, 'ia');
-                await playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
+    // Usamos setTimeout para permitir que el navegador realice el re-render del cambio de step
+    setTimeout(async () => {
+        try {
+            if (isEditorMode) {
+                const welcome = processText(globalConfig.welcomeText);
+                if (welcome) {
+                    addMessage(welcome, 'ia');
+                    await playOrSpeak(welcome, globalConfig.welcomeAudio);
+                }
+                
+                const nameQ = processText(globalConfig.nameQuestionText);
+                if (nameQ) {
+                    addMessage(nameQ, 'ia');
+                    await playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
+                } else {
+                    proceedToQuestionnaire();
+                }
             } else {
-                proceedToQuestionnaire();
+                const welcome = processText(globalConfig.welcomeText);
+                if (welcome) {
+                    addMessage(welcome, 'ia');
+                    playOrSpeak(welcome, globalConfig.welcomeAudio);
+                }
             }
-        } else {
-            // En modo paciente real, primero validamos PIN
-            setStep('pin_validation');
-            const welcome = processText(globalConfig.welcomeText);
-            if (welcome) {
-                addMessage(welcome, 'ia');
-                playOrSpeak(welcome, globalConfig.welcomeAudio);
-            }
+        } finally {
+            setIsStarting(false);
         }
-    } finally {
-        setIsStarting(false);
-    }
+    }, 0);
   };
 
   const handlePinSubmit = () => {
@@ -872,13 +880,14 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   const proceedToQuestionnaire = async () => {
     stopAudio();
+    setStep('questionnaire');
+    
     const startMsg = processText(globalConfig.startText);
     if (startMsg) {
         addMessage(startMsg, 'ia');
         await playOrSpeak(startMsg, globalConfig.startAudio);
     }
 
-    setStep('questionnaire');
     loadQuestion(0);
   };
 
@@ -997,8 +1006,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const saveGlobalChanges = async () => {
-    await DataService.saveGlobalConfig(globalConfig);
-    setIsEditingGlobal(false);
+    try {
+        setIsStarting(true); // Reutilizamos el estado de carga
+        await DataService.saveGlobalConfig(globalConfig);
+        localStorage.setItem('radar_global_config', JSON.stringify(globalConfig));
+        setIsEditingGlobal(false);
+        alert("Configuración global guardada con éxito.");
+    } catch (error) {
+        console.error("Error saving global config:", error);
+        alert("Error al guardar la configuración. Por favor, inténtalo de nuevo.");
+    } finally {
+        setIsStarting(false);
+    }
   };
 
   const handleCreateQuestion = () => {
@@ -1030,19 +1049,29 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const saveQuestionChanges = async () => {
     if (!editingQuestion) return;
     
-    // Check if it exists
-    const exists = questions.some(q => q.id === editingQuestion.id);
-    let updated;
-    
-    if (exists) {
-        updated = questions.map(q => q.id === editingQuestion.id ? editingQuestion : q);
-    } else {
-        updated = [...questions, editingQuestion];
+    try {
+        setIsStarting(true);
+        // Check if it exists
+        const exists = questions.some(q => q.id === editingQuestion.id);
+        let updated;
+        
+        if (exists) {
+            updated = questions.map(q => q.id === editingQuestion.id ? editingQuestion : q);
+        } else {
+            updated = [...questions, editingQuestion];
+        }
+        
+        setQuestions(updated);
+        localStorage.setItem('radar_custom_questions', JSON.stringify(updated));
+        await DataService.saveQuestions(updated);
+        setEditingQuestion(null);
+        alert("Pregunta guardada con éxito.");
+    } catch (error) {
+        console.error("Error saving question:", error);
+        alert("Error al guardar la pregunta. Por favor, inténtalo de nuevo.");
+    } finally {
+        setIsStarting(false);
     }
-    
-    setQuestions(updated);
-    await DataService.saveQuestions(updated);
-    setEditingQuestion(null);
   };
 
   const handleAddOption = () => {
@@ -1106,9 +1135,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         </>
       )}
 
-      <div className="fixed inset-0 z-0 bg-cover bg-center transition-all duration-700 no-print"
+      <div className="fixed inset-0 z-0 bg-cover bg-center transition-all duration-1000 no-print"
         style={{ 
-          backgroundImage: `url('${getCurrentBackground()}'), url('${FALLBACK_TEXTURE}')`,
+          backgroundImage: `url('${getCurrentBackground()}')`,
           backgroundPosition: 'center',
           filter: isDarkMode ? 'brightness(0.5) hue-rotate(210deg) saturate(1.2)' : 'brightness(1.05) contrast(0.95)',
         }}>
@@ -1256,21 +1285,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         Entrar al Cuestionario
                     </Button>
                 </div>
-            ) : step === 'locked' ? (
-                <div className={`text-center py-16 px-8 rounded-[3rem] border shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-500 ${cardClasses}`}>
-                    <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-lg">
-                        <i className="fas fa-user-check"></i>
-                    </div>
-                    <h2 className={`text-2xl font-bold mb-4 font-friendly ${isDarkMode ? 'text-blue-200' : 'text-blue-900'}`}>Cuestionario Finalizado</h2>
-                    <p className={`text-base mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
-                        Hola {currentPatientData.nombre?.split(' ')[0]}, ya hemos recibido tus respuestas correctamente. 
-                        <br/><br/>
-                        Tu terapeuta revisará la información y se pondrá en contacto contigo muy pronto. Gracias por tu colaboración.
-                    </p>
-                    <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 text-blue-800 text-sm font-medium">
-                        <i className="fas fa-info-circle mr-2"></i> No es necesario realizar ninguna acción adicional.
-                    </div>
-                </div>
             ) : step === 'conclusion_view' ? (
                 <div className={`py-12 px-8 rounded-[3rem] border shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-500 ${cardClasses}`}>
                     <div className="w-20 h-20 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-3xl mx-auto mb-6 shadow-lg">
@@ -1413,25 +1427,23 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="bg-white/5 p-6 rounded-3xl border border-white/10">
                         <label className="block text-[10px] font-black uppercase text-blue-400 mb-4">Voz por Defecto al Iniciar</label>
-                        <div className="flex gap-4 mb-4">
-                            {[Voice.FEMALE, Voice.MALE, Voice.NONE].map(v => (
-                            <button key={v} onClick={() => setGlobalConfig({...globalConfig, defaultVoiceMode: v})} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase ${globalConfig.defaultVoiceMode === v ? 'bg-blue-600 text-white' : 'bg-white/10 text-slate-400'}`}>{v === 'none' ? 'Silencio' : v === 'male' ? 'Hombre' : 'Mujer'}</button>
-                            ))}
-                        </div>
-                        <div className="grid grid-cols-2 gap-4 border-t border-white/10 pt-4">
-                            <div>
-                                <label className="block text-[10px] font-bold text-slate-400 mb-2">Variante Mujer</label>
-                                <div className="flex gap-2">
-                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.femaleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
-                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.femaleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
+                        <div className="flex flex-wrap gap-6 mb-4">
+                            <div className="flex flex-col gap-2">
+                                <button onClick={() => setGlobalConfig({...globalConfig, defaultVoiceMode: Voice.FEMALE})} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${globalConfig.defaultVoiceMode === Voice.FEMALE ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/10 text-slate-400'}`}>Mujer</button>
+                                <div className="flex justify-center gap-2">
+                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-[10px] font-bold transition-all ${globalConfig.femaleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
+                                    <button onClick={() => setGlobalConfig({...globalConfig, femaleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-[10px] font-bold transition-all ${globalConfig.femaleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
                                 </div>
                             </div>
-                            <div>
-                                <label className="block text-[10px] font-bold text-slate-400 mb-2">Variante Hombre</label>
-                                <div className="flex gap-2">
-                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.maleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
-                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-xs font-bold ${globalConfig.maleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
+                            <div className="flex flex-col gap-2">
+                                <button onClick={() => setGlobalConfig({...globalConfig, defaultVoiceMode: Voice.MALE})} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${globalConfig.defaultVoiceMode === Voice.MALE ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/10 text-slate-400'}`}>Hombre</button>
+                                <div className="flex justify-center gap-2">
+                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 1})} className={`w-8 h-8 rounded-full text-[10px] font-bold transition-all ${globalConfig.maleVoiceVariant !== 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>1</button>
+                                    <button onClick={() => setGlobalConfig({...globalConfig, maleVoiceVariant: 2})} className={`w-8 h-8 rounded-full text-[10px] font-bold transition-all ${globalConfig.maleVoiceVariant === 2 ? 'bg-blue-500 text-white' : 'bg-white/10 text-slate-400'}`}>2</button>
                                 </div>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <button onClick={() => setGlobalConfig({...globalConfig, defaultVoiceMode: Voice.NONE})} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${globalConfig.defaultVoiceMode === Voice.NONE ? 'bg-blue-900 text-white shadow-lg' : 'bg-white/10 text-slate-400'}`}>Silencio</button>
                             </div>
                         </div>
                     </div>
@@ -1517,8 +1529,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                  ))}
               </div>
               <div className="flex gap-4 mt-8 pt-6 border-t border-white/10">
-                 <Button onClick={saveGlobalChanges} className="flex-1">Guardar Configuración</Button>
-                 <Button variant="outline" onClick={() => setIsEditingGlobal(false)} className="flex-1 border-white/20 text-white hover:bg-white/5">Cancelar</Button>
+                 <Button onClick={saveGlobalChanges} className="flex-1" disabled={isStarting}>
+                    {isStarting ? <><i className="fas fa-spinner fa-spin mr-2"></i> Guardando...</> : 'Guardar Configuración'}
+                 </Button>
+                 <Button variant="outline" onClick={() => setIsEditingGlobal(false)} className="flex-1 border-white/20 text-white hover:bg-white/5" disabled={isStarting}>Cancelar</Button>
               </div>
             </div>
          </div>
@@ -1629,7 +1643,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     )}
               </div>
             </div>
-            <div className="flex gap-4 pt-6 border-t border-white/10 mt-6"><Button className="flex-1 py-4 text-lg" onClick={saveQuestionChanges}>Guardar Cambios</Button><Button variant="outline" className="flex-1 py-4 border-white/20 text-white font-black hover:bg-white/5" onClick={() => setEditingQuestion(null)}>Cancelar</Button></div>
+            <div className="flex gap-4 pt-6 border-t border-white/10 mt-6">
+              <Button className="flex-1 py-4 text-lg" onClick={saveQuestionChanges} disabled={isStarting}>
+                {isStarting ? <><i className="fas fa-spinner fa-spin mr-2"></i> Guardando...</> : 'Guardar Cambios'}
+              </Button>
+              <Button variant="outline" className="flex-1 py-4 border-white/20 text-white font-black hover:bg-white/5" onClick={() => setEditingQuestion(null)} disabled={isStarting}>Cancelar</Button>
+            </div>
           </div>
         </div>
       )}

@@ -95,6 +95,7 @@ async function startServer() {
   });
 
   app.get("/api/requests", (req, res) => {
+    console.log("GET /api/requests - Returning", pendingRequestsStore.length, "requests");
     res.json(pendingRequestsStore);
   });
 
@@ -102,6 +103,11 @@ async function startServer() {
     const id = req.params.id;
     pendingRequestsStore = pendingRequestsStore.filter(r => r.id !== id);
     res.json({ message: "Request deleted successfully" });
+  });
+
+  // Catch-all for API routes that don't exist
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route ${req.method} ${req.url} not found` });
   });
 
   // Vite middleware for development

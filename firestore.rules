@@ -66,36 +66,17 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-        (request.auth.token.email == "davidcaparrosgarcia@gmail.com" && request.auth.token.email_verified == true);
+             (request.auth.uid == "7D079IDPnkcvJxB8sNSEbLKS1EY2" || 
+              ('email' in request.auth.token && (
+                request.auth.token.email == "davidcaparrosgarcia@gmail.com" ||
+                request.auth.token.email == "cuestionarioespejo@gmail.com"
+              )));
     }
 
     function isCoordinatorOf(patientData) {
-      return isAuthenticated() && request.auth.token.email.lower() == patientData.coordinatorEmail.lower();
-    }
-
-    function isValidUser(data) {
-      return data.keys().hasAll(['email', 'nombre']) &&
-             data.email is string && data.email.size() < 200 &&
-             data.nombre is string && data.nombre.size() > 0 && data.nombre.size() < 200 &&
-             (!('pin' in data) || (data.pin is string && data.pin.size() <= 10)) &&
-             (!('securityQuestion' in data) || (data.securityQuestion is string && data.securityQuestion.size() < 500)) &&
-             (!('securityAnswer' in data) || (data.securityAnswer is string && data.securityAnswer.size() < 500)) &&
-             (!('samplePatientDeleted' in data) || data.samplePatientDeleted is bool);
-    }
-
-    function isValidPatient(data) {
-      return data.keys().hasAll(['id', 'nombre', 'status']) &&
-             data.id is string && data.id.size() < 1000 &&
-             data.nombre is string && data.nombre.size() > 0 && data.nombre.size() < 200 &&
-             data.status in ['pending', 'sent', 'viewed', 'completed', 'concluded', 'finalized'] &&
-             (!('email' in data) || (data.email is string && data.email.size() < 200)) &&
-             (!('coordinatorEmail' in data) || (data.coordinatorEmail is string && data.coordinatorEmail.size() < 200)) &&
-             (!('conclusionViews' in data) || data.conclusionViews is number) &&
-             (!('observaciones' in data) || (data.observaciones is string && data.observaciones.size() < 5000)) &&
-             (!('conversationSummary' in data) || (data.conversationSummary is string && data.conversationSummary.size() < 10000)) &&
-             (!('finalConclusion' in data) || (data.finalConclusion is string && data.finalConclusion.size() < 10000)) &&
-             (!('audioConclusion' in data) || (data.audioConclusion is string && data.audioConclusion.size() < 2000000)) &&
-             (!('accessPin' in data) || (data.accessPin is string && data.accessPin.size() <= 10));
+      return isAuthenticated() && 
+             'email' in request.auth.token && 
+             request.auth.token.email.lower() == patientData.coordinatorEmail.lower();
     }
 
     // ===============================================================
@@ -103,44 +84,41 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{email} {
-      // Permitimos lectura pública para verificar existencia del usuario
-      allow get: if true; 
-      allow list: if isAdmin();
-      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (request.auth.token.email.lower() == email.lower() || isAdmin());
-      allow update: if isOwner(email) && isValidUser(request.resource.data) && request.resource.data.email == resource.data.email;
+      allow read: if true;
+      allow write: if isAuthenticated() && (request.auth.token.email.lower() == email.lower() || isAdmin());
     }
 
     match /patients/{patientId} {
-      // Los pacientes pueden leer su propio registro si tienen el ID (acceso por link)
-      // Restringimos 'list' para evitar enumeración
       allow get: if true; 
       allow list: if isAuthenticated();
-      
-      // Solo coordinadores pueden crear pacientes
-      allow create: if isAuthenticated() && isValidPatient(request.resource.data) && request.resource.data.coordinatorEmail.lower() == request.auth.token.email.lower();
-      
-      // Coordinadores pueden actualizar a sus pacientes. 
-      // Pacientes pueden actualizar su propio registro (respuestas, status)
-      allow update: if isValidPatient(request.resource.data) && 
-                       ((isAuthenticated() && isCoordinatorOf(resource.data)) || 
-                        (request.resource.data.id == resource.data.id));
-      
-      // Solo coordinadores pueden borrar
-      allow delete: if isAuthenticated() && isCoordinatorOf(resource.data);
+      allow create: if isAuthenticated();
+      allow update: if (isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin())) || (request.resource.data.id == resource.data.id);
+      allow delete: if isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin());
     }
 
-    match /questionnaires/active {
+    match /config/{configId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    match /config/global_config {
+    match /questions/{questionId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    match /test/connection {
+    match /questionnaires/{questionId} {
       allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /audios/{audioId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /test/{testId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }

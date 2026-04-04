@@ -149,8 +149,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       try {
         const res = await fetch('/api/requests');
         if (res.ok) {
-          const data = await res.json();
-          setPendingRequests(data);
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const data = await res.json();
+            setPendingRequests(data);
+          } else {
+            console.warn("Received non-JSON response from /api/requests");
+          }
+        } else {
+          console.error(`Error fetching pending requests: ${res.status} ${res.statusText}`);
         }
       } catch (error) {
         console.error("Error fetching pending requests:", error);
@@ -551,8 +558,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) {
-          if (file.size > 1048576) {
-              alert("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 1MB).");
+          if (file.size > 700000) {
+              alert("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 700KB).");
               return;
           }
           const reader = new FileReader();
@@ -1764,6 +1771,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                               <div className="flex-1">
                                   <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Clave Actual: <span className="text-blue-600 ml-1">{tempConfig.accessCode}</span></label>
                                   <Input 
+                                      label="Nueva Clave"
                                       placeholder="Nueva clave (5 dígitos)" 
                                       maxLength={5} 
                                       value={newAccessCode} 
@@ -1794,6 +1802,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                   {(Array.isArray(tempConfig.notificationEmails) ? (tempConfig.notificationEmails.length > 0 ? tempConfig.notificationEmails : ['']) : [tempConfig.notificationEmails || '']).map((email: string, idx: number, arr: string[]) => (
                                       <div key={idx} className="flex gap-2 items-center">
                                           <Input 
+                                              label={`Correo ${idx + 1}`}
                                               placeholder="ejemplo@correo.com"
                                               value={email} 
                                               onChange={e => {
