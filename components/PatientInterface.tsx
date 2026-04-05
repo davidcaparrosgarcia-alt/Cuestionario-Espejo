@@ -93,6 +93,39 @@ const CompassBackground = ({ isDarkMode }: { isDarkMode: boolean }) => (
   </svg>
 );
 
+/**
+ * Crea una copia profunda de un objeto o array eliminando cualquier string que sea Base64 (data:...)
+ * para evitar saturar la cuota de localStorage.
+ */
+const sanitizeForLocalCache = (data: any): any => {
+    if (!data) return data;
+    
+    if (Array.isArray(data)) {
+        return data.map(item => sanitizeForLocalCache(item));
+    }
+    
+    if (typeof data === 'object' && data !== null) {
+        const sanitized: any = {};
+        for (const key in data) {
+            if (Object.prototype.hasOwnProperty.call(data, key)) {
+                const value = data[key];
+                // Si es un string y empieza con data: (Base64), lo eliminamos de la copia local
+                if (typeof value === 'string' && value.startsWith('data:')) {
+                    // No incluimos esta propiedad en la copia saneada para ahorrar espacio
+                    continue;
+                } else if (typeof value === 'object' && value !== null) {
+                    sanitized[key] = sanitizeForLocalCache(value);
+                } else {
+                    sanitized[key] = value;
+                }
+            }
+        }
+        return sanitized;
+    }
+    
+    return data;
+};
+
 export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData: initialPatientData, isEditorMode, onExitEditor }) => {
   const [currentPatientData, setCurrentPatientData] = useState(initialPatientData);
 
@@ -100,8 +133,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig>(() => {
     try {
         const saved = localStorage.getItem('radar_global_config');
-        return saved ? JSON.parse(saved) : DEFAULT_CONFIG;
+        if (!saved) return DEFAULT_CONFIG;
+        const parsed = JSON.parse(saved);
+        // Validación básica: si no es un objeto, ignorar
+        if (!parsed || typeof parsed !== 'object') return DEFAULT_CONFIG;
+        return parsed;
     } catch(e) {
+        console.warn("Error al cargar radar_global_config de localStorage:", e);
         return DEFAULT_CONFIG;
     }
   });
@@ -109,9 +147,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [questions, setQuestions] = useState<Question[]>(() => {
     try {
         const saved = localStorage.getItem('radar_custom_questions');
-        const parsed = saved ? JSON.parse(saved) : INITIAL_QUESTIONS;
-        return Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_QUESTIONS;
+        if (!saved) return INITIAL_QUESTIONS;
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed) || parsed.length === 0) return INITIAL_QUESTIONS;
+        return parsed;
     } catch(e) {
+        console.warn("Error al cargar radar_custom_questions de localStorage:", e);
         return INITIAL_QUESTIONS;
     }
   });
@@ -381,8 +422,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [isDarkMode, setIsDarkMode] = useState(() => {
     try {
         const saved = localStorage.getItem('radar_global_config');
-        const config = saved ? JSON.parse(saved) : DEFAULT_CONFIG;
-        return config.defaultTheme === 'dark';
+        if (!saved) return true;
+        const config = JSON.parse(saved);
+        return config && config.defaultTheme === 'dark';
     } catch(e) {
         return true;
     }
@@ -1054,7 +1096,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     try {
         setIsStarting(true); // Reutilizamos el estado de carga
         await DataService.saveGlobalConfig(globalConfig);
-        localStorage.setItem('radar_global_config', JSON.stringify(globalConfig));
+        
+        // Saneamos la copia para localStorage para evitar errores de cuota
+        try {
+            const sanitized = sanitizeForLocalCache(globalConfig);
+            localStorage.setItem('radar_global_config', JSON.stringify(sanitized));
+        } catch (lsError) {
+            console.warn("Error al guardar radar_global_config en localStorage (cuota excedida):", lsError);
+        }
+
         setIsEditingGlobal(false);
         showToast("Configuración global guardada con éxito.");
     } catch (error) {
@@ -1107,7 +1157,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         }
         
         setQuestions(updated);
-        localStorage.setItem('radar_custom_questions', JSON.stringify(updated));
+        
+        // Saneamos la copia para localStorage para evitar errores de cuota
+        try {
+            const sanitized = sanitizeForLocalCache(updated);
+            localStorage.setItem('radar_custom_questions', JSON.stringify(sanitized));
+        } catch (lsError) {
+            console.warn("Error al guardar radar_custom_questions en localStorage (cuota excedida):", lsError);
+        }
+
         await DataService.saveQuestions(updated);
         setEditingQuestion(null);
         showToast("Pregunta guardada con éxito.");
