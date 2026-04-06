@@ -56,7 +56,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   }
 }
 
-const isBase64Audio = (str: any) => typeof str === 'string' && str.startsWith('data:');
+const isBase64Audio = (str: any) => typeof str === 'string' && str.startsWith('data:audio/');
 const isAudioRef = (str: any) => typeof str === 'string' && str.startsWith('audio_ref_');
 
 /**
@@ -64,6 +64,90 @@ const isAudioRef = (str: any) => typeof str === 'string' && str.startsWith('audi
  */
 export const DataService = {
   
+  async migrateActiveQuestionnaireAudios() {
+    if (!db) return { error: "No DB connection" };
+    console.log("[MIGRATION] Starting manual migration of active questionnaire audios...");
+    
+    try {
+      const docRef = doc(db, 'questionnaires', 'active');
+      const docSnap = await getDoc(docRef);
+      if (!docSnap.exists()) {
+        console.log("[MIGRATION] No active questionnaire found.");
+        return { error: "No active questionnaire" };
+      }
+
+      const data = docSnap.data();
+      if (!data.questions || !Array.isArray(data.questions)) {
+        console.log("[MIGRATION] No questions array found in document.");
+        return { error: "No questions array" };
+      }
+
+      // Copia profunda para trabajar
+      const processedQuestions = JSON.parse(JSON.stringify(data.questions));
+      const audioPromises: Promise<void>[] = [];
+      let detectedAudios = 0;
+      let createdDocs = 0;
+
+      const processAudioField = (obj: any, field: string) => {
+        if (obj && obj[field]) {
+          if (typeof obj[field] === 'string') {
+            if (isBase64Audio(obj[field])) {
+              detectedAudios++;
+              const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+              const val = obj[field];
+              obj[field] = audioId;
+              audioPromises.push(
+                setDoc(doc(db!, 'audios', audioId), { data: val }).then(() => { createdDocs++; })
+              );
+            }
+          } else if (typeof obj[field] === 'object') {
+            for (const key of Object.keys(obj[field])) {
+              const val = obj[field][key];
+              if (isBase64Audio(val)) {
+                detectedAudios++;
+                const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                obj[field][key] = audioId;
+                audioPromises.push(
+                  setDoc(doc(db!, 'audios', audioId), { data: val }).then(() => { createdDocs++; })
+                );
+              }
+            }
+          }
+        }
+      };
+
+      for (const q of processedQuestions) {
+        processAudioField(q, 'audio');
+        processAudioField(q, 'postOptionsAudio');
+        if (q.options) {
+          for (const opt of q.options) {
+            processAudioField(opt, 'audio');
+          }
+        }
+      }
+
+      console.log(`[MIGRATION] Detected ${detectedAudios} Base64 audios. Waiting for uploads...`);
+      await Promise.all(audioPromises);
+      console.log(`[MIGRATION] Uploaded ${createdDocs} audio documents.`);
+
+      if (detectedAudios > 0) {
+        await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
+        console.log("[MIGRATION] Successfully updated questionnaires/active with references.");
+      } else {
+        console.log("[MIGRATION] No Base64 audios found. No changes made to questionnaires/active.");
+      }
+
+      return {
+        detectedAudios,
+        createdDocs,
+        updatedQuestionnaire: detectedAudios > 0
+      };
+    } catch (error) {
+      console.error("[MIGRATION] Error during migration:", error);
+      return { error: String(error) };
+    }
+  },
+
   async testConnection() {
     if (!db) return;
     try {
@@ -502,3 +586,8 @@ export const DataService = {
     }
   }
 };
+
+// Exponer DataService globalmente para permitir la migración manual desde la consola
+if (typeof window !== 'undefined') {
+  (window as any).DataService = DataService;
+}

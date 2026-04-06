@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Card, Button, Logo, Input } from './UI';
-import { PatientData } from '../types';
+import { PatientData, GlobalConfig } from '../types';
 import { DataService } from '../services/dataService';
 
 interface ConclusionPatientViewProps {
@@ -18,13 +18,17 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
+  const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    // Cargar pacientes
+    // Cargar pacientes y config
     const loadData = async () => {
         try {
+            const config = await DataService.getGlobalConfig({} as any);
+            setGlobalConfig(config);
+
             const found = await DataService.getPatientById(patientId);
             
             if (found) {
@@ -70,8 +74,8 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
       }
   };
 
-  const handleBooking = () => window.location.href = "https://example.com/reserva"; 
-  const handleLearnMore = () => window.location.href = "https://example.com/terapias";
+  const handleBooking = () => window.location.href = globalConfig?.bookingUrl || "https://example.com/reserva"; 
+  const handleLearnMore = () => window.location.href = globalConfig?.therapiesInfoUrl || "https://example.com/terapias";
   const handlePlayAudio = () => audioRef.current?.play();
 
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#faf9f6]"><div className="animate-spin w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full"></div></div>;

@@ -611,8 +611,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const getConclusionUrlAndBody = (p: PatientData) => {
-    const baseUrl = window.location.origin + window.location.pathname;
-    const url = `${baseUrl}#/conclusion?id=${encodeURIComponent(p.id)}`;
+    let baseUrl = globalConfig?.conclusionBaseUrl;
+    if (baseUrl && !baseUrl.endsWith('/')) {
+        baseUrl += '/';
+    }
+    const url = baseUrl ? `${baseUrl}#/conclusion?id=${encodeURIComponent(p.id)}` : `${window.location.origin + window.location.pathname}#/conclusion?id=${encodeURIComponent(p.id)}`;
     
     let body = globalConfig?.conclusionMessage || `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave numérica de 4 dígitos que se te entregó al iniciar el cuestionario ([PIN]).`;
     
@@ -1776,35 +1779,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   </div>
 
                   <div className="p-8 overflow-y-auto space-y-10">
-                      {/* SECCIÓN CLAVE DE ACCESO */}
-                      <section className="space-y-4">
-                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Clave de Acceso General</h3>
-                          <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 flex items-start gap-3">
-                              <i className="fas fa-exclamation-triangle text-amber-500 mt-1"></i>
-                              <p className="text-sm text-amber-800">
-                                  Esta clave condiciona el acceso inicial a la app. Su pérdida u olvido supone la imposibilidad de acceso, recuperación o cambio de clave.
-                              </p>
-                          </div>
-                          <div className="flex items-end gap-4 max-w-md">
-                              <div className="flex-1">
-                                  <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Clave Actual: <span className="text-blue-600 ml-1">{tempConfig.accessCode}</span></label>
-                                  <Input 
-                                      label="Nueva Clave"
-                                      placeholder="Nueva clave (5 dígitos)" 
-                                      maxLength={5} 
-                                      value={newAccessCode} 
-                                      onChange={e => setNewAccessCode(e.target.value.replace(/\D/g, ''))}
-                                  />
-                              </div>
-                              <Button 
-                                onClick={() => setShowConfirmAccessCode(true)} 
-                                disabled={newAccessCode.length < 5}
-                                className="mb-1"
-                              >
-                                  Cambiar
-                              </Button>
-                          </div>
-                      </section>
+                      
+                      {/* --- AJUSTES NO SENSIBLES --- */}
+                      <div className="mb-4 pb-2 border-b-2 border-slate-200">
+                          <h2 className="text-xl font-black text-slate-800 uppercase tracking-widest">Ajustes Generales</h2>
+                          <p className="text-sm text-slate-500">Configuración básica y textos visibles para los pacientes.</p>
+                      </div>
 
                       {/* SECCIÓN PERFIL */}
                       <section className="space-y-4">
@@ -1844,25 +1824,30 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                           </div>
                       </section>
 
-                      {/* SECCIÓN PROMPTS IA */}
-                      <section className="space-y-6">
-                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Instrucciones de IA (Prompts)</h3>
-                          
-                          <div className="space-y-3">
-                              <label className="text-xs font-bold text-slate-500 uppercase block">Prompt para Valoración Clínica (Interno)</label>
-                              <textarea 
-                                  className="w-full h-48 p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none text-sm font-mono bg-slate-50"
-                                  value={tempConfig.clinicalPrompt}
-                                  onChange={e => setTempConfig({...tempConfig, clinicalPrompt: e.target.value})}
+                      {/* SECCIÓN URLs DE DESTINO */}
+                      <section className="space-y-4">
+                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">URLs de Destino</h3>
+                          <div className="space-y-4">
+                              <Input 
+                                  label="URL Base para Conclusión (Opcional)" 
+                                  placeholder="https://tudominio.com"
+                                  value={tempConfig.conclusionBaseUrl || ''} 
+                                  onChange={e => setTempConfig({...tempConfig, conclusionBaseUrl: e.target.value})} 
                               />
-                          </div>
-
-                          <div className="space-y-3">
-                              <label className="text-xs font-bold text-slate-500 uppercase block">Prompt para Conclusión Final (Paciente)</label>
-                              <textarea 
-                                  className="w-full h-48 p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none text-sm font-mono bg-slate-50"
-                                  value={tempConfig.conclusionPrompt}
-                                  onChange={e => setTempConfig({...tempConfig, conclusionPrompt: e.target.value})}
+                              <p className="text-[10px] text-slate-400 italic -mt-3">Si se deja en blanco, se usará el dominio actual.</p>
+                              
+                              <Input 
+                                  label="URL para Reservas (Botón 'Agendar Sesión')" 
+                                  placeholder="https://example.com/reserva"
+                                  value={tempConfig.bookingUrl || ''} 
+                                  onChange={e => setTempConfig({...tempConfig, bookingUrl: e.target.value})} 
+                              />
+                              
+                              <Input 
+                                  label="URL de Información (Botón 'Saber Más')" 
+                                  placeholder="https://example.com/terapias"
+                                  value={tempConfig.therapiesInfoUrl || ''} 
+                                  onChange={e => setTempConfig({...tempConfig, therapiesInfoUrl: e.target.value})} 
                               />
                           </div>
                       </section>
@@ -1891,6 +1876,153 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                               />
                           </div>
                       </section>
+
+                      {/* --- AJUSTES SENSIBLES --- */}
+                      {(!globalConfig?.authorizedEmails || globalConfig.authorizedEmails.split(',').map((e: string) => e.trim().toLowerCase()).includes(profile.email.toLowerCase())) && (
+                          <div className="mt-12 pt-8 border-t-4 border-red-100">
+                              <div className="mb-6 pb-2 border-b-2 border-red-200 flex items-center gap-3">
+                                  <i className="fas fa-shield-alt text-red-500 text-2xl"></i>
+                                  <div>
+                                      <h2 className="text-xl font-black text-red-800 uppercase tracking-widest">Ajustes Sensibles</h2>
+                                      <p className="text-sm text-red-600">Configuración crítica del sistema. Solo visible para administradores autorizados.</p>
+                                  </div>
+                              </div>
+
+                              <div className="space-y-10">
+                                  {/* SECCIÓN CORREOS AUTORIZADOS */}
+                                  <section className="space-y-4">
+                                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Acceso a Ajustes Sensibles</h3>
+                                      <div className="max-w-md">
+                                          <Input 
+                                              label="Correos Autorizados (separados por coma)" 
+                                              placeholder="admin@ejemplo.com, otro@ejemplo.com"
+                                              value={tempConfig.authorizedEmails || ''} 
+                                              onChange={e => setTempConfig({...tempConfig, authorizedEmails: e.target.value})} 
+                                          />
+                                          <p className="text-[10px] text-slate-400 italic mt-1">Si se deja en blanco, cualquier coordinador podrá ver esta sección.</p>
+                                      </div>
+                                  </section>
+
+                                  {/* SECCIÓN CLAVE DE ACCESO */}
+                                  <section className="space-y-4">
+                                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Clave de Acceso General</h3>
+                                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 flex items-start gap-3">
+                                          <i className="fas fa-exclamation-triangle text-amber-500 mt-1"></i>
+                                          <p className="text-sm text-amber-800">
+                                              Esta clave condiciona el acceso inicial a la app. Su pérdida u olvido supone la imposibilidad de acceso, recuperación o cambio de clave.
+                                          </p>
+                                      </div>
+                                      <div className="flex items-end gap-4 max-w-md">
+                                          <div className="flex-1">
+                                              <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Clave Actual: <span className="text-blue-600 ml-1">{tempConfig.accessCode}</span></label>
+                                              <Input 
+                                                  label="Nueva Clave"
+                                                  placeholder="Nueva clave (5 dígitos)" 
+                                                  maxLength={5} 
+                                                  value={newAccessCode} 
+                                                  onChange={e => setNewAccessCode(e.target.value.replace(/\D/g, ''))}
+                                              />
+                                          </div>
+                                          <Button 
+                                            onClick={() => setShowConfirmAccessCode(true)} 
+                                            disabled={newAccessCode.length < 5}
+                                            className="mb-1"
+                                          >
+                                              Cambiar
+                                          </Button>
+                                      </div>
+                                  </section>
+
+                                  {/* SECCIÓN PROMPTS IA */}
+                                  <section className="space-y-6">
+                                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Instrucciones de IA (Prompts)</h3>
+                                      
+                                      <div className="space-y-3">
+                                          <label className="text-xs font-bold text-slate-500 uppercase block">Prompt para Valoración Clínica (Interno)</label>
+                                          <textarea 
+                                              className="w-full h-48 p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none text-sm font-mono bg-slate-50"
+                                              value={tempConfig.clinicalPrompt}
+                                              onChange={e => setTempConfig({...tempConfig, clinicalPrompt: e.target.value})}
+                                          />
+                                      </div>
+
+                                      <div className="space-y-3">
+                                          <label className="text-xs font-bold text-slate-500 uppercase block">Prompt para Conclusión Final (Paciente)</label>
+                                          <textarea 
+                                              className="w-full h-48 p-4 rounded-xl border-2 border-slate-100 focus:border-blue-500 outline-none text-sm font-mono bg-slate-50"
+                                              value={tempConfig.conclusionPrompt}
+                                              onChange={e => setTempConfig({...tempConfig, conclusionPrompt: e.target.value})}
+                                          />
+                                      </div>
+                                  </section>
+
+                                  {/* SECCIÓN PANEL INFORMATIVO IA */}
+                                  <section className="space-y-6">
+                                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Estado de Proveedores IA (Panel Informativo)</h3>
+                                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                          <p className="text-sm text-slate-600 mb-4">
+                                              Este panel muestra el estado operativo de los motores de IA configurados. El sistema está preparado para utilizar un proveedor alternativo (fallback) si el principal falla o agota su cuota. <strong>No se muestran ni se guardan claves API aquí por seguridad.</strong>
+                                          </p>
+                                          
+                                          <div className="flex items-center gap-3 mb-6">
+                                              <label className="text-sm font-bold text-slate-700">Fallback Automático Activado:</label>
+                                              <button 
+                                                  onClick={() => setTempConfig({...tempConfig, aiFallbackEnabled: !tempConfig.aiFallbackEnabled})}
+                                                  className={`w-12 h-6 rounded-full relative transition-colors ${tempConfig.aiFallbackEnabled ? 'bg-green-500' : 'bg-slate-300'}`}
+                                              >
+                                                  <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${tempConfig.aiFallbackEnabled ? 'left-7' : 'left-1'}`}></div>
+                                              </button>
+                                          </div>
+
+                                          <div className="space-y-4">
+                                              {[0, 1, 2].map((index) => {
+                                                  const provider = tempConfig.aiProviders?.[index] || {
+                                                      id: `slot-${index+1}`,
+                                                      provider: index === 0 ? 'google' : 'none',
+                                                      model: index === 0 ? 'gemini-3.1-pro-preview' : '',
+                                                      enabled: index === 0,
+                                                      priority: index + 1,
+                                                      status: index === 0 ? 'active' : 'standby',
+                                                      reportsGenerated: 0
+                                                  };
+                                                  
+                                                  return (
+                                                      <div key={index} className={`p-4 rounded-xl border-2 ${provider.status === 'active' ? 'border-green-400 bg-green-50' : provider.status === 'failed' ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white'}`}>
+                                                          <div className="flex justify-between items-start mb-2">
+                                                              <div className="flex items-center gap-2">
+                                                                  <span className="font-black text-slate-700">Prioridad {provider.priority}</span>
+                                                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${provider.status === 'active' ? 'bg-green-200 text-green-800' : provider.status === 'failed' ? 'bg-red-200 text-red-800' : 'bg-slate-200 text-slate-600'}`}>
+                                                                      {provider.status}
+                                                                  </span>
+                                                              </div>
+                                                              <div className="text-xs text-slate-500">
+                                                                  Informes: <span className="font-bold">{provider.reportsGenerated}</span>
+                                                              </div>
+                                                          </div>
+                                                          <div className="grid grid-cols-2 gap-4">
+                                                              <div>
+                                                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Proveedor</label>
+                                                                  <div className="text-sm font-bold text-slate-800">{provider.provider || 'No configurado'}</div>
+                                                              </div>
+                                                              <div>
+                                                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Modelo</label>
+                                                                  <div className="text-sm font-mono text-slate-600">{provider.model || '-'}</div>
+                                                              </div>
+                                                          </div>
+                                                          {provider.status === 'failed' && provider.lastErrorCode && (
+                                                              <div className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
+                                                                  <strong>Último error:</strong> {provider.lastErrorCode}
+                                                              </div>
+                                                          )}
+                                                      </div>
+                                                  );
+                                              })}
+                                          </div>
+                                      </div>
+                                  </section>
+                              </div>
+                          </div>
+                      )}
                   </div>
 
                   <div className="p-6 border-t bg-slate-50 flex justify-end gap-4">

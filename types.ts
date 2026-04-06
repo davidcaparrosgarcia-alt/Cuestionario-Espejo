@@ -63,6 +63,23 @@ export interface Question {
   postOptionsAudio?: DualAudio;
 }
 
+export interface AIProviderStatus {
+  id: string;
+  provider: string;
+  model: string;
+  enabled: boolean;
+  priority: number;
+  status: 'active' | 'standby' | 'failed' | 'exhausted';
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastErrorCode?: string;
+  activeSince?: number;
+  reportsGenerated: number;
+  quotaExhausted?: boolean;
+  quotaExhaustedSince?: number;
+  circuitOpenUntil?: number;
+}
+
 // Configuración global de textos y flujos
 export interface GlobalConfig {
   welcomeText: string;
@@ -88,6 +105,16 @@ export interface GlobalConfig {
   questionnaireMessage?: string;
   conclusionMessage?: string;
   notificationEmails?: string;
+  
+  // Ajustes No Sensibles
+  conclusionBaseUrl?: string;
+  bookingUrl?: string;
+  therapiesInfoUrl?: string;
+  
+  // Ajustes Sensibles
+  authorizedEmails?: string;
+  aiFallbackEnabled?: boolean;
+  aiProviders?: AIProviderStatus[];
 }
 
 export enum Voice {

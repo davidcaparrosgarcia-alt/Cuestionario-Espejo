@@ -1,5 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
+import { DataService } from "./dataService";
 
 export class GeminiService {
   async summarizeSession(patient: any, answers: any, transcript: string): Promise<string> {
@@ -8,8 +9,36 @@ export class GeminiService {
       return res.internalReport;
   }
 
-  async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string): Promise<{ internalReport: string, externalConclusion: string }> {
+  async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string, globalConfig?: any): Promise<{ internalReport: string, externalConclusion: string }> {
+    // PREPARACIÓN PARA FALLBACK (Arquitectura futura)
+    // 1. Leer configuración de proveedores
+    let config = globalConfig;
+    if (!config) {
+        try {
+            config = await DataService.getGlobalConfig({} as any);
+        } catch (e) {
+            console.warn("No se pudo cargar globalConfig para fallback IA");
+        }
+    }
+    
+    const aiFallbackEnabled = config?.aiFallbackEnabled || false;
+    const providers = config?.aiProviders || [];
+    
+    // 2. Determinar proveedor activo (actualmente forzado a Gemini por compatibilidad)
+    let activeProvider = 'google';
+    let activeModel = 'gemini-3.1-pro-preview';
+    
+    if (aiFallbackEnabled && providers.length > 0) {
+        // Lógica futura: buscar el primer proveedor 'active' o 'standby' ordenado por prioridad
+        const preferred = providers.find((p: any) => p.enabled && (p.status === 'active' || p.status === 'standby'));
+        if (preferred) {
+            activeProvider = preferred.provider;
+            activeModel = preferred.model || activeModel;
+        }
+    }
+
     try {
+      // 3. Ejecutar con el proveedor seleccionado (Google GenAI)
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const defaultClinicalPrompt = `
@@ -55,7 +84,7 @@ export class GeminiService {
       `;
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model: activeModel,
         contents: prompt,
         config: {
             responseMimeType: "application/json",
@@ -72,12 +101,20 @@ export class GeminiService {
       
       const text = response.text || "{}";
       const data = JSON.parse(text);
+      
+      // 4. Registrar éxito (Lógica futura: actualizar lastSuccessAt, reportsGenerated en Firestore)
+      // if (aiFallbackEnabled) { updateProviderStatus(activeProvider, 'active', null); }
+
       return {
           internalReport: data.internalReport || "No se pudo generar la valoración automática.",
           externalConclusion: data.externalConclusion || "No se pudo generar la conclusión para el paciente."
       };
     } catch (e) {
       console.error("Error generating full report:", e);
+      
+      // 5. Registrar fallo (Lógica futura: actualizar lastFailureAt, status='failed', intentar fallback)
+      // if (aiFallbackEnabled) { updateProviderStatus(activeProvider, 'failed', e.message); }
+
       return {
           internalReport: "Error de conexión con el motor de análisis clínico.",
           externalConclusion: "Error de conexión con el motor de análisis clínico."
