@@ -106,7 +106,7 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    match /questionnaires/{docId} {
+    match /questionnaires/active {
       allow read, write: if true;
     }
 
@@ -115,7 +115,8 @@ service cloud.firestore {
     }
 
     match /test/{testId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }

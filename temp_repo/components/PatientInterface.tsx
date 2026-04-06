@@ -98,32 +98,31 @@ const CompassBackground = ({ isDarkMode }: { isDarkMode: boolean }) => (
  * para evitar saturar la cuota de localStorage.
  */
 const sanitizeForLocalCache = (data: any): any => {
-    if (data == null) return data;
-
-    if (typeof data === 'string') {
-        if (data.startsWith('data:audio/')) return undefined;
-        return data;
-    }
-
+    if (!data) return data;
+    
     if (Array.isArray(data)) {
-        return data
-            .map(item => sanitizeForLocalCache(item))
-            .filter(item => item !== undefined);
+        return data.map(item => sanitizeForLocalCache(item));
     }
-
-    if (typeof data === 'object') {
+    
+    if (typeof data === 'object' && data !== null) {
         const sanitized: any = {};
         for (const key in data) {
             if (Object.prototype.hasOwnProperty.call(data, key)) {
-                const value = sanitizeForLocalCache(data[key]);
-                if (value !== undefined) {
+                const value = data[key];
+                // Si es un string y empieza con data: (Base64), lo eliminamos de la copia local
+                if (typeof value === 'string' && value.startsWith('data:')) {
+                    // No incluimos esta propiedad en la copia saneada para ahorrar espacio
+                    continue;
+                } else if (typeof value === 'object' && value !== null) {
+                    sanitized[key] = sanitizeForLocalCache(value);
+                } else {
                     sanitized[key] = value;
                 }
             }
         }
         return sanitized;
     }
-
+    
     return data;
 };
 
