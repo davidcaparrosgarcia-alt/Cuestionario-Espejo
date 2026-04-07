@@ -165,8 +165,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     };
     fetchPendingRequests();
     
-    // Poll every 30 seconds
-    const interval = setInterval(fetchPendingRequests, 30000);
+    // Poll every 5 minutes (300000 ms) para reducir carga
+    const interval = setInterval(fetchPendingRequests, 300000);
     return () => clearInterval(interval);
   }, []);
   const [showRequestsDropdown, setShowRequestsDropdown] = useState(false);
