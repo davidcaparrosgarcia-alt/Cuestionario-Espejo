@@ -59,6 +59,64 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 const isBase64Audio = (str: any) => typeof str === 'string' && str.startsWith('data:audio/');
 const isAudioRef = (str: any) => typeof str === 'string' && str.startsWith('audio_ref_');
 
+const FirestoreDebug = {
+  stats: {
+    operations: {} as Record<string, number>,
+    paths: {} as Record<string, number>,
+    total: 0
+  },
+  verbose: false,
+  startTime: Date.now(),
+  lastReset: Date.now(),
+
+  log(operation: string, path: string) {
+    this.stats.total++;
+    this.stats.operations[operation] = (this.stats.operations[operation] || 0) + 1;
+    this.stats.paths[path] = (this.stats.paths[path] || 0) + 1;
+
+    if (this.verbose) {
+      console.log(`[FS-DEBUG] ${operation.toUpperCase()} ${path}`);
+    }
+  },
+
+  report() {
+    console.log("=== Firestore Operations Debug Report ===");
+    console.log(`Note: This is an approximate client-side counter, not official Google quota.`);
+    console.log(`Start Time: ${new Date(this.startTime).toISOString()}`);
+    console.log(`Last Reset: ${new Date(this.lastReset).toISOString()}`);
+    console.log(`Total Operations: ${this.stats.total}`);
+    console.log("\n--- By Operation ---");
+    console.table(this.stats.operations);
+    console.log("\n--- By Path ---");
+    console.table(this.stats.paths);
+    console.log("=========================================");
+  },
+
+  reset() {
+    this.stats = { operations: {}, paths: {}, total: 0 };
+    this.lastReset = Date.now();
+    console.log("[FS-DEBUG] Counters reset.");
+  },
+
+  getStats() {
+    return this.stats;
+  },
+
+  enableVerbose() {
+    this.verbose = true;
+    console.log("[FS-DEBUG] Verbose mode ENABLED.");
+  },
+
+  disableVerbose() {
+    this.verbose = false;
+    console.log("[FS-DEBUG] Verbose mode DISABLED.");
+  }
+};
+
+if (typeof window !== 'undefined') {
+  (window as any).FirestoreDebug = FirestoreDebug;
+}
+
 /**
  * Servicio unificado de datos.
  */
@@ -80,6 +138,7 @@ export const DataService = {
     
     try {
       const docRef = doc(db, 'questionnaires', 'active');
+      FirestoreDebug.log('get', 'questionnaires/active');
       const docSnap = await getDoc(docRef);
       if (!docSnap.exists()) {
         console.log("[MIGRATION] No active questionnaire found.");
@@ -107,7 +166,11 @@ export const DataService = {
               const val = obj[field];
               obj[field] = audioId;
               audioPromises.push(
-                setDoc(doc(db!, 'audios', audioId), { data: val }).then(() => { createdDocs++; })
+                (async () => {
+                  FirestoreDebug.log('write', 'audios/' + audioId);
+                  await setDoc(doc(db!, 'audios', audioId), { data: val });
+                  createdDocs++;
+                })()
               );
             }
           } else if (typeof obj[field] === 'object') {
@@ -118,7 +181,11 @@ export const DataService = {
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 obj[field][key] = audioId;
                 audioPromises.push(
-                  setDoc(doc(db!, 'audios', audioId), { data: val }).then(() => { createdDocs++; })
+                  (async () => {
+                    FirestoreDebug.log('write', 'audios/' + audioId);
+                    await setDoc(doc(db!, 'audios', audioId), { data: val });
+                    createdDocs++;
+                  })()
                 );
               }
             }
@@ -141,6 +208,7 @@ export const DataService = {
       console.log(`[MIGRATION] Uploaded ${createdDocs} audio documents.`);
 
       if (detectedAudios > 0) {
+        FirestoreDebug.log('write', 'questionnaires/active');
         await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
         console.log("[MIGRATION] Successfully updated questionnaires/active with references.");
       } else {
@@ -161,6 +229,7 @@ export const DataService = {
   async testConnection() {
     if (!db) return;
     try {
+      FirestoreDebug.log('get', 'test/connection');
       await getDocFromServer(doc(db, 'test', 'connection'));
     } catch (error) {
       if (error instanceof Error && error.message.includes('the client is offline')) {
@@ -188,6 +257,7 @@ export const DataService = {
           const path = 'questionnaires/active';
           try {
             const docRef = doc(db, 'questionnaires', 'active');
+            FirestoreDebug.log('get', 'questionnaires/active');
             const docSnap = await getDoc(docRef);
             if (docSnap.exists()) {
               const data = docSnap.data();
@@ -205,6 +275,7 @@ export const DataService = {
                      if (typeof obj[field] === 'string') {
                        if (isAudioRef(obj[field])) {
                          try {
+                           FirestoreDebug.log('get', 'audios/' + obj[field]);
                            const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
                            if (audioDoc.exists()) {
                              obj[field] = audioDoc.data().data;
@@ -220,6 +291,7 @@ export const DataService = {
                          const val = obj[field][key];
                          if (isAudioRef(val)) {
                            try {
+                             FirestoreDebug.log('get', 'audios/' + val);
                              const audioDoc = await getDoc(doc(db!, 'audios', val));
                              if (audioDoc.exists()) {
                                obj[field][key] = audioDoc.data().data;
@@ -294,7 +366,10 @@ export const DataService = {
               const val = obj[field];
               obj[field] = audioId;
               audioPromises.push(
-                setDoc(doc(db!, 'audios', audioId), { data: val })
+                (async () => {
+                  FirestoreDebug.log('write', 'audios/' + audioId);
+                  await setDoc(doc(db!, 'audios', audioId), { data: val });
+                })()
               );
             }
           } else if (typeof obj[field] === 'object') {
@@ -305,7 +380,10 @@ export const DataService = {
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 obj[field][key] = audioId;
                 audioPromises.push(
-                  setDoc(doc(db!, 'audios', audioId), { data: val })
+                  (async () => {
+                    FirestoreDebug.log('write', 'audios/' + audioId);
+                    await setDoc(doc(db!, 'audios', audioId), { data: val });
+                  })()
                 );
               }
             }
@@ -340,6 +418,7 @@ export const DataService = {
       console.log(`[TEST LOG] Tamaño aproximado de processedQuestions: ${questionsString.length} caracteres`);
 
       // Guardar el cuestionario con las referencias (mucho más ligero)
+      FirestoreDebug.log('write', 'questionnaires/active');
       await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
       console.log(`[TEST LOG] Cuestionario guardado exitosamente en questionnaires/active`);
       this._questionsCache = null; // Invalidate cache
@@ -370,6 +449,7 @@ export const DataService = {
               const path = 'config/global_config';
               try {
                   const docRef = doc(db, 'config', 'global_config');
+                  FirestoreDebug.log('get', 'config/global_config');
                   const docSnap = await getDoc(docRef);
                   if (docSnap.exists()) {
                       config = { ...config, ...docSnap.data() };
@@ -381,6 +461,7 @@ export const DataService = {
                           if (typeof obj[field] === 'string') {
                             if (isAudioRef(obj[field])) {
                               try {
+                                FirestoreDebug.log('get', 'audios/' + obj[field]);
                                 const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
                                 if (audioDoc.exists()) {
                                   obj[field] = audioDoc.data().data;
@@ -396,6 +477,7 @@ export const DataService = {
                               const val = obj[field][key];
                               if (isAudioRef(val)) {
                                 try {
+                                  FirestoreDebug.log('get', 'audios/' + val);
                                   const audioDoc = await getDoc(doc(db!, 'audios', val));
                                   if (audioDoc.exists()) {
                                     obj[field][key] = audioDoc.data().data;
@@ -460,7 +542,10 @@ export const DataService = {
               const val = obj[field];
               obj[field] = audioId;
               audioPromises.push(
-                setDoc(doc(db!, 'audios', audioId), { data: val })
+                (async () => {
+                  FirestoreDebug.log('write', 'audios/' + audioId);
+                  await setDoc(doc(db!, 'audios', audioId), { data: val });
+                })()
               );
             }
           } else if (typeof obj[field] === 'object') {
@@ -470,7 +555,10 @@ export const DataService = {
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 obj[field][key] = audioId;
                 audioPromises.push(
-                  setDoc(doc(db!, 'audios', audioId), { data: val })
+                  (async () => {
+                    FirestoreDebug.log('write', 'audios/' + audioId);
+                    await setDoc(doc(db!, 'audios', audioId), { data: val });
+                  })()
                 );
               }
             }
@@ -486,6 +574,7 @@ export const DataService = {
 
       await Promise.all(audioPromises);
 
+      FirestoreDebug.log('write', 'config/global_config');
       await setDoc(doc(db, 'config', 'global_config'), processedConfig);
       this._globalConfigCache = null; // Invalidate cache
     } catch (error) {
@@ -513,6 +602,7 @@ export const DataService = {
     this._userPromises[emailKey] = (async () => {
         try {
           const docRef = doc(db, 'users', emailKey);
+          FirestoreDebug.log('get', 'users/' + emailKey);
           const docSnap = await getDoc(docRef);
           if (docSnap.exists()) {
               const data = docSnap.data() as AuthUser;
@@ -539,6 +629,7 @@ export const DataService = {
     const emailKey = user.email.toLowerCase();
     const path = `users/${emailKey}`;
     try {
+      FirestoreDebug.log('write', 'users/' + emailKey);
       await setDoc(doc(db, 'users', emailKey), user);
       this._userCache[emailKey] = user;
     } catch (error) {
@@ -551,6 +642,7 @@ export const DataService = {
     const emailKey = email.toLowerCase();
     const path = `users/${emailKey}`;
     try {
+      FirestoreDebug.log('update', 'users/' + emailKey);
       await updateDoc(doc(db, 'users', emailKey), data);
       if (this._userCache[emailKey]) {
           this._userCache[emailKey] = { ...this._userCache[emailKey], ...data };
@@ -581,6 +673,7 @@ export const DataService = {
     
     this._patientsPromises[coordinatorEmail] = (async () => {
         try {
+          FirestoreDebug.log('list', 'patients');
           const q = query(collection(db, 'patients'), where('coordinatorEmail', '==', coordinatorEmail));
           const querySnapshot = await getDocs(q);
           const patients: PatientData[] = [];
@@ -594,6 +687,7 @@ export const DataService = {
             if (isAudioRef(patient.audioConclusion)) {
               resolvePromises.push((async () => {
                 try {
+                  FirestoreDebug.log('get', 'audios/' + patient.audioConclusion);
                   const audioDoc = await getDoc(doc(db!, 'audios', patient.audioConclusion!));
                   if (audioDoc.exists()) {
                     patient.audioConclusion = audioDoc.data().data;
@@ -635,9 +729,11 @@ export const DataService = {
         const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const audioData = processedPatient.audioConclusion;
         processedPatient.audioConclusion = audioId;
+        FirestoreDebug.log('write', 'audios/' + audioId);
         await setDoc(doc(db, 'audios', audioId), { data: audioData });
       }
 
+      FirestoreDebug.log('write', 'patients/' + patient.id);
       await setDoc(doc(db, 'patients', patient.id), processedPatient);
       // Invalidate cache
       if (patient.coordinatorEmail) {
@@ -659,9 +755,11 @@ export const DataService = {
         const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const audioData = processedData.audioConclusion;
         processedData.audioConclusion = audioId;
+        FirestoreDebug.log('write', 'audios/' + audioId);
         await setDoc(doc(db, 'audios', audioId), { data: audioData });
       }
 
+      FirestoreDebug.log('update', 'patients/' + patientId);
       await updateDoc(doc(db, 'patients', patientId), processedData);
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
@@ -674,6 +772,7 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
+      FirestoreDebug.log('delete', 'patients/' + patientId);
       await deleteDoc(doc(db, 'patients', patientId));
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
@@ -703,11 +802,13 @@ export const DataService = {
     this._patientByIdPromises[patientId] = (async () => {
         try {
           const docRef = doc(db, 'patients', patientId);
+          FirestoreDebug.log('get', 'patients/' + patientId);
           const docSnap = await getDoc(docRef);
           if (docSnap.exists()) {
             const patient = docSnap.data() as PatientData;
             if (isAudioRef(patient.audioConclusion)) {
               try {
+                FirestoreDebug.log('get', 'audios/' + patient.audioConclusion);
                 const audioDoc = await getDoc(doc(db, 'audios', patient.audioConclusion));
                 if (audioDoc.exists()) {
                   patient.audioConclusion = audioDoc.data().data;
