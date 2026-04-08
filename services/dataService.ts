@@ -131,6 +131,19 @@ export const DataService = {
   _patientByIdPromises: {} as Record<string, Promise<PatientData | null>>,
   _questionsCache: null as Question[] | null,
   _questionsPromise: null as Promise<Question[]> | null,
+  _audioRegistry: {} as Record<string, { ref: string, base64: string }>,
+
+  _getAudioRef(logicalKey: string, currentBase64: string): string | null {
+    const entry = this._audioRegistry[logicalKey];
+    if (entry && entry.base64 === currentBase64) {
+      return entry.ref;
+    }
+    return null;
+  },
+
+  _updateAudioRegistry(logicalKey: string, ref: string, base64: string) {
+    this._audioRegistry[logicalKey] = { ref, base64 };
+  },
   
   async migrateActiveQuestionnaireAudios() {
     if (!db) return { error: "No DB connection" };
@@ -270,36 +283,43 @@ export const DataService = {
                  }));
 
                  // Resolver referencias de audio
-                 const resolveAudioField = async (obj: any, field: string) => {
+                 const resolveAudioField = async (obj: any, field: string, baseKey: string) => {
                    if (obj && obj[field]) {
                      if (typeof obj[field] === 'string') {
                        if (isAudioRef(obj[field])) {
+                         const ref = obj[field];
                          try {
-                           FirestoreDebug.log('get', 'audios/' + obj[field]);
-                           const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
+                           FirestoreDebug.log('get', 'audios/' + ref);
+                           const audioDoc = await getDoc(doc(db!, 'audios', ref));
                            if (audioDoc.exists()) {
-                             obj[field] = audioDoc.data().data;
+                             const base64 = audioDoc.data().data;
+                             obj[field] = base64;
+                             this._updateAudioRegistry(baseKey, ref, base64);
                            } else {
                              obj[field] = undefined;
                            }
                          } catch (e) {
-                           console.error("Error loading audio ref", obj[field], e);
+                           console.error("Error loading audio ref", ref, e);
                          }
                        }
                      } else if (typeof obj[field] === 'object') {
                        for (const key of Object.keys(obj[field])) {
                          const val = obj[field][key];
                          if (isAudioRef(val)) {
+                           const ref = val;
+                           const variantKey = `${baseKey}:${key}`;
                            try {
-                             FirestoreDebug.log('get', 'audios/' + val);
-                             const audioDoc = await getDoc(doc(db!, 'audios', val));
+                             FirestoreDebug.log('get', 'audios/' + ref);
+                             const audioDoc = await getDoc(doc(db!, 'audios', ref));
                              if (audioDoc.exists()) {
-                               obj[field][key] = audioDoc.data().data;
+                               const base64 = audioDoc.data().data;
+                               obj[field][key] = base64;
+                               this._updateAudioRegistry(variantKey, ref, base64);
                              } else {
                                obj[field][key] = undefined;
                              }
                            } catch (e) {
-                             console.error("Error loading audio ref", val, e);
+                             console.error("Error loading audio ref", ref, e);
                            }
                          }
                        }
@@ -309,11 +329,16 @@ export const DataService = {
 
                  const resolvePromises: Promise<void>[] = [];
                  for (const q of questions) {
-                   resolvePromises.push(resolveAudioField(q, 'audio'));
-                   resolvePromises.push(resolveAudioField(q, 'postOptionsAudio'));
+                   const qKey = `question:${q.id}:audio`;
+                   const qPostKey = `question:${q.id}:postOptionsAudio`;
+                   resolvePromises.push(resolveAudioField(q, 'audio', qKey));
+                   resolvePromises.push(resolveAudioField(q, 'postOptionsAudio', qPostKey));
                    if (q.options) {
-                     for (const opt of q.options) {
-                       resolvePromises.push(resolveAudioField(opt, 'audio'));
+                     for (let oIdx = 0; oIdx < q.options.length; oIdx++) {
+                       const opt = q.options[oIdx];
+                       const optId = opt.key || `opt_${oIdx}`;
+                       const optKey = `question:${q.id}:option:${optId}:audio`;
+                       resolvePromises.push(resolveAudioField(opt, 'audio', optKey));
                      }
                    }
                  }
@@ -356,15 +381,38 @@ export const DataService = {
       const processedQuestions = JSON.parse(JSON.stringify(questions));
       const audioPromises: Promise<void>[] = [];
       let detectedAudios = 0;
+      let reusedAudios = 0;
+      let newAudiosUploaded = 0;
 
-      const processAudioField = (obj: any, field: string) => {
+      const newAudiosInOperation: Record<string, string> = {};
+
+      const processAudioField = (obj: any, field: string, baseKey: string) => {
         if (obj && obj[field]) {
           if (typeof obj[field] === 'string') {
-            if (isBase64Audio(obj[field])) {
+            const val = obj[field];
+            if (isAudioRef(val)) return;
+            if (isBase64Audio(val)) {
               detectedAudios++;
+              const existingRef = this._getAudioRef(baseKey, val);
+              if (existingRef) {
+                console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
+                obj[field] = existingRef;
+                reusedAudios++;
+                return;
+              }
+              
+              if (newAudiosInOperation[val]) {
+                obj[field] = newAudiosInOperation[val];
+                return;
+              }
+
               const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-              const val = obj[field];
+              console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
               obj[field] = audioId;
+              newAudiosInOperation[val] = audioId;
+              newAudiosUploaded++;
+              this._updateAudioRegistry(baseKey, audioId, val);
+              
               audioPromises.push(
                 (async () => {
                   FirestoreDebug.log('write', 'audios/' + audioId);
@@ -375,10 +423,30 @@ export const DataService = {
           } else if (typeof obj[field] === 'object') {
             for (const key of Object.keys(obj[field])) {
               const val = obj[field][key];
+              const variantKey = `${baseKey}:${key}`;
+              if (isAudioRef(val)) continue;
               if (isBase64Audio(val)) {
                 detectedAudios++;
+                const existingRef = this._getAudioRef(variantKey, val);
+                if (existingRef) {
+                  console.log(`[AUDIO-PERSIST] Reusing existing ref for ${variantKey} -> ${existingRef}`);
+                  obj[field][key] = existingRef;
+                  reusedAudios++;
+                  continue;
+                }
+                
+                if (newAudiosInOperation[val]) {
+                  obj[field][key] = newAudiosInOperation[val];
+                  continue;
+                }
+
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${variantKey} -> ${audioId}`);
                 obj[field][key] = audioId;
+                newAudiosInOperation[val] = audioId;
+                newAudiosUploaded++;
+                this._updateAudioRegistry(variantKey, audioId, val);
+                
                 audioPromises.push(
                   (async () => {
                     FirestoreDebug.log('write', 'audios/' + audioId);
@@ -391,18 +459,22 @@ export const DataService = {
         }
       };
 
-      for (const q of processedQuestions) {
-        processAudioField(q, 'audio');
-        processAudioField(q, 'postOptionsAudio');
+      for (let qIdx = 0; qIdx < processedQuestions.length; qIdx++) {
+        const q = processedQuestions[qIdx];
+        const qId = q.id || `legacy_${qIdx}`;
+        processAudioField(q, 'audio', `question:${qId}:audio`);
+        processAudioField(q, 'postOptionsAudio', `question:${qId}:postOptionsAudio`);
         if (q.options) {
-          for (const opt of q.options) {
-            processAudioField(opt, 'audio');
+          for (let oIdx = 0; oIdx < q.options.length; oIdx++) {
+            const opt = q.options[oIdx];
+            const optId = opt.key || `opt_${oIdx}`;
+            processAudioField(opt, 'audio', `question:${qId}:option:${optId}:audio`);
           }
         }
       }
 
-      console.log(`[TEST LOG] Audios detectados antes de guardar: ${detectedAudios}`);
-      console.log(`[TEST LOG] Intentando hacer ${audioPromises.length} setDoc a 'audios'`);
+      console.log(`[AUDIO-PERSIST] Total audios detected: ${detectedAudios}`);
+      console.log(`[AUDIO-PERSIST] Reused: ${reusedAudios}, New uploads: ${newAudiosUploaded}`);
 
       // Esperar a que todos los audios se guarden individualmente
       try {
@@ -456,36 +528,43 @@ export const DataService = {
                       foundRemote = true;
 
                       // Resolver referencias de audio en la configuración
-                      const resolveAudioField = async (obj: any, field: string) => {
+                      const resolveAudioField = async (obj: any, field: string, baseKey: string) => {
                         if (obj && obj[field]) {
                           if (typeof obj[field] === 'string') {
                             if (isAudioRef(obj[field])) {
+                              const ref = obj[field];
                               try {
-                                FirestoreDebug.log('get', 'audios/' + obj[field]);
-                                const audioDoc = await getDoc(doc(db!, 'audios', obj[field]));
+                                FirestoreDebug.log('get', 'audios/' + ref);
+                                const audioDoc = await getDoc(doc(db!, 'audios', ref));
                                 if (audioDoc.exists()) {
-                                  obj[field] = audioDoc.data().data;
+                                  const base64 = audioDoc.data().data;
+                                  obj[field] = base64;
+                                  this._updateAudioRegistry(baseKey, ref, base64);
                                 } else {
                                   obj[field] = undefined;
                                 }
                               } catch (e) {
-                                console.error("Error loading audio ref in config", obj[field], e);
+                                console.error("Error loading audio ref in config", ref, e);
                               }
                             }
                           } else if (typeof obj[field] === 'object') {
                             for (const key of Object.keys(obj[field])) {
                               const val = obj[field][key];
                               if (isAudioRef(val)) {
+                                const ref = val;
+                                const variantKey = `${baseKey}:${key}`;
                                 try {
-                                  FirestoreDebug.log('get', 'audios/' + val);
-                                  const audioDoc = await getDoc(doc(db!, 'audios', val));
+                                  FirestoreDebug.log('get', 'audios/' + ref);
+                                  const audioDoc = await getDoc(doc(db!, 'audios', ref));
                                   if (audioDoc.exists()) {
-                                    obj[field][key] = audioDoc.data().data;
+                                    const base64 = audioDoc.data().data;
+                                    obj[field][key] = base64;
+                                    this._updateAudioRegistry(variantKey, ref, base64);
                                   } else {
                                     obj[field][key] = undefined;
                                   }
                                 } catch (e) {
-                                  console.error("Error loading audio ref in config", val, e);
+                                  console.error("Error loading audio ref in config", ref, e);
                                 }
                               }
                             }
@@ -494,11 +573,11 @@ export const DataService = {
                       };
 
                       const resolvePromises: Promise<void>[] = [
-                        resolveAudioField(config, 'welcomeAudio'),
-                        resolveAudioField(config, 'nameQuestionAudio'),
-                        resolveAudioField(config, 'startAudio'),
-                        resolveAudioField(config, 'finishAudio'),
-                        resolveAudioField(config, 'afterSendAudio')
+                        resolveAudioField(config, 'welcomeAudio', 'globalConfig:welcomeAudio'),
+                        resolveAudioField(config, 'nameQuestionAudio', 'globalConfig:nameQuestionAudio'),
+                        resolveAudioField(config, 'startAudio', 'globalConfig:startAudio'),
+                        resolveAudioField(config, 'finishAudio', 'globalConfig:finishAudio'),
+                        resolveAudioField(config, 'afterSendAudio', 'globalConfig:afterSendAudio')
                       ];
                       await Promise.all(resolvePromises);
                       
@@ -533,14 +612,37 @@ export const DataService = {
     try {
       const processedConfig = JSON.parse(JSON.stringify(config));
       const audioPromises: Promise<void>[] = [];
+      let reusedAudios = 0;
+      let newAudiosUploaded = 0;
 
-      const processAudioField = (obj: any, field: string) => {
+      const newAudiosInOperation: Record<string, string> = {};
+
+      const processAudioField = (obj: any, field: string, baseKey: string) => {
         if (obj && obj[field]) {
           if (typeof obj[field] === 'string') {
-            if (isBase64Audio(obj[field])) {
+            const val = obj[field];
+            if (isAudioRef(val)) return;
+            if (isBase64Audio(val)) {
+              const existingRef = this._getAudioRef(baseKey, val);
+              if (existingRef) {
+                console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
+                obj[field] = existingRef;
+                reusedAudios++;
+                return;
+              }
+              
+              if (newAudiosInOperation[val]) {
+                obj[field] = newAudiosInOperation[val];
+                return;
+              }
+
               const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-              const val = obj[field];
+              console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
               obj[field] = audioId;
+              newAudiosInOperation[val] = audioId;
+              newAudiosUploaded++;
+              this._updateAudioRegistry(baseKey, audioId, val);
+              
               audioPromises.push(
                 (async () => {
                   FirestoreDebug.log('write', 'audios/' + audioId);
@@ -551,9 +653,29 @@ export const DataService = {
           } else if (typeof obj[field] === 'object') {
             for (const key of Object.keys(obj[field])) {
               const val = obj[field][key];
+              const variantKey = `${baseKey}:${key}`;
+              if (isAudioRef(val)) continue;
               if (isBase64Audio(val)) {
+                const existingRef = this._getAudioRef(variantKey, val);
+                if (existingRef) {
+                  console.log(`[AUDIO-PERSIST] Reusing existing ref for ${variantKey} -> ${existingRef}`);
+                  obj[field][key] = existingRef;
+                  reusedAudios++;
+                  continue;
+                }
+                
+                if (newAudiosInOperation[val]) {
+                  obj[field][key] = newAudiosInOperation[val];
+                  continue;
+                }
+
                 const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${variantKey} -> ${audioId}`);
                 obj[field][key] = audioId;
+                newAudiosInOperation[val] = audioId;
+                newAudiosUploaded++;
+                this._updateAudioRegistry(variantKey, audioId, val);
+                
                 audioPromises.push(
                   (async () => {
                     FirestoreDebug.log('write', 'audios/' + audioId);
@@ -566,11 +688,13 @@ export const DataService = {
         }
       };
 
-      processAudioField(processedConfig, 'welcomeAudio');
-      processAudioField(processedConfig, 'nameQuestionAudio');
-      processAudioField(processedConfig, 'startAudio');
-      processAudioField(processedConfig, 'finishAudio');
-      processAudioField(processedConfig, 'afterSendAudio');
+      processAudioField(processedConfig, 'welcomeAudio', 'globalConfig:welcomeAudio');
+      processAudioField(processedConfig, 'nameQuestionAudio', 'globalConfig:nameQuestionAudio');
+      processAudioField(processedConfig, 'startAudio', 'globalConfig:startAudio');
+      processAudioField(processedConfig, 'finishAudio', 'globalConfig:finishAudio');
+      processAudioField(processedConfig, 'afterSendAudio', 'globalConfig:afterSendAudio');
+
+      console.log(`[AUDIO-PERSIST] GlobalConfig - Reused: ${reusedAudios}, New uploads: ${newAudiosUploaded}`);
 
       await Promise.all(audioPromises);
 
@@ -685,17 +809,21 @@ export const DataService = {
             patients.push(patient);
             
             if (isAudioRef(patient.audioConclusion)) {
+              const ref = patient.audioConclusion;
+              const baseKey = `patient:${patient.id}:audioConclusion`;
               resolvePromises.push((async () => {
                 try {
-                  FirestoreDebug.log('get', 'audios/' + patient.audioConclusion);
-                  const audioDoc = await getDoc(doc(db!, 'audios', patient.audioConclusion!));
+                  FirestoreDebug.log('get', 'audios/' + ref);
+                  const audioDoc = await getDoc(doc(db!, 'audios', ref));
                   if (audioDoc.exists()) {
-                    patient.audioConclusion = audioDoc.data().data;
+                    const base64 = audioDoc.data().data;
+                    patient.audioConclusion = base64;
+                    this._updateAudioRegistry(baseKey, ref, base64);
                   } else {
                     patient.audioConclusion = undefined;
                   }
                 } catch (e) {
-                  console.error("Error loading audioConclusion ref", patient.audioConclusion, e);
+                  console.error("Error loading audioConclusion ref", ref, e);
                 }
               })());
             }
@@ -724,13 +852,22 @@ export const DataService = {
     const path = `patients/${patient.id}`;
     try {
       const processedPatient = JSON.parse(JSON.stringify(patient));
+      const baseKey = `patient:${patient.id}:audioConclusion`;
+      const val = processedPatient.audioConclusion;
 
-      if (isBase64Audio(processedPatient.audioConclusion)) {
-        const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        const audioData = processedPatient.audioConclusion;
-        processedPatient.audioConclusion = audioId;
-        FirestoreDebug.log('write', 'audios/' + audioId);
-        await setDoc(doc(db, 'audios', audioId), { data: audioData });
+      if (isBase64Audio(val)) {
+        const existingRef = this._getAudioRef(baseKey, val);
+        if (existingRef) {
+          console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
+          processedPatient.audioConclusion = existingRef;
+        } else {
+          const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+          console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
+          processedPatient.audioConclusion = audioId;
+          this._updateAudioRegistry(baseKey, audioId, val);
+          FirestoreDebug.log('write', 'audios/' + audioId);
+          await setDoc(doc(db, 'audios', audioId), { data: val });
+        }
       }
 
       FirestoreDebug.log('write', 'patients/' + patient.id);
@@ -750,13 +887,22 @@ export const DataService = {
     const path = `patients/${patientId}`;
     try {
       const processedData = JSON.parse(JSON.stringify(data));
+      const baseKey = `patient:${patientId}:audioConclusion`;
+      const val = processedData.audioConclusion;
 
-      if (isBase64Audio(processedData.audioConclusion)) {
-        const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        const audioData = processedData.audioConclusion;
-        processedData.audioConclusion = audioId;
-        FirestoreDebug.log('write', 'audios/' + audioId);
-        await setDoc(doc(db, 'audios', audioId), { data: audioData });
+      if (isBase64Audio(val)) {
+        const existingRef = this._getAudioRef(baseKey, val);
+        if (existingRef) {
+          console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
+          processedData.audioConclusion = existingRef;
+        } else {
+          const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+          console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
+          processedData.audioConclusion = audioId;
+          this._updateAudioRegistry(baseKey, audioId, val);
+          FirestoreDebug.log('write', 'audios/' + audioId);
+          await setDoc(doc(db, 'audios', audioId), { data: val });
+        }
       }
 
       FirestoreDebug.log('update', 'patients/' + patientId);
@@ -807,16 +953,20 @@ export const DataService = {
           if (docSnap.exists()) {
             const patient = docSnap.data() as PatientData;
             if (isAudioRef(patient.audioConclusion)) {
+              const ref = patient.audioConclusion;
+              const baseKey = `patient:${patientId}:audioConclusion`;
               try {
-                FirestoreDebug.log('get', 'audios/' + patient.audioConclusion);
-                const audioDoc = await getDoc(doc(db, 'audios', patient.audioConclusion));
+                FirestoreDebug.log('get', 'audios/' + ref);
+                const audioDoc = await getDoc(doc(db, 'audios', ref));
                 if (audioDoc.exists()) {
-                  patient.audioConclusion = audioDoc.data().data;
+                  const base64 = audioDoc.data().data;
+                  patient.audioConclusion = base64;
+                  this._updateAudioRegistry(baseKey, ref, base64);
                 } else {
                   patient.audioConclusion = undefined;
                 }
               } catch (e) {
-                console.error("Error loading audioConclusion ref", patient.audioConclusion, e);
+                console.error("Error loading audioConclusion ref", ref, e);
               }
             }
             this._patientByIdCache[patientId] = { data: patient, timestamp: Date.now() };
