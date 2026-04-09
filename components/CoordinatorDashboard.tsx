@@ -126,8 +126,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const [editingConclusion, setEditingConclusion] = useState('');
   const [editingAudio, setEditingAudio] = useState<string | undefined>(undefined);
+  const [resolvedAudioUrl, setResolvedAudioUrl] = useState<string | undefined>(undefined);
   
-  // Estados para Ajustes
+  useEffect(() => {
+      if (editingAudio && editingAudio.startsWith('audio_ref_')) {
+          DataService.resolveAudioRef(editingAudio).then(res => setResolvedAudioUrl(res || editingAudio));
+      } else {
+          setResolvedAudioUrl(editingAudio);
+      }
+  }, [editingAudio]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [globalConfig, setGlobalConfig] = useState<any>(null);
   const [tempConfig, setTempConfig] = useState<any>(null);
@@ -464,7 +471,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               telefono: fullPhone,
               id: idEncoded, 
               coordinatorEmail: profile.email,
-              status: 'pending', 
+              status: 'sent', 
               dateSent: now,
               accessPin: accessPin
             };
@@ -561,8 +568,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) {
-          if (file.size > 700000) {
-              triggerToast("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 700KB).");
+          if (file.size > 1572864) {
+              triggerToast("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 1.5MB).");
               return;
           }
           const reader = new FileReader();
@@ -1313,15 +1320,27 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <div>
                           <label className="block text-[11px] font-black uppercase text-slate-500 mb-2 tracking-widest">Filtrar por Estado</label>
                           <div className="flex flex-wrap gap-2">
-                              {['all', 'pending', 'sent', 'viewed', 'completed', 'concluded', 'finalized'].map(status => (
-                                  <button 
-                                    key={status}
-                                    onClick={() => setFilterStatus(status)}
-                                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                                  >
-                                      {statusLabels[status]}
-                                  </button>
-                              ))}
+                              {['all', 'pending', 'sent', 'viewed', 'completed', 'concluded', 'finalized'].map(status => {
+                                  const tooltips: Record<string, string> = {
+                                      all: "Mostrar todos los estados",
+                                      pending: "Creado, pero aún no se ha enviado el enlace",
+                                      sent: "Enlace enviado al paciente",
+                                      viewed: "El paciente ha abierto el enlace",
+                                      completed: "Cuestionario rellenado por el paciente",
+                                      concluded: "Conclusión enviada al paciente",
+                                      finalized: "Proceso terminado y cerrado"
+                                  };
+                                  return (
+                                      <button 
+                                        key={status}
+                                        onClick={() => setFilterStatus(status)}
+                                        title={tooltips[status]}
+                                        className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                      >
+                                          {statusLabels[status]}
+                                      </button>
+                                  );
+                              })}
                           </div>
                       </div>
                   </div>
@@ -1414,7 +1433,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <i className="fas fa-microphone mr-2"></i> Subir MP3 Personal
                                 <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
                             </label>
-                            {editingAudio ? <span className="text-xs font-bold text-green-600"><i className="fas fa-check"></i> Audio cargado</span> : <span className="text-xs text-slate-600 font-bold">Sin audio</span>}
+                            {editingAudio ? (
+                                <div className="flex items-center gap-3">
+                                    <span className="text-xs font-bold text-green-600"><i className="fas fa-check"></i> Audio cargado</span>
+                                    {resolvedAudioUrl && <audio src={resolvedAudioUrl} controls className="h-8 w-48" />}
+                                    <button onClick={() => setEditingAudio(undefined)} className="text-red-500 hover:text-red-700 text-xs font-bold" title="Eliminar audio"><i className="fas fa-trash"></i></button>
+                                </div>
+                            ) : <span className="text-xs text-slate-600 font-bold">Sin audio</span>}
                         </div>
                         
                         <button 

@@ -1086,7 +1086,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         if (isEditingGlobal) {
            const newConfig = { ...globalConfig };
            if (field === 'welcome') newConfig.welcomeAudio = { ...newConfig.welcomeAudio, [gender]: result };
-           if (field === 'name') newConfig.nameQuestionAudio = { ...newConfig.nameQuestionAudio, [gender]: result };
+           if (field === 'nameQuestion') newConfig.nameQuestionAudio = { ...newConfig.nameQuestionAudio, [gender]: result };
            if (field === 'start') newConfig.startAudio = { ...newConfig.startAudio, [gender]: result };
            if (field === 'finish') newConfig.finishAudio = { ...newConfig.finishAudio, [gender]: result };
            if (field === 'afterSend') newConfig.afterSendAudio = { ...newConfig.afterSendAudio, [gender]: result };
@@ -1638,7 +1638,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <i className="fas fa-info-circle mr-2"></i> Tip: Usa <strong>{'{{nombre}}'}</strong> para el nombre y <strong>@</strong> para el género (a/o).
                  </div>
 
-                 {[{id: 'welcome', label: '1. Mensaje de Bienvenida (Intro)'}, {id: 'name', label: '2. Pregunta por el Nombre'}, {id: 'start', label: '3. Mensaje Inicio Cuestionario'}, {id: 'finish', label: '4. Mensaje Final (Antes de Enviar)'}, {id: 'afterSend', label: '5. Mensaje Post-Envío'}].map((section) => (
+                 {[{id: 'welcome', label: '1. Mensaje de Bienvenida (Intro)'}, {id: 'nameQuestion', label: '2. Pregunta por el Nombre'}, {id: 'start', label: '3. Mensaje Inicio Cuestionario'}, {id: 'finish', label: '4. Mensaje Final (Antes de Enviar)'}, {id: 'afterSend', label: '5. Mensaje Post-Envío'}].map((section) => (
                     <div key={section.id} className="space-y-4 border-t border-white/10 pt-4">
                        <label className="block text-sm font-bold text-indigo-300">{section.label}</label>
                        <textarea className="w-full bg-white/5 border-2 border-white/10 rounded-xl p-3 text-sm font-medium outline-none focus:border-blue-500 text-white" value={(globalConfig as any)[`${section.id}Text`]} onChange={e => setGlobalConfig({...globalConfig, [`${section.id}Text`]: e.target.value})} rows={3} />
