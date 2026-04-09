@@ -154,14 +154,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   useEffect(() => {
     const fetchPendingRequests = async () => {
       try {
-        const res = await fetch('/api/requests');
+        const res = await fetch('/api/patient-requests');
         if (res.ok) {
           const contentType = res.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
             const data = await res.json();
             setPendingRequests(data);
           } else {
-            console.warn("Received non-JSON response from /api/requests");
+            console.warn("Received non-JSON response from /api/patient-requests");
           }
         } else {
           console.error(`Error fetching pending requests: ${res.status} ${res.statusText}`);
@@ -311,7 +311,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const deletePendingRequest = async (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
       try {
-          await fetch(`/api/requests/${id}`, { method: 'DELETE' });
+          await fetch(`/api/patient-requests/${id}`, { method: 'DELETE' });
           setPendingRequests(prev => prev.filter(r => r.id !== id));
       } catch (error) {
           console.error("Error deleting request:", error);

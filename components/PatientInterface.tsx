@@ -656,6 +656,29 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     pendingResolvesRef.current = [];
   };
 
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden || document.visibilityState === 'hidden') {
+        stopAudio();
+      }
+    };
+    
+    const handleBlur = () => {
+      stopAudio();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleBlur);
+    window.addEventListener('blur', handleBlur);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleBlur);
+      window.removeEventListener('blur', handleBlur);
+      stopAudio(); // También cortar al desmontar el componente
+    };
+  }, []);
+
   const playOrSpeak = async (text: string, audioData?: DualAudio): Promise<void> => {
     stopAudio(); // Cancelar cualquier audio previo inmediatamente
 
@@ -1283,13 +1306,14 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
               </button>
           )}
           
-          <div className="flex flex-wrap items-center gap-4 justify-end ml-auto"> 
+          <div className="flex flex-wrap items-center gap-3 justify-end ml-auto"> 
+             <button onClick={() => setIsDarkMode(!isDarkMode)} className={`w-10 h-10 rounded-full flex items-center justify-center transition-all border backdrop-blur-md shrink-0 ${isDarkMode ? 'bg-white/10 border-white/20 text-yellow-300 hover:bg-white/20' : 'bg-white border-white/40 text-indigo-900 hover:bg-indigo-50 shadow-sm'}`} title="Modo Día/Noche"><i className={`fas ${isDarkMode ? 'fa-sun' : 'fa-moon'} text-lg`}></i></button>
              <div className={`flex rounded-2xl p-1 border ${isDarkMode ? 'bg-black/20 border-white/10' : 'bg-blue-50/50 border-blue-100'}`}>
                 <button onClick={() => setVoice(Voice.FEMALE)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.FEMALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
-                    {isMobileDevice ? 'Voz clara' : 'Mujer'}
+                    Mujer
                 </button>
                 <button onClick={() => setVoice(Voice.MALE)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.MALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
-                    {isMobileDevice ? 'Voz calmada' : 'Hombre'}
+                    Hombre
                 </button>
                 <button onClick={() => { setVoice(Voice.NONE); stopAudio(); }} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.NONE ? 'bg-blue-900 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
                     Silencio
@@ -1301,17 +1325,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
               <button 
                 type="button"
                 onClick={() => setShowExitConfirm(true)}
-                className={`hidden lg:flex landscape:flex w-12 h-12 items-center justify-center rounded-full transition-all group shrink-0 relative z-[90] cursor-pointer ${buttonClasses}`}
+                className={`hidden lg:flex landscape:flex w-10 h-10 items-center justify-center rounded-full transition-all group shrink-0 relative z-[90] cursor-pointer ${buttonClasses}`}
                 title="Salir / Abandonar"
               >
-                <i className="fas fa-times text-xl"></i>
+                <i className="fas fa-times text-lg"></i>
               </button>
             )}
           </div>
         </div>
       </header>
 
-      <div className="flex-1 max-w-2xl mx-auto w-full px-4 pt-8 pb-32 overflow-visible relative z-10 no-print">
+      <div className="flex-1 max-w-2xl mx-auto w-full px-4 pt-8 pb-8 overflow-visible relative z-10 no-print">
         {step === 'locked' ? (
              <div className="min-h-[50vh] flex flex-col items-center justify-center p-8 text-center animate-in zoom-in-95">
                 <div className="w-24 h-24 bg-gray-200 text-gray-500 rounded-full flex items-center justify-center text-4xl mb-6 shadow-inner">
@@ -1328,6 +1352,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             {(step === 'verification' || step === 'pin_validation') && (
                 <div className="space-y-4 pb-4">
                     {transcript.map((msg, i) => <ChatBubble key={i} msg={msg} isDarkMode={isDarkMode} />)}
+                    
+                    {step === 'verification' && (
+                      <div className="flex gap-3 w-full animate-in slide-in-from-bottom-6 mt-6">
+                        <input type="text" placeholder="Escribe aquí..." className={`flex-1 px-6 py-4 rounded-2xl border-2 outline-none font-bold transition-all text-lg shadow-inner ${isDarkMode ? 'bg-black/30 border-white/10 text-white focus:border-blue-500' : 'bg-white/90 border-blue-100 focus:border-blue-500 text-slate-800'}`} value={inputValue} onChange={e => setInputValue(e.target.value)} onKeyPress={e => e.key === 'Enter' && inputValue && (handleVerification(inputValue), setInputValue(''))} />
+                        <Button onClick={() => { if(inputValue) { handleVerification(inputValue); setInputValue(''); } }} className="px-8 text-lg">Enviar</Button>
+                      </div>
+                    )}
                 </div>
             )}
 
@@ -1484,41 +1515,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         </>
         )}
       </div>
-
-      {(step === 'verification' || step === 'questionnaire') && (
-        <footer 
-            className="fixed bottom-0 left-0 right-0 p-4 border-t z-50 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] no-print bg-cover bg-center"
-            style={{ 
-                backgroundImage: "url('assets/fondomicrofono.webp')",
-            }}
-        >
-          {/* Overlay para legibilidad */}
-          <div className={`absolute inset-0 ${isDarkMode ? 'bg-[#0f172a]/30 mix-blend-multiply' : 'bg-white/20'}`}></div>
-          
-          <div className="max-w-xl mx-auto flex flex-col items-center relative z-10">
-            {step === 'verification' && (
-              <div className="flex gap-3 w-full max-w-md animate-in slide-in-from-bottom-6 mb-4">
-                <input type="text" placeholder="Escribe aquí..." className={`flex-1 px-6 py-4 rounded-2xl border-2 outline-none font-bold transition-all text-lg shadow-inner ${isDarkMode ? 'bg-black/30 border-white/10 text-white focus:border-blue-500' : 'bg-white/90 border-blue-100 focus:border-blue-500 text-slate-800'}`} value={inputValue} onChange={e => setInputValue(e.target.value)} onKeyPress={e => e.key === 'Enter' && inputValue && (handleVerification(inputValue), setInputValue(''))} />
-                <Button onClick={() => { if(inputValue) { handleVerification(inputValue); setInputValue(''); } }} className="px-8 text-lg">Enviar</Button>
-              </div>
-            )}
-            
-            {sttMessage && (
-                <div className="absolute -top-12 bg-black/80 text-white px-4 py-2 rounded-full text-sm font-bold animate-in fade-in slide-in-from-bottom-2">
-                    {isLoadingModel ? <i className="fas fa-spinner fa-spin mr-2"></i> : null}
-                    {sttMessage}
-                </div>
-            )}
-
-            <div className="flex items-center gap-8 pb-2">
-              <button onClick={() => setIsDarkMode(!isDarkMode)} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all border backdrop-blur-md ${isDarkMode ? 'bg-white/10 border-white/20 text-yellow-300 hover:bg-white/20' : 'bg-white border-white/40 text-indigo-900 hover:bg-indigo-50 shadow-lg'}`}><i className={`fas ${isDarkMode ? 'fa-sun' : 'fa-moon'} text-xl`}></i></button>
-              
-              <button disabled={voice === Voice.NONE || isLoadingModel} className={`w-16 h-16 rounded-full flex items-center justify-center shadow-2xl transition-all ${isRecording ? 'bg-red-500 animate-pulse scale-110 shadow-red-500/50' : 'bg-gradient-to-br from-blue-500 to-blue-700 hover:scale-105 shadow-blue-600/40' } text-white disabled:opacity-30 border-4 border-white`} onClick={handleMicClick}><i className={`fas ${isLoadingModel ? 'fa-spinner fa-spin' : isRecording ? 'fa-stop' : 'fa-microphone'} text-3xl`}></i></button>
-              <div className="flex gap-1.5 items-end h-8 min-w-[40px]">{isSpeaking && [1,2,3].map(i => <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-wave" style={{height: '60%', animationDelay: `${i*0.1}s`}}></div>)}</div>
-            </div>
-          </div>
-        </footer>
-      )}
       
       {/* Modals remain the same */}
       {toast && <Toast message={toast.message} visible={toast.visible} onHide={hideToast} />}

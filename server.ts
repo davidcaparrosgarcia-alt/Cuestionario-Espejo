@@ -26,7 +26,7 @@ async function startServer() {
   });
 
   // Endpoint to receive new patient requests from external web form
-  app.post("/api/requests", async (req, res) => {
+  app.post("/api/patient-requests", async (req, res) => {
     const requestData = req.body;
     
     // Validate requestData
@@ -94,12 +94,12 @@ async function startServer() {
     }
   });
 
-  app.get("/api/requests", (req, res) => {
-    console.log("GET /api/requests - Returning", pendingRequestsStore.length, "requests");
+  app.get("/api/patient-requests", (req, res) => {
+    console.log("GET /api/patient-requests - Returning", pendingRequestsStore.length, "requests");
     res.json(pendingRequestsStore);
   });
 
-  app.delete("/api/requests/:id", (req, res) => {
+  app.delete("/api/patient-requests/:id", (req, res) => {
     const id = req.params.id;
     pendingRequestsStore = pendingRequestsStore.filter(r => r.id !== id);
     res.json({ message: "Request deleted successfully" });

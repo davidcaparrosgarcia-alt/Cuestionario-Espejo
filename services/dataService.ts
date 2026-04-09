@@ -145,6 +145,56 @@ export const DataService = {
     this._audioRegistry[logicalKey] = { ref, base64 };
   },
 
+  async _cleanupOrphanedAudio(oldRef: string) {
+    if (!isAudioRef(oldRef) || !db) return;
+    
+    try {
+      let inUse = false;
+
+      // 1. Check global config
+      const configDoc = await getDoc(doc(db, 'config', 'global'));
+      if (configDoc.exists() && JSON.stringify(configDoc.data()).includes(oldRef)) {
+        inUse = true;
+      }
+
+      // 2. Check questionnaires
+      if (!inUse) {
+        const qDoc = await getDoc(doc(db, 'questionnaires', 'active'));
+        if (qDoc.exists() && JSON.stringify(qDoc.data()).includes(oldRef)) {
+          inUse = true;
+        }
+      }
+
+      // 3. Check patients
+      if (!inUse) {
+        const pQuery = query(collection(db, 'patients'));
+        const pDocs = await getDocs(pQuery);
+        for (const pDoc of pDocs.docs) {
+          if (JSON.stringify(pDoc.data()).includes(oldRef)) {
+            inUse = true;
+            break;
+          }
+        }
+      }
+
+      if (inUse) {
+        console.log(`[AUDIO-CLEANUP] Ref still in use, not deleted: ${oldRef}`);
+      } else {
+        console.log(`[AUDIO-CLEANUP] Deleted orphan ref: ${oldRef}`);
+        await deleteDoc(doc(db, 'audios', oldRef));
+        
+        // Remove from registry
+        for (const key of Object.keys(this._audioRegistry)) {
+          if (this._audioRegistry[key].ref === oldRef) {
+            delete this._audioRegistry[key];
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[AUDIO-CLEANUP] Error cleaning up orphaned audio", e);
+    }
+  },
+
   async resolveAudioRef(ref: string): Promise<string | undefined> {
     if (!isAudioRef(ref)) return ref; // Ya es base64 o undefined
     
@@ -344,6 +394,15 @@ export const DataService = {
     if (!db) return;
     const path = 'questionnaires/active';
     try {
+      // 1. Obtener referencias antiguas antes de guardar
+      const oldDoc = await getDoc(doc(db, 'questionnaires', 'active'));
+      const oldRefs = new Set<string>();
+      if (oldDoc.exists()) {
+        const oldStr = JSON.stringify(oldDoc.data());
+        const matches = oldStr.match(/audio_ref_[a-zA-Z0-9_]+/g);
+        if (matches) matches.forEach(m => oldRefs.add(m));
+      }
+
       // Copia profunda para no mutar el estado de la UI
       const processedQuestions = JSON.parse(JSON.stringify(questions));
       const audioPromises: Promise<void>[] = [];
@@ -461,6 +520,19 @@ export const DataService = {
       await setDoc(doc(db, 'questionnaires', 'active'), { questions: processedQuestions });
       console.log(`[TEST LOG] Cuestionario guardado exitosamente en questionnaires/active`);
       this._questionsCache = null; // Invalidate cache
+
+      // 2. Limpiar audios huérfanos
+      const newRefs = new Set<string>();
+      const newMatches = questionsString.match(/audio_ref_[a-zA-Z0-9_]+/g);
+      if (newMatches) newMatches.forEach(m => newRefs.add(m));
+
+      for (const oldRef of oldRefs) {
+        if (!newRefs.has(oldRef)) {
+          console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
+          await this._cleanupOrphanedAudio(oldRef);
+        }
+      }
+
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -525,6 +597,15 @@ export const DataService = {
     if (!db) return;
     const path = 'config/global_config';
     try {
+      // 1. Obtener referencias antiguas antes de guardar
+      const oldDoc = await getDoc(doc(db, 'config', 'global_config'));
+      const oldRefs = new Set<string>();
+      if (oldDoc.exists()) {
+        const oldStr = JSON.stringify(oldDoc.data());
+        const matches = oldStr.match(/audio_ref_[a-zA-Z0-9_]+/g);
+        if (matches) matches.forEach(m => oldRefs.add(m));
+      }
+
       const processedConfig = JSON.parse(JSON.stringify(config));
       const audioPromises: Promise<void>[] = [];
       let reusedAudios = 0;
@@ -613,9 +694,24 @@ export const DataService = {
 
       await Promise.all(audioPromises);
 
+      const configString = JSON.stringify(processedConfig);
+
       FirestoreDebug.log('write', 'config/global_config');
       await setDoc(doc(db, 'config', 'global_config'), processedConfig);
       this._globalConfigCache = null; // Invalidate cache
+
+      // 2. Limpiar audios huérfanos
+      const newRefs = new Set<string>();
+      const newMatches = configString.match(/audio_ref_[a-zA-Z0-9_]+/g);
+      if (newMatches) newMatches.forEach(m => newRefs.add(m));
+
+      for (const oldRef of oldRefs) {
+        if (!newRefs.has(oldRef)) {
+          console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
+          await this._cleanupOrphanedAudio(oldRef);
+        }
+      }
+
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -747,6 +843,13 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patient.id}`;
     try {
+      // 1. Obtener referencia antigua antes de guardar
+      const oldDoc = await getDoc(doc(db, 'patients', patient.id));
+      let oldRef: string | null = null;
+      if (oldDoc.exists() && isAudioRef(oldDoc.data().audioConclusion)) {
+        oldRef = oldDoc.data().audioConclusion;
+      }
+
       const processedPatient = JSON.parse(JSON.stringify(patient));
       const baseKey = `patient:${patient.id}:audioConclusion`;
       const val = processedPatient.audioConclusion;
@@ -773,6 +876,12 @@ export const DataService = {
           delete this._patientsCache[patient.coordinatorEmail];
       }
       delete this._patientByIdCache[patient.id];
+
+      // 2. Limpiar audio huérfano
+      if (oldRef && oldRef !== processedPatient.audioConclusion) {
+        console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
+        await this._cleanupOrphanedAudio(oldRef);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -782,6 +891,13 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
+      // 1. Obtener referencia antigua antes de guardar
+      const oldDoc = await getDoc(doc(db, 'patients', patientId));
+      let oldRef: string | null = null;
+      if (oldDoc.exists() && isAudioRef(oldDoc.data().audioConclusion)) {
+        oldRef = oldDoc.data().audioConclusion;
+      }
+
       const processedData = JSON.parse(JSON.stringify(data));
       const baseKey = `patient:${patientId}:audioConclusion`;
       const val = processedData.audioConclusion;
@@ -805,6 +921,12 @@ export const DataService = {
       await updateDoc(doc(db, 'patients', patientId), processedData);
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
+
+      // 2. Limpiar audio huérfano
+      if (oldRef && 'audioConclusion' in processedData && oldRef !== processedData.audioConclusion) {
+        console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
+        await this._cleanupOrphanedAudio(oldRef);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
     }
