@@ -338,27 +338,32 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
   };
 
-  const toggleStatus = async (id: string) => {
-    let newStatus: 'pending' | 'sent' = 'pending';
+  const changeStatus = async (id: string, direction: 'forward' | 'backward') => {
+    const statusOrder: PatientData['status'][] = ['pending', 'sent', 'viewed', 'completed', 'concluded', 'finalized'];
+    
+    let newStatus: PatientData['status'] | null = null;
+    
     const updated = registry.map(r => {
       if (r.id === id) {
-        if (r.status === 'pending') {
-            newStatus = 'sent';
-            return { ...r, status: 'sent' as const };
-        } else if (r.status === 'sent') {
-            newStatus = 'pending';
-            return { ...r, status: 'pending' as const };
+        const currentIndex = statusOrder.indexOf(r.status);
+        if (direction === 'forward' && currentIndex < statusOrder.length - 1) {
+            newStatus = statusOrder[currentIndex + 1];
+            return { ...r, status: newStatus };
+        } else if (direction === 'backward' && currentIndex > 0) {
+            newStatus = statusOrder[currentIndex - 1];
+            return { ...r, status: newStatus };
         }
       }
       return r;
     });
     
-    setRegistry(updated);
-    try {
-      await DataService.updatePatient(id, { status: newStatus });
-      triggerToast(`Estado actualizado a ${newStatus.toUpperCase()}`);
-    } catch (e) {
-      triggerToast("Error al actualizar el estado");
+    if (newStatus) {
+        setRegistry(updated);
+        try {
+          await DataService.updatePatient(id, { status: newStatus });
+        } catch (e) {
+          console.error("Error al actualizar el estado", e);
+        }
     }
   };
 
@@ -1323,22 +1328,36 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                               {['all', 'pending', 'sent', 'viewed', 'completed', 'concluded', 'finalized'].map(status => {
                                   const tooltips: Record<string, string> = {
                                       all: "Mostrar todos los estados",
-                                      pending: "Creado, pero aún no se ha enviado el enlace",
-                                      sent: "Enlace enviado al paciente",
-                                      viewed: "El paciente ha abierto el enlace",
-                                      completed: "Cuestionario rellenado por el paciente",
-                                      concluded: "Conclusión enviada al paciente",
-                                      finalized: "Proceso terminado y cerrado"
+                                      pending: "Datos del paciente introducidos pendiente de envío del Cuestionario.",
+                                      sent: "El enlace y clave se han enviado, pero aún no ha sido abierto por el paciente.",
+                                      viewed: "El paciente ha entrado en el cuestionario pero aún no lo ha completado.",
+                                      completed: "Se ha completado el cuestionario y queda pendiente de enviar la conclusión.",
+                                      concluded: "Se le ha enviado al paciente la conclusión de su cuestionario.",
+                                      finalized: "El cliente ha visto su conclusión, se da por finalizado este proceso."
                                   };
                                   return (
-                                      <button 
-                                        key={status}
-                                        onClick={() => setFilterStatus(status)}
-                                        title={tooltips[status]}
-                                        className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors ${filterStatus === status ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                                      >
-                                          {statusLabels[status]}
-                                      </button>
+                                      <div key={status} className="relative group">
+                                          <button 
+                                            onClick={(e) => {
+                                                // En móvil, el primer toque muestra el tooltip (que se maneja por hover/focus en CSS)
+                                                // Si ya está activo (o no es táctil), aplica el filtro
+                                                if (window.matchMedia("(hover: none)").matches) {
+                                                    if (document.activeElement !== e.currentTarget) {
+                                                        e.currentTarget.focus();
+                                                        return;
+                                                    }
+                                                }
+                                                setFilterStatus(status);
+                                            }}
+                                            className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors focus:outline-none ${filterStatus === status ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 focus:bg-slate-200'}`}
+                                          >
+                                              {statusLabels[status]}
+                                          </button>
+                                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-[10px] rounded shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-all z-50 pointer-events-none text-center leading-tight">
+                                              {tooltips[status]}
+                                              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                          </div>
+                                      </div>
                                   );
                               })}
                           </div>
@@ -1543,25 +1562,41 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             <span className="text-xs text-slate-400 font-bold truncate">{p.email}</span>
                             </div>
                             
-                            <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center gap-1 shrink-0">
                             <button 
-                                onClick={() => toggleStatus(p.id)}
-                                className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg transition-colors cursor-pointer hover:scale-105 active:scale-95 ${
+                                onClick={() => changeStatus(p.id, 'backward')}
+                                disabled={p.status === 'pending'}
+                                className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
+                                title="Retroceder estado"
+                            >
+                                <i className="fas fa-chevron-left text-xs"></i>
+                            </button>
+                            
+                            <div 
+                                className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg text-center min-w-[80px] ${
                                 p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
-                                p.status === 'pending' ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' : 
-                                p.status === 'sent' ? 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100' : 
+                                p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
+                                p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
                                 p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
                                 p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
                                 p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
                                 }`}
-                                title="Clic para cambiar estado (Pendiente <-> Enviado)"
                             >
                                 {statusLabels[p.status]}
+                            </div>
+
+                            <button 
+                                onClick={() => changeStatus(p.id, 'forward')}
+                                disabled={p.status === 'finalized'}
+                                className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
+                                title="Avanzar estado"
+                            >
+                                <i className="fas fa-chevron-right text-xs"></i>
                             </button>
                             
                             <button 
                                 onClick={() => deleteRecord(p.id)}
-                                className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                className="p-2 ml-1 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
                             >
                                 <i className="fas fa-trash"></i>
                             </button>
