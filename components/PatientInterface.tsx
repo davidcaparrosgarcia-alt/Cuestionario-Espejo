@@ -253,9 +253,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   // --- Audio Preloading ---
   const preloadedAudiosRef = useRef<Record<string, HTMLAudioElement>>({});
 
-  const preloadAudio = (url: string) => {
+  const preloadAudio = async (url: string) => {
     if (!url || preloadedAudiosRef.current[url]) return;
-    const audio = new Audio(url);
+    
+    let finalUrl = url;
+    if (url.startsWith('audio_ref_')) {
+        finalUrl = await DataService.resolveAudioRef(url) || url;
+    }
+    
+    // Check again in case it was preloaded while we were resolving
+    if (preloadedAudiosRef.current[url]) return;
+    
+    const audio = new Audio(finalUrl);
     audio.preload = 'auto';
     preloadedAudiosRef.current[url] = audio;
   };
@@ -671,28 +680,37 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
           }
 
           if (customUrl) {
-            let audio = preloadedAudiosRef.current[customUrl];
-            if (!audio) {
-              audio = new Audio(customUrl);
-            }
-            currentAudioRef.current = audio;
-            audio.onended = () => {
-              setIsSpeaking(false);
-              currentAudioRef.current = null;
-              pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
-              resolve();
-            };
-            audio.onerror = () => {
-              console.warn("Error reproduciendo audio custom, usando voz nativa");
-              speakNative(text, () => {
+            const playResolved = async () => {
+                let finalUrl = customUrl;
+                if (customUrl.startsWith('audio_ref_')) {
+                    finalUrl = await DataService.resolveAudioRef(customUrl) || customUrl;
+                }
+                
+                let audio = preloadedAudiosRef.current[customUrl];
+                if (!audio) {
+                  audio = new Audio(finalUrl);
+                  preloadedAudiosRef.current[customUrl] = audio;
+                }
+                currentAudioRef.current = audio;
+                audio.onended = () => {
+                  setIsSpeaking(false);
+                  currentAudioRef.current = null;
                   pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
                   resolve();
-              });
+                };
+                audio.onerror = () => {
+                  console.warn("Error reproduciendo audio custom, usando voz nativa");
+                  speakNative(text, () => {
+                      pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
+                      resolve();
+                  });
+                };
+                audio.play().catch(() => speakNative(text, () => {
+                    pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
+                    resolve();
+                }));
             };
-            audio.play().catch(() => speakNative(text, () => {
-                pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
-                resolve();
-            }));
+            playResolved();
             return;
           }
 

@@ -144,6 +144,31 @@ export const DataService = {
   _updateAudioRegistry(logicalKey: string, ref: string, base64: string) {
     this._audioRegistry[logicalKey] = { ref, base64 };
   },
+
+  async resolveAudioRef(ref: string): Promise<string | undefined> {
+    if (!isAudioRef(ref)) return ref; // Ya es base64 o undefined
+    
+    // Buscar en caché local primero
+    const entries = Object.values(this._audioRegistry) as Array<{ ref: string, base64: string }>;
+    const entry = entries.find(e => e.ref === ref);
+    if (entry) return entry.base64;
+
+    if (!db) return undefined;
+
+    try {
+      FirestoreDebug.log('get', 'audios/' + ref);
+      const audioDoc = await getDoc(doc(db, 'audios', ref));
+      if (audioDoc.exists()) {
+        const base64 = audioDoc.data().data;
+        // Guardamos en registro con una clave genérica para evitar futuras lecturas del mismo ref
+        this._updateAudioRegistry(`resolved_${ref}`, ref, base64);
+        return base64;
+      }
+    } catch (e) {
+      console.error("Error resolving audio ref", ref, e);
+    }
+    return undefined;
+  },
   
   async migrateActiveQuestionnaireAudios() {
     if (!db) return { error: "No DB connection" };
@@ -282,67 +307,9 @@ export const DataService = {
                      id: q.id ? String(q.id) : `legacy_${idx}`
                  }));
 
-                 // Resolver referencias de audio
-                 const resolveAudioField = async (obj: any, field: string, baseKey: string) => {
-                   if (obj && obj[field]) {
-                     if (typeof obj[field] === 'string') {
-                       if (isAudioRef(obj[field])) {
-                         const ref = obj[field];
-                         try {
-                           FirestoreDebug.log('get', 'audios/' + ref);
-                           const audioDoc = await getDoc(doc(db!, 'audios', ref));
-                           if (audioDoc.exists()) {
-                             const base64 = audioDoc.data().data;
-                             obj[field] = base64;
-                             this._updateAudioRegistry(baseKey, ref, base64);
-                           } else {
-                             obj[field] = undefined;
-                           }
-                         } catch (e) {
-                           console.error("Error loading audio ref", ref, e);
-                         }
-                       }
-                     } else if (typeof obj[field] === 'object') {
-                       for (const key of Object.keys(obj[field])) {
-                         const val = obj[field][key];
-                         if (isAudioRef(val)) {
-                           const ref = val;
-                           const variantKey = `${baseKey}:${key}`;
-                           try {
-                             FirestoreDebug.log('get', 'audios/' + ref);
-                             const audioDoc = await getDoc(doc(db!, 'audios', ref));
-                             if (audioDoc.exists()) {
-                               const base64 = audioDoc.data().data;
-                               obj[field][key] = base64;
-                               this._updateAudioRegistry(variantKey, ref, base64);
-                             } else {
-                               obj[field][key] = undefined;
-                             }
-                           } catch (e) {
-                             console.error("Error loading audio ref", ref, e);
-                           }
-                         }
-                       }
-                     }
-                   }
-                 };
-
-                 const resolvePromises: Promise<void>[] = [];
-                 for (const q of questions) {
-                   const qKey = `question:${q.id}:audio`;
-                   const qPostKey = `question:${q.id}:postOptionsAudio`;
-                   resolvePromises.push(resolveAudioField(q, 'audio', qKey));
-                   resolvePromises.push(resolveAudioField(q, 'postOptionsAudio', qPostKey));
-                   if (q.options) {
-                     for (let oIdx = 0; oIdx < q.options.length; oIdx++) {
-                       const opt = q.options[oIdx];
-                       const optId = opt.key || `opt_${oIdx}`;
-                       const optKey = `question:${q.id}:option:${optId}:audio`;
-                       resolvePromises.push(resolveAudioField(opt, 'audio', optKey));
-                     }
-                   }
-                 }
-                 await Promise.all(resolvePromises);
+                 // Resolver referencias de audio de forma diferida (ya no se hace aquí)
+                 // La UI (PatientInterface) se encargará de resolverlas on-demand usando resolveAudioRef
+                 // Esto reduce drásticamente las lecturas a Firestore al abrir el editor o iniciar sesión
               }
             }
           } catch (error) {
@@ -527,60 +494,8 @@ export const DataService = {
                       config = { ...config, ...docSnap.data() };
                       foundRemote = true;
 
-                      // Resolver referencias de audio en la configuración
-                      const resolveAudioField = async (obj: any, field: string, baseKey: string) => {
-                        if (obj && obj[field]) {
-                          if (typeof obj[field] === 'string') {
-                            if (isAudioRef(obj[field])) {
-                              const ref = obj[field];
-                              try {
-                                FirestoreDebug.log('get', 'audios/' + ref);
-                                const audioDoc = await getDoc(doc(db!, 'audios', ref));
-                                if (audioDoc.exists()) {
-                                  const base64 = audioDoc.data().data;
-                                  obj[field] = base64;
-                                  this._updateAudioRegistry(baseKey, ref, base64);
-                                } else {
-                                  obj[field] = undefined;
-                                }
-                              } catch (e) {
-                                console.error("Error loading audio ref in config", ref, e);
-                              }
-                            }
-                          } else if (typeof obj[field] === 'object') {
-                            for (const key of Object.keys(obj[field])) {
-                              const val = obj[field][key];
-                              if (isAudioRef(val)) {
-                                const ref = val;
-                                const variantKey = `${baseKey}:${key}`;
-                                try {
-                                  FirestoreDebug.log('get', 'audios/' + ref);
-                                  const audioDoc = await getDoc(doc(db!, 'audios', ref));
-                                  if (audioDoc.exists()) {
-                                    const base64 = audioDoc.data().data;
-                                    obj[field][key] = base64;
-                                    this._updateAudioRegistry(variantKey, ref, base64);
-                                  } else {
-                                    obj[field][key] = undefined;
-                                  }
-                                } catch (e) {
-                                  console.error("Error loading audio ref in config", ref, e);
-                                }
-                              }
-                            }
-                          }
-                        }
-                      };
-
-                      const resolvePromises: Promise<void>[] = [
-                        resolveAudioField(config, 'welcomeAudio', 'globalConfig:welcomeAudio'),
-                        resolveAudioField(config, 'nameQuestionAudio', 'globalConfig:nameQuestionAudio'),
-                        resolveAudioField(config, 'startAudio', 'globalConfig:startAudio'),
-                        resolveAudioField(config, 'finishAudio', 'globalConfig:finishAudio'),
-                        resolveAudioField(config, 'afterSendAudio', 'globalConfig:afterSendAudio')
-                      ];
-                      await Promise.all(resolvePromises);
-                      
+                      // Hidratación diferida: no resolvemos los audios aquí
+                      // La UI (PatientInterface) se encargará de resolverlas on-demand
                       this._globalConfigCache = config;
                   }
               } catch (error) {
@@ -802,34 +717,15 @@ export const DataService = {
           const querySnapshot = await getDocs(q);
           const patients: PatientData[] = [];
           
-          const resolvePromises: Promise<void>[] = [];
-          
           querySnapshot.forEach((docSnap) => {
             const patient = docSnap.data() as PatientData;
             patients.push(patient);
             
-            if (isAudioRef(patient.audioConclusion)) {
-              const ref = patient.audioConclusion;
-              const baseKey = `patient:${patient.id}:audioConclusion`;
-              resolvePromises.push((async () => {
-                try {
-                  FirestoreDebug.log('get', 'audios/' + ref);
-                  const audioDoc = await getDoc(doc(db!, 'audios', ref));
-                  if (audioDoc.exists()) {
-                    const base64 = audioDoc.data().data;
-                    patient.audioConclusion = base64;
-                    this._updateAudioRegistry(baseKey, ref, base64);
-                  } else {
-                    patient.audioConclusion = undefined;
-                  }
-                } catch (e) {
-                  console.error("Error loading audioConclusion ref", ref, e);
-                }
-              })());
-            }
+            // Hidratación diferida: no resolvemos el audioConclusion aquí para evitar N lecturas
+            // La UI (CoordinatorDashboard) solo necesita saber si existe (truthy)
           });
           
-          await Promise.all(resolvePromises);
+          // await Promise.all(resolvePromises);
           
           this._patientsCache[coordinatorEmail] = { data: patients, timestamp: Date.now() };
           return patients;
