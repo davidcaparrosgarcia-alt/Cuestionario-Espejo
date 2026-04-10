@@ -195,17 +195,9 @@ export const DataService = {
           } else {
             await updateDoc(docRef, { usedBy });
           }
-        } else if (!usedBy || data.legacy) {
-          // Si es legacy y no tiene usedBy, o si se está eliminando y no estaba en usedBy,
-          // asumimos que es huérfano porque ya no hacemos escaneos globales.
-          console.log(`[AUDIO-CLEANUP] Deleted legacy orphan ref: ${audioRef}`);
-          await deleteDoc(docRef);
-          // Remove from registry
-          for (const key of Object.keys(this._audioRegistry)) {
-            if (this._audioRegistry[key].ref === audioRef) {
-              delete this._audioRegistry[key];
-            }
-          }
+        } else if (!usedBy) {
+          console.log(`[AUDIO-CLEANUP] Legacy audio detected, skipping automatic delete: ${audioRef}`);
+          return;
         }
       }
     } catch (e) {
