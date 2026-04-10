@@ -145,54 +145,168 @@ export const DataService = {
     this._audioRegistry[logicalKey] = { ref, base64 };
   },
 
-  async _cleanupOrphanedAudio(oldRef: string) {
-    if (!isAudioRef(oldRef) || !db) return;
-    
+  async _addAudioUsage(audioRef: string, logicalKey: string) {
+    if (!isAudioRef(audioRef) || !db) return;
     try {
-      let inUse = false;
-
-      // 1. Check global config
-      const configDoc = await getDoc(doc(db, 'config', 'global'));
-      if (configDoc.exists() && JSON.stringify(configDoc.data()).includes(oldRef)) {
-        inUse = true;
-      }
-
-      // 2. Check questionnaires
-      if (!inUse) {
-        const qDoc = await getDoc(doc(db, 'questionnaires', 'active'));
-        if (qDoc.exists() && JSON.stringify(qDoc.data()).includes(oldRef)) {
-          inUse = true;
-        }
-      }
-
-      // 3. Check patients
-      if (!inUse) {
-        const pQuery = query(collection(db, 'patients'));
-        const pDocs = await getDocs(pQuery);
-        for (const pDoc of pDocs.docs) {
-          if (JSON.stringify(pDoc.data()).includes(oldRef)) {
-            inUse = true;
-            break;
-          }
-        }
-      }
-
-      if (inUse) {
-        console.log(`[AUDIO-CLEANUP] Ref still in use, not deleted: ${oldRef}`);
-      } else {
-        console.log(`[AUDIO-CLEANUP] Deleted orphan ref: ${oldRef}`);
-        await deleteDoc(doc(db, 'audios', oldRef));
+      const docRef = doc(db, 'audios', audioRef);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const isLegacy = data.usedBy === undefined;
+        const usedBy = data.usedBy || {};
         
-        // Remove from registry
-        for (const key of Object.keys(this._audioRegistry)) {
-          if (this._audioRegistry[key].ref === oldRef) {
-            delete this._audioRegistry[key];
+        if (!usedBy[logicalKey]) {
+          usedBy[logicalKey] = true;
+          const updateData: any = { usedBy };
+          if (isLegacy) {
+            updateData.legacy = true;
+          }
+          await updateDoc(docRef, updateData);
+          console.log(`[AUDIO-REFS] Added logicalKey to usedBy: ${logicalKey} -> ${audioRef}`);
+        }
+      }
+    } catch (e) {
+      console.error("[AUDIO-REFS] Error adding usage", e);
+    }
+  },
+
+  async _removeAudioUsage(audioRef: string, logicalKey: string) {
+    if (!isAudioRef(audioRef) || !db) return;
+    try {
+      const docRef = doc(db, 'audios', audioRef);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const usedBy = data.usedBy;
+        
+        if (usedBy && usedBy[logicalKey]) {
+          delete usedBy[logicalKey];
+          console.log(`[AUDIO-REFS] Removed logicalKey from usedBy: ${logicalKey} -> ${audioRef}`);
+          
+          if (Object.keys(usedBy).length === 0) {
+            console.log(`[AUDIO-CLEANUP] Deleted orphan ref with empty usedBy: ${audioRef}`);
+            await deleteDoc(docRef);
+            // Remove from registry
+            for (const key of Object.keys(this._audioRegistry)) {
+              if (this._audioRegistry[key].ref === audioRef) {
+                delete this._audioRegistry[key];
+              }
+            }
+          } else {
+            await updateDoc(docRef, { usedBy });
+          }
+        } else if (!usedBy || data.legacy) {
+          // Si es legacy y no tiene usedBy, o si se está eliminando y no estaba en usedBy,
+          // asumimos que es huérfano porque ya no hacemos escaneos globales.
+          console.log(`[AUDIO-CLEANUP] Deleted legacy orphan ref: ${audioRef}`);
+          await deleteDoc(docRef);
+          // Remove from registry
+          for (const key of Object.keys(this._audioRegistry)) {
+            if (this._audioRegistry[key].ref === audioRef) {
+              delete this._audioRegistry[key];
+            }
           }
         }
       }
     } catch (e) {
-      console.error("[AUDIO-CLEANUP] Error cleaning up orphaned audio", e);
+      console.error("[AUDIO-REFS] Error removing usage", e);
     }
+  },
+
+  async _syncAudioRefs(oldMappings: Record<string, string>, newMappings: Record<string, string>) {
+    const promises: Promise<void>[] = [];
+
+    // Find removed or changed mappings
+    for (const [logicalKey, oldRef] of Object.entries(oldMappings)) {
+      if (newMappings[logicalKey] !== oldRef) {
+        promises.push(this._removeAudioUsage(oldRef, logicalKey));
+      }
+    }
+
+    // Find added or changed mappings
+    for (const [logicalKey, newRef] of Object.entries(newMappings)) {
+      if (oldMappings[logicalKey] !== newRef) {
+        promises.push(this._addAudioUsage(newRef, logicalKey));
+      }
+    }
+
+    await Promise.all(promises);
+  },
+
+  _extractQuestionAudioRefs(questions: any[]): Record<string, string> {
+    const refs: Record<string, string> = {};
+    for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+      const q = questions[qIdx];
+      const qId = q.id || `legacy_${qIdx}`;
+      
+      const extractField = (obj: any, field: string, baseKey: string) => {
+        if (obj && obj[field]) {
+          if (typeof obj[field] === 'string' && isAudioRef(obj[field])) {
+            refs[baseKey] = obj[field];
+          } else if (typeof obj[field] === 'object') {
+            for (const key of Object.keys(obj[field])) {
+              const val = obj[field][key];
+              if (isAudioRef(val)) {
+                refs[`${baseKey}:${key}`] = val;
+              }
+            }
+          }
+        }
+      };
+
+      extractField(q, 'audio', `question:${qId}:audio`);
+      extractField(q, 'postOptionsAudio', `question:${qId}:postOptionsAudio`);
+      if (q.options) {
+        for (let oIdx = 0; oIdx < q.options.length; oIdx++) {
+          const opt = q.options[oIdx];
+          const optId = opt.key || `opt_${oIdx}`;
+          extractField(opt, 'audio', `question:${qId}:option:${optId}:audio`);
+        }
+      }
+    }
+    return refs;
+  },
+
+  _extractGlobalConfigAudioRefs(config: any): Record<string, string> {
+    const refs: Record<string, string> = {};
+    const extractField = (obj: any, field: string, baseKey: string) => {
+      if (obj && obj[field]) {
+        if (typeof obj[field] === 'string' && isAudioRef(obj[field])) {
+          refs[baseKey] = obj[field];
+        } else if (typeof obj[field] === 'object') {
+          for (const key of Object.keys(obj[field])) {
+            const val = obj[field][key];
+            if (isAudioRef(val)) {
+              refs[`${baseKey}:${key}`] = val;
+            }
+          }
+        }
+      }
+    };
+
+    extractField(config, 'welcomeAudio', 'globalConfig:welcomeAudio');
+    extractField(config, 'nameQuestionAudio', 'globalConfig:nameQuestionAudio');
+    extractField(config, 'startAudio', 'globalConfig:startAudio');
+    extractField(config, 'finishAudio', 'globalConfig:finishAudio');
+    extractField(config, 'afterSendAudio', 'globalConfig:afterSendAudio');
+    return refs;
+  },
+
+  _extractPatientAudioRefs(patient: any): Record<string, string> {
+    const refs: Record<string, string> = {};
+    if (patient && patient.audioConclusion) {
+      if (typeof patient.audioConclusion === 'string' && isAudioRef(patient.audioConclusion)) {
+        refs[`patient:${patient.id}:audioConclusion`] = patient.audioConclusion;
+      } else if (typeof patient.audioConclusion === 'object') {
+        for (const key of Object.keys(patient.audioConclusion)) {
+          const val = patient.audioConclusion[key];
+          if (isAudioRef(val)) {
+            refs[`patient:${patient.id}:audioConclusion:${key}`] = val;
+          }
+        }
+      }
+    }
+    return refs;
   },
 
   async resolveAudioRef(ref: string): Promise<string | undefined> {
@@ -396,12 +510,9 @@ export const DataService = {
     try {
       // 1. Obtener referencias antiguas antes de guardar
       const oldDoc = await getDoc(doc(db, 'questionnaires', 'active'));
-      const oldRefs = new Set<string>();
-      if (oldDoc.exists()) {
-        const oldStr = JSON.stringify(oldDoc.data());
-        const matches = oldStr.match(/audio_ref_[a-zA-Z0-9_]+/g);
-        if (matches) matches.forEach(m => oldRefs.add(m));
-      }
+      const oldMappings = oldDoc.exists() && oldDoc.data().questions 
+        ? this._extractQuestionAudioRefs(oldDoc.data().questions) 
+        : {};
 
       // Copia profunda para no mutar el estado de la UI
       const processedQuestions = JSON.parse(JSON.stringify(questions));
@@ -442,7 +553,7 @@ export const DataService = {
               audioPromises.push(
                 (async () => {
                   FirestoreDebug.log('write', 'audios/' + audioId);
-                  await setDoc(doc(db!, 'audios', audioId), { data: val });
+                  await setDoc(doc(db!, 'audios', audioId), { data: val, usedBy: {} });
                 })()
               );
             }
@@ -476,7 +587,7 @@ export const DataService = {
                 audioPromises.push(
                   (async () => {
                     FirestoreDebug.log('write', 'audios/' + audioId);
-                    await setDoc(doc(db!, 'audios', audioId), { data: val });
+                    await setDoc(doc(db!, 'audios', audioId), { data: val, usedBy: {} });
                   })()
                 );
               }
@@ -521,17 +632,9 @@ export const DataService = {
       console.log(`[TEST LOG] Cuestionario guardado exitosamente en questionnaires/active`);
       this._questionsCache = null; // Invalidate cache
 
-      // 2. Limpiar audios huérfanos
-      const newRefs = new Set<string>();
-      const newMatches = questionsString.match(/audio_ref_[a-zA-Z0-9_]+/g);
-      if (newMatches) newMatches.forEach(m => newRefs.add(m));
-
-      for (const oldRef of oldRefs) {
-        if (!newRefs.has(oldRef)) {
-          console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
-          await this._cleanupOrphanedAudio(oldRef);
-        }
-      }
+      // 2. Limpiar audios huérfanos y sincronizar referencias
+      const newMappings = this._extractQuestionAudioRefs(processedQuestions);
+      await this._syncAudioRefs(oldMappings, newMappings);
 
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -599,12 +702,9 @@ export const DataService = {
     try {
       // 1. Obtener referencias antiguas antes de guardar
       const oldDoc = await getDoc(doc(db, 'config', 'global_config'));
-      const oldRefs = new Set<string>();
-      if (oldDoc.exists()) {
-        const oldStr = JSON.stringify(oldDoc.data());
-        const matches = oldStr.match(/audio_ref_[a-zA-Z0-9_]+/g);
-        if (matches) matches.forEach(m => oldRefs.add(m));
-      }
+      const oldMappings = oldDoc.exists() 
+        ? this._extractGlobalConfigAudioRefs(oldDoc.data()) 
+        : {};
 
       const processedConfig = JSON.parse(JSON.stringify(config));
       const audioPromises: Promise<void>[] = [];
@@ -642,7 +742,7 @@ export const DataService = {
               audioPromises.push(
                 (async () => {
                   FirestoreDebug.log('write', 'audios/' + audioId);
-                  await setDoc(doc(db!, 'audios', audioId), { data: val });
+                  await setDoc(doc(db!, 'audios', audioId), { data: val, usedBy: {} });
                 })()
               );
             }
@@ -675,7 +775,7 @@ export const DataService = {
                 audioPromises.push(
                   (async () => {
                     FirestoreDebug.log('write', 'audios/' + audioId);
-                    await setDoc(doc(db!, 'audios', audioId), { data: val });
+                    await setDoc(doc(db!, 'audios', audioId), { data: val, usedBy: {} });
                   })()
                 );
               }
@@ -694,23 +794,13 @@ export const DataService = {
 
       await Promise.all(audioPromises);
 
-      const configString = JSON.stringify(processedConfig);
-
       FirestoreDebug.log('write', 'config/global_config');
       await setDoc(doc(db, 'config', 'global_config'), processedConfig);
       this._globalConfigCache = null; // Invalidate cache
 
-      // 2. Limpiar audios huérfanos
-      const newRefs = new Set<string>();
-      const newMatches = configString.match(/audio_ref_[a-zA-Z0-9_]+/g);
-      if (newMatches) newMatches.forEach(m => newRefs.add(m));
-
-      for (const oldRef of oldRefs) {
-        if (!newRefs.has(oldRef)) {
-          console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
-          await this._cleanupOrphanedAudio(oldRef);
-        }
-      }
+      // 2. Limpiar audios huérfanos y sincronizar referencias
+      const newMappings = this._extractGlobalConfigAudioRefs(processedConfig);
+      await this._syncAudioRefs(oldMappings, newMappings);
 
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -845,10 +935,9 @@ export const DataService = {
     try {
       // 1. Obtener referencia antigua antes de guardar
       const oldDoc = await getDoc(doc(db, 'patients', patient.id));
-      let oldRef: string | null = null;
-      if (oldDoc.exists() && isAudioRef(oldDoc.data().audioConclusion)) {
-        oldRef = oldDoc.data().audioConclusion;
-      }
+      const oldMappings = oldDoc.exists() 
+        ? this._extractPatientAudioRefs(oldDoc.data()) 
+        : {};
 
       const processedPatient = JSON.parse(JSON.stringify(patient));
       const baseKey = `patient:${patient.id}:audioConclusion`;
@@ -865,7 +954,7 @@ export const DataService = {
           processedPatient.audioConclusion = audioId;
           this._updateAudioRegistry(baseKey, audioId, val);
           FirestoreDebug.log('write', 'audios/' + audioId);
-          await setDoc(doc(db, 'audios', audioId), { data: val });
+          await setDoc(doc(db, 'audios', audioId), { data: val, usedBy: {} });
         }
       }
 
@@ -877,11 +966,10 @@ export const DataService = {
       }
       delete this._patientByIdCache[patient.id];
 
-      // 2. Limpiar audio huérfano
-      if (oldRef && oldRef !== processedPatient.audioConclusion) {
-        console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
-        await this._cleanupOrphanedAudio(oldRef);
-      }
+      // 2. Limpiar audio huérfano y sincronizar referencias
+      const newMappings = this._extractPatientAudioRefs(processedPatient);
+      await this._syncAudioRefs(oldMappings, newMappings);
+
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
     }
@@ -893,10 +981,9 @@ export const DataService = {
     try {
       // 1. Obtener referencia antigua antes de guardar
       const oldDoc = await getDoc(doc(db, 'patients', patientId));
-      let oldRef: string | null = null;
-      if (oldDoc.exists() && isAudioRef(oldDoc.data().audioConclusion)) {
-        oldRef = oldDoc.data().audioConclusion;
-      }
+      const oldMappings = oldDoc.exists() 
+        ? this._extractPatientAudioRefs(oldDoc.data()) 
+        : {};
 
       const processedData = JSON.parse(JSON.stringify(data));
       const baseKey = `patient:${patientId}:audioConclusion`;
@@ -913,7 +1000,7 @@ export const DataService = {
           processedData.audioConclusion = audioId;
           this._updateAudioRegistry(baseKey, audioId, val);
           FirestoreDebug.log('write', 'audios/' + audioId);
-          await setDoc(doc(db, 'audios', audioId), { data: val });
+          await setDoc(doc(db, 'audios', audioId), { data: val, usedBy: {} });
         }
       }
 
@@ -922,11 +1009,12 @@ export const DataService = {
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
 
-      // 2. Limpiar audio huérfano
-      if (oldRef && 'audioConclusion' in processedData && oldRef !== processedData.audioConclusion) {
-        console.log(`[AUDIO-CLEANUP] Old ref replaced or removed: ${oldRef}`);
-        await this._cleanupOrphanedAudio(oldRef);
-      }
+      // 2. Limpiar audio huérfano y sincronizar referencias
+      // Note: updatePatient only updates partial data, so we need to merge with old data to get full new mappings
+      const newDocData = oldDoc.exists() ? { ...oldDoc.data(), ...processedData } : processedData;
+      const newMappings = this._extractPatientAudioRefs(newDocData);
+      await this._syncAudioRefs(oldMappings, newMappings);
+
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
     }
@@ -936,10 +1024,20 @@ export const DataService = {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
+      // 1. Obtener referencia antigua antes de borrar
+      const oldDoc = await getDoc(doc(db, 'patients', patientId));
+      const oldMappings = oldDoc.exists() 
+        ? this._extractPatientAudioRefs(oldDoc.data()) 
+        : {};
+
       FirestoreDebug.log('delete', 'patients/' + patientId);
       await deleteDoc(doc(db, 'patients', patientId));
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
+
+      // 2. Limpiar audio huérfano y sincronizar referencias
+      await this._syncAudioRefs(oldMappings, {});
+
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }
