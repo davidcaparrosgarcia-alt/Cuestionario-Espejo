@@ -4,6 +4,7 @@ import { Card, Button, Input, Logo, Toast } from './UI';
 import { PatientData, CoordinatorProfile, AuthUser } from '../types';
 import { QUESTIONS } from '../constants';
 import { DataService } from '../services/dataService';
+import { auth } from '../services/firebase';
 
 interface DashboardProps {
   profile: CoordinatorProfile;
@@ -154,7 +155,17 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   useEffect(() => {
     const fetchPendingRequests = async () => {
       try {
-        const res = await fetch('/api/patient-requests');
+        const user = auth.currentUser;
+        if (!user) {
+          setPendingRequests([]);
+          return;
+        }
+        const token = await user.getIdToken();
+        const res = await fetch('/api/patient-requests', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
         if (res.ok) {
           const contentType = res.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
@@ -311,8 +322,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const deletePendingRequest = async (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
       try {
-          await fetch(`/api/patient-requests/${id}`, { method: 'DELETE' });
-          setPendingRequests(prev => prev.filter(r => r.id !== id));
+          const user = auth.currentUser;
+          if (user) {
+              const token = await user.getIdToken();
+              await fetch(`/api/patient-requests/${id}`, { 
+                  method: 'DELETE',
+                  headers: { 'Authorization': `Bearer ${token}` }
+              });
+              setPendingRequests(prev => prev.filter(r => r.id !== id));
+          }
       } catch (error) {
           console.error("Error deleting request:", error);
       }
