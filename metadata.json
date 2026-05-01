@@ -1,5 +1,6 @@
 {
-  "name": "GitHub Project Integrator",
+  "name": "Cuestionario Espejo Vfinal",
   "description": "Asistente para importar, sincronizar y continuar el desarrollo de proyectos alojados en GitHub.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": []
 }
