@@ -69,13 +69,31 @@ const transporter = nodemailer.createTransport({
 });
 
 // API routes FIRST
-app.get("/api/health", (req, res) => {
+app.get("/api/health", async (req, res) => {
+  let firestoreCheck = "not_run";
+  let firestoreError = undefined;
+
+  if (req.query.checkFirestore === '1') {
+    try {
+      await db.collection("patientRequests").limit(1).get();
+      firestoreCheck = "ok";
+    } catch (e: any) {
+      firestoreCheck = "error";
+      firestoreError = {
+        message: e.message || String(e),
+        code: e.code,
+      };
+    }
+  }
+
   res.json({ 
     status: "ok",
     env: process.env.NODE_ENV || "development",
     adminAvailable: !!admin.apps.length,
     bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
     firestoreDatabaseId: dbId,
+    firestoreCheck,
+    firestoreError,
     time: new Date().toISOString()
   });
 });
@@ -141,7 +159,17 @@ app.post("/api/patient-requests", async (req, res) => {
       }
     });
 
+    console.log("Attempting to save patient request", {
+      docId,
+      source: newRequest.source,
+      hasEmail: !!newRequest.email,
+      hasContext: !!newRequest.soybienestarContext,
+      dbId
+    });
+
     await db.collection("patientRequests").doc(docId).set(newRequest);
+
+    console.log("Patient request saved successfully", { docId });
 
     // Send email notification to coordinator
     const notificationEmail = requestData.notificationEmail || process.env.SMTP_FROM || "admin@example.com";
@@ -165,8 +193,25 @@ app.post("/api/patient-requests", async (req, res) => {
 
     res.status(201).json({ message: "Request received successfully", id: docId });
   } catch (e) {
-    console.error("Error processing POST /api/patient-requests:", e);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error processing POST /api/patient-requests:", {
+      name: e instanceof Error ? e.name : "Unknown",
+      message: e instanceof Error ? e.message : String(e),
+      code: (e as any)?.code,
+      stack: e instanceof Error ? e.stack : undefined
+    });
+
+    if (req.headers['x-debug-bridge'] === 'true') {
+      res.status(500).json({ 
+        error: "Internal server error",
+        debug: {
+          name: e instanceof Error ? e.name : "Unknown",
+          message: e instanceof Error ? e.message : String(e),
+          code: (e as any)?.code
+        }
+      });
+    } else {
+      res.status(500).json({ error: "Internal server error" });
+    }
   }
 });
 
