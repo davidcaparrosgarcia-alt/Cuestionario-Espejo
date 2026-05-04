@@ -46,14 +46,23 @@ app.use(express.json({ limit: "100kb" }));
 const requireCoordinatorAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "No autorizado" });
+    console.error("Coordinator auth failed", {
+      reason: "missing_authorization_header",
+      projectId
+    });
+    return res.status(401).json({ error: "No autorizado", reason: "missing_authorization_header" });
   }
   const token = authHeader.split("Bearer ")[1];
   try {
     await admin.auth().verifyIdToken(token);
     next();
   } catch (error) {
-    res.status(401).json({ error: "No autorizado" });
+    console.error("Coordinator auth failed", {
+      reason: "invalid_firebase_token",
+      message: error instanceof Error ? error.message : String(error),
+      projectId
+    });
+    res.status(401).json({ error: "No autorizado", reason: "invalid_firebase_token" });
   }
 };
 
@@ -335,8 +344,28 @@ app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
     
     console.log("GET /api/patient-requests - Returning", results.length, "pending requests");
     res.json(results);
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error fetching patient requests:", e);
+    
+    // In development mode without explicit credentials, Firebase Admin won't have permission to access Firestore
+    if (process.env.NODE_ENV !== 'production' && !process.env.FIREBASE_PRIVATE_KEY && e.code === 7) {
+      console.log("Providing mock data for development mode because Firebase Admin lacks IAM permissions");
+      return res.json([
+        {
+          id: "mock_req_1",
+          source: "soybienestar",
+          status: "pending",
+          nombre: "Usuario de Prueba (AI Studio)",
+          email: "prueba@soybienestar.com",
+          telefono: "+34600000000",
+          preferredChannels: { email: true, whatsapp: true },
+          createdAt: Date.now() - 3600000,
+          observaciones: "Esta es una solicitud simulada generada porque no se ha configurado FIREBASE_PRIVATE_KEY en los secretos del entorno de desarrollo.",
+          soybienestarContext: { theme: "Ansiedad" }
+        }
+      ]);
+    }
+    
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -344,15 +373,24 @@ app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
 app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res) => {
   const id = req.params.id;
   try {
+    // In development mode without explicit credentials, Firebase Admin won't have permission to access Firestore
+    if (process.env.NODE_ENV !== 'production' && !process.env.FIREBASE_PRIVATE_KEY && id.startsWith('mock_')) {
+      console.log("Simulating mock request deletion");
+      return res.json({ message: "Mock request processed successfully" });
+    }
+
     await db.collection("patientRequests").doc(id).update({
       status: "processed",
       processedAt: Date.now()
     });
     res.json({ message: "Request processed successfully" });
-  } catch (e) {
+  } catch (e: any) {
     console.error(`Error processing request ${id}:`, e);
-    // Fallback: if document doesn't exist, ignore or return error. 
+    // Fallback: if document doesn't exist or permission denied. 
     // We will pretend it was deleted safely to mimic previous behavior
+    if (e.code === 7 && process.env.NODE_ENV !== 'production' && !process.env.FIREBASE_PRIVATE_KEY) {
+      return res.status(200).json({ message: "Mock deletion due to lack of IAM permissions" });
+    }
     res.status(200).json({ message: "Request processed (with warnings)" });
   }
 });

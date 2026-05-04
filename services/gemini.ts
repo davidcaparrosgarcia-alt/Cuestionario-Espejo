@@ -73,6 +73,7 @@ export class GeminiService {
         DATOS DEL PACIENTE:
         Nombre: ${patient.nombre}
         Edad: ${patient.edad}
+        ${(patient as any).soybienestarContext ? `Contexto previo (SoyBienestar): ${JSON.stringify((patient as any).soybienestarContext)}` : ''}
         Respuestas al cuestionario: ${JSON.stringify(answers)}
         Transcripción de la interacción: ${transcript}
         

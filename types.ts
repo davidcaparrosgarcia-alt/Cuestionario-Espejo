@@ -36,6 +36,13 @@ export interface PatientData {
   dateConclusionSent?: number;
   dateConclusionViewed?: number;
   audioConclusion?: string; // Base64 del audio
+  
+  // Integración SoyBienestar
+  source?: string;
+  sourceRequestId?: string;
+  soybienestarUid?: string;
+  soybienestarContext?: any;
+  preferredChannels?: string[];
 }
 
 export interface DualAudio {

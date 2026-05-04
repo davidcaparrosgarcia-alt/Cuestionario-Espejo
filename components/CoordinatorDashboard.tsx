@@ -163,12 +163,22 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           if (isMounted) setPendingRequests([]);
           return;
         }
-        const token = await user.getIdToken();
+        
+        let token;
+        try {
+          token = await user.getIdToken();
+        } catch (tokenErr) {
+          console.error("Error getting id token:", tokenErr);
+          if (isMounted) setPendingRequestsError("No se pudo obtener credencial de sesión");
+          return;
+        }
+
         const res = await fetch('/api/patient-requests', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
         });
+
         if (res.ok) {
           const contentType = res.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
@@ -178,11 +188,20 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               setPendingRequestsError(null);
             }
           } else {
-            console.warn("Received non-JSON response from /api/patient-requests");
+            const text = await res.text();
+            console.warn("Received non-JSON response from /api/patient-requests:", text.substring(0, 300));
             if (isMounted) setPendingRequestsError("Respuesta inválida del servidor");
           }
         } else {
-          console.error(`Error fetching pending requests: ${res.status} ${res.statusText}`);
+          const text = await res.text();
+          console.error("Pending requests auth diagnostic", {
+            hasCurrentUser: !!auth.currentUser,
+            email: auth.currentUser?.email,
+            uid: auth.currentUser?.uid,
+            tokenObtained: !!token,
+            status: res.status,
+            responsePreview: text.substring(0, 300)
+          });
           if (isMounted) setPendingRequestsError(`Error ${res.status}: no se pudieron cargar las peticiones`);
         }
       } catch (error) {
@@ -325,14 +344,24 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const selectPendingRequest = (req: any) => {
+      let extraNotes = "";
+      if (req.source === "soybienestar") {
+          extraNotes = "Solicitud recibida desde SoyBienestar. Contiene contexto previo de consulta guiada.\n\n";
+      }
+
       setPatient({
           nombre: req.nombre || req.displayName || '',
           email: req.email || '',
           edad: req.edad || '',
           sexo: req.sexo || '',
-          observaciones: req.observaciones || req.notes || '',
-          telefono: req.telefono || ''
-      });
+          observaciones: extraNotes + (req.observaciones || req.notes || ''),
+          telefono: req.telefono || '',
+          source: req.source || "manual",
+          sourceRequestId: req.id,
+          soybienestarUid: req.soybienestarUid || null,
+          soybienestarContext: req.soybienestarContext || null,
+          preferredChannels: req.preferredChannels || null
+      } as any);
       if (req.phonePrefix) setPhonePrefix(req.phonePrefix);
       setSelectedPendingRequestId(req.id);
       setShowRequestsDropdown(false);
@@ -561,6 +590,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
         if (selectedPendingRequestId) {
             setPendingRequests(prev => prev.filter(r => r.id !== selectedPendingRequestId));
+            try {
+                const user = auth.currentUser;
+                if (user) {
+                    const token = await user.getIdToken();
+                    await fetch(`/api/patient-requests/${selectedPendingRequestId}`, { 
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                }
+            } catch (delErr) {
+                console.error("Error al marcar como procesada la petición", delErr);
+            }
             setSelectedPendingRequestId(null);
         }
 
