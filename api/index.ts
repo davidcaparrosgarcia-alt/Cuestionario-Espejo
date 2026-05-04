@@ -72,19 +72,69 @@ const transporter = nodemailer.createTransport({
 app.get("/api/health", async (req, res) => {
   let firestoreCheck = "not_run";
   let firestoreError = undefined;
+  let permissionDiagnosis = undefined;
+  
+  let patientRequestsTotalCount = undefined;
+  let patientRequestsPendingCount = undefined;
+  let latestPatientRequestPreview = undefined;
+
+  const resolvedProjectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 
   if (req.query.checkFirestore === '1') {
     try {
-      await db.collection("patientRequests").limit(1).get();
+      const snapshot = await db.collection("patientRequests").limit(20).get();
       firestoreCheck = "ok";
+      
+      patientRequestsTotalCount = snapshot.size;
+      patientRequestsPendingCount = 0;
+      let latestDoc: any = null;
+      let latestTime = 0;
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.status === "pending") {
+          patientRequestsPendingCount!++;
+        }
+        const createdAt = data.createdAt || 0;
+        if (createdAt > latestTime) {
+          latestTime = createdAt;
+          latestDoc = data;
+        }
+      });
+
+      if (latestDoc) {
+        latestPatientRequestPreview = {
+          id: latestDoc.id,
+          source: latestDoc.source,
+          status: latestDoc.status,
+          createdAt: latestDoc.createdAt,
+          createdAtIso: new Date(latestDoc.createdAt || Date.now()).toISOString(),
+          hasEmail: !!latestDoc.email,
+          hasTelefono: !!latestDoc.telefono,
+          hasSoybienestarContext: !!latestDoc.soybienestarContext && Object.keys(latestDoc.soybienestarContext).length > 0
+        };
+      }
     } catch (e: any) {
       firestoreCheck = "error";
       firestoreError = {
         message: e.message || String(e),
         code: e.code,
       };
+
+      if (e.code === 7 || (e.message && e.message.includes('PERMISSION_DENIED'))) {
+        permissionDiagnosis = {
+          likelyCause: "La cuenta de servicio cargada en FIREBASE_CLIENT_EMAIL no tiene permisos IAM suficientes sobre Firestore/Datastore o no corresponde al proyecto/base de datos configurada.",
+          suggestedRoles: ["Cloud Datastore User", "Cloud Datastore Owner para desarrollo"],
+          whereToFix: `Google Cloud Console > IAM > proyecto ${resolvedProjectId}`
+        };
+      }
     }
   }
+
+  const clientEmailDomainPreview = clientEmail 
+      ? clientEmail.split('@')[1] || "invalid-format" 
+      : null;
 
   res.json({ 
     status: "ok",
@@ -92,8 +142,20 @@ app.get("/api/health", async (req, res) => {
     adminAvailable: !!admin.apps.length,
     bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
     firestoreDatabaseId: dbId,
+    firestoreDatabaseIdConfigured: !!process.env.FIRESTORE_DATABASE_ID,
+    firebaseProjectIdFromEnv: !!process.env.FIREBASE_PROJECT_ID,
+    firebaseClientEmailFromEnv: !!process.env.FIREBASE_CLIENT_EMAIL,
+    firebasePrivateKeyFromEnv: !!process.env.FIREBASE_PRIVATE_KEY,
+    firebaseClientEmailDomainPreview: clientEmailDomainPreview,
+    adminAppProjectId: admin.apps.length ? admin.app().options.projectId : null,
+    projectIdLooksCorrect: resolvedProjectId === "gen-lang-client-0082734692",
+    clientEmailLooksCorrect: clientEmail ? clientEmail.includes("gen-lang-client-0082734692") : false,
     firestoreCheck,
     firestoreError,
+    permissionDiagnosis,
+    patientRequestsTotalCount,
+    patientRequestsPendingCount,
+    latestPatientRequestPreview,
     time: new Date().toISOString()
   });
 });
@@ -264,6 +326,12 @@ app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
     });
     
     results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    
+    console.log("GET /api/patient-requests diagnostic", {
+      dbId,
+      returnedCount: results.length,
+      pendingCount: results.length
+    });
     
     console.log("GET /api/patient-requests - Returning", results.length, "pending requests");
     res.json(results);
