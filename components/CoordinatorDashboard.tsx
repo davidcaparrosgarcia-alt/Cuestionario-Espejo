@@ -152,12 +152,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
 
+  const [pendingRequestsError, setPendingRequestsError] = useState<string | null>(null);
+
   useEffect(() => {
-    const fetchPendingRequests = async () => {
+    let isMounted = true;
+
+    const fetchPendingRequests = async (user: any) => {
       try {
-        const user = auth.currentUser;
         if (!user) {
-          setPendingRequests([]);
+          if (isMounted) setPendingRequests([]);
           return;
         }
         const token = await user.getIdToken();
@@ -170,22 +173,38 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           const contentType = res.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
             const data = await res.json();
-            setPendingRequests(data);
+            if (isMounted) {
+              setPendingRequests(data);
+              setPendingRequestsError(null);
+            }
           } else {
             console.warn("Received non-JSON response from /api/patient-requests");
+            if (isMounted) setPendingRequestsError("Respuesta inválida del servidor");
           }
         } else {
           console.error(`Error fetching pending requests: ${res.status} ${res.statusText}`);
+          if (isMounted) setPendingRequestsError(`Error ${res.status}: no se pudieron cargar las peticiones`);
         }
       } catch (error) {
         console.error("Error fetching pending requests:", error);
+        if (isMounted) setPendingRequestsError("Error de conexión al cargar peticiones");
       }
     };
-    fetchPendingRequests();
+
+    const unsubscribe = auth.onAuthStateChanged(user => {
+      fetchPendingRequests(user);
+    });
     
     // Poll every 5 minutes (300000 ms) para reducir carga
-    const interval = setInterval(fetchPendingRequests, 300000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      fetchPendingRequests(auth.currentUser);
+    }, 300000);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, []);
   const [showRequestsDropdown, setShowRequestsDropdown] = useState(false);
   const [selectedPendingRequestId, setSelectedPendingRequestId] = useState<string | null>(null);
@@ -307,11 +326,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const selectPendingRequest = (req: any) => {
       setPatient({
-          nombre: req.nombre || '',
+          nombre: req.nombre || req.displayName || '',
           email: req.email || '',
           edad: req.edad || '',
           sexo: req.sexo || '',
-          observaciones: req.observaciones || '',
+          observaciones: req.observaciones || req.notes || '',
           telefono: req.telefono || ''
       });
       if (req.phonePrefix) setPhonePrefix(req.phonePrefix);
@@ -1665,13 +1684,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 </label>
                             </div>
                             <div className="max-h-60 overflow-y-auto">
+                                {pendingRequestsError && (
+                                    <div className="p-3 text-xs text-red-600 bg-red-50 text-center border-b border-red-100">
+                                        {pendingRequestsError}
+                                    </div>
+                                )}
                                 {pendingRequests.length === 0 ? (
                                     <div className="p-4 text-center text-sm text-slate-400 italic">No hay peticiones nuevas</div>
                                 ) : (
                                     pendingRequests.map(req => (
                                         <div key={req.id} className="p-3 border-b border-slate-50 hover:bg-blue-50 flex justify-between items-center group cursor-pointer transition-colors" onClick={() => selectPendingRequest(req)}>
                                             <div className="flex flex-col overflow-hidden pr-2">
-                                                <span className="text-sm font-bold text-slate-700 truncate">{req.nombre || 'Sin nombre'}</span>
+                                                <span className="text-sm font-bold text-slate-700 truncate">{req.nombre || req.displayName || 'Usuario ' + (req.source || '')}</span>
                                                 <span className="text-xs text-slate-400 truncate">{req.email || 'Sin email'}</span>
                                             </div>
                                             <button 
