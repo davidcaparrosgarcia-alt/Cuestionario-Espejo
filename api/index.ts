@@ -36,6 +36,26 @@ if (!admin.apps.length) {
   }
 }
 
+const FRONTEND_AUTH_PROJECT_ID = firebaseConfig.projectId || "gen-lang-client-0082734692";
+const FRONTEND_AUTH_APP_NAME = "frontend-auth-verifier";
+
+function getFrontendAuthApp() {
+  const existing = admin.apps.find(app => app?.name === FRONTEND_AUTH_APP_NAME);
+  if (existing) return existing;
+
+  const mainApp = admin.app();
+
+  return admin.initializeApp(
+    {
+      credential: mainApp.options.credential,
+      projectId: FRONTEND_AUTH_PROJECT_ID,
+    },
+    FRONTEND_AUTH_APP_NAME
+  );
+}
+
+const frontendAuthApp = getFrontendAuthApp();
+
 const db = getFirestore(admin.app(), dbId);
 
 const app = express();
@@ -54,13 +74,14 @@ const requireCoordinatorAuth = async (req: express.Request, res: express.Respons
   }
   const token = authHeader.split("Bearer ")[1];
   try {
-    await admin.auth().verifyIdToken(token);
+    await admin.auth(frontendAuthApp).verifyIdToken(token);
     next();
   } catch (error) {
     console.error("Coordinator auth failed", {
       reason: "invalid_firebase_token",
       message: error instanceof Error ? error.message : String(error),
-      projectId
+      backendProjectId: projectId,
+      frontendAuthProjectId: FRONTEND_AUTH_PROJECT_ID
     });
     res.status(401).json({ error: "No autorizado", reason: "invalid_firebase_token" });
   }
@@ -149,6 +170,9 @@ app.get("/api/health", async (req, res) => {
     status: "ok",
     env: process.env.NODE_ENV || "development",
     adminAvailable: !!admin.apps.length,
+    backendProjectId: projectId,
+    frontendAuthProjectId: FRONTEND_AUTH_PROJECT_ID,
+    authVerifierAppName: FRONTEND_AUTH_APP_NAME,
     bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
     firestoreDatabaseId: dbId,
     firestoreDatabaseIdConfigured: !!process.env.FIRESTORE_DATABASE_ID,
