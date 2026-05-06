@@ -50,9 +50,9 @@ const DEFAULT_CONFIG: GlobalConfig = {
 const FALLBACK_TEXTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // Transparent pixel fallback
 
 const BACKGROUNDS = {
-  intro: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop",        
-  verification: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop", 
-  general: "https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop"       
+  intro: FALLBACK_TEXTURE,        
+  verification: FALLBACK_TEXTURE, 
+  general: FALLBACK_TEXTURE       
 };
 
 // Aumentado a 800ms para asegurar que el navegador no corte el inicio (problema de palabras comidas)
@@ -158,6 +158,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   });
 
+  const visibleQuestions = isEditorMode ? questions : questions.filter(q => !q.hidden);
+
+  const [isPatientHydrating, setIsPatientHydrating] = useState(false);
+  const [patientHydrationError, setPatientHydrationError] = useState<string | null>(null);
+
   // Efecto para hidratar datos desde Firebase (si está disponible) sin bloquear la UI
   useEffect(() => {
     const fetchData = async () => {
@@ -182,6 +187,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
         // Hidratar datos del paciente y progreso
         if (currentPatientData.id && !isEditorMode) {
+            setIsPatientHydrating(true);
             try {
                 const fullPatient = await DataService.getPatientById(currentPatientData.id);
                 if (fullPatient) {
@@ -189,11 +195,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     
                     if (fullPatient.status === 'completed') {
                         setStep('locked');
+                        setIsPatientHydrating(false);
                         return;
                     }
                     
                     if (fullPatient.status === 'concluded' || fullPatient.status === 'finalized') {
                         setStep('pin_validation');
+                        setIsPatientHydrating(false);
                         return;
                     }
 
@@ -201,13 +209,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         setAnswers(fullPatient.answers);
                         // Si ya tiene respuestas pero no ha terminado, restauramos el índice
                         const answeredCount = Object.keys(fullPatient.answers).length;
-                        if (answeredCount > 0 && answeredCount < questions.length) {
+                        if (answeredCount > 0 && answeredCount < visibleQuestions.length) {
                             setCurrentQuestionIndex(answeredCount);
                         }
                     }
+                } else {
+                    setPatientHydrationError('Enlace de paciente no válido o caducado.');
                 }
             } catch (e) {
                 console.error("Error fetching full patient data", e);
+                setPatientHydrationError('Error de conexión. Inténtalo de nuevo más tarde.');
+            } finally {
+                setIsPatientHydrating(false);
             }
         }
     };
@@ -272,8 +285,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   useEffect(() => {
     // Preload next question audio
     const nextIdx = currentQuestionIndex + 1;
-    if (nextIdx < questions.length) {
-      const nextQ = questions[nextIdx];
+    if (nextIdx < visibleQuestions.length) {
+      const nextQ = visibleQuestions[nextIdx];
       const urls = [
         nextQ.audio?.female, nextQ.audio?.female2,
         nextQ.audio?.male, nextQ.audio?.male2,
@@ -847,11 +860,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setIsInteractionLocked(false);
       const newIndex = direction === 'next' ? currentQuestionIndex + 1 : currentQuestionIndex - 1;
       
-      if (newIndex >= 0 && newIndex < questions.length) {
+      if (newIndex >= 0 && newIndex < visibleQuestions.length) {
           setCurrentQuestionIndex(newIndex);
           // Forzar carga inmediata sin audio
           setVisibleOptions([]);
-          const q = questions[newIndex];
+          const q = visibleQuestions[newIndex];
           if (q) {
               // Mostrar todo inmediatamente para edición rápida
               if (!q.isScale) {
@@ -939,7 +952,23 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const handlePinSubmit = () => {
-    if (pinInput === currentPatientData.accessPin || isEditorMode) {
+    if (isPatientHydrating) {
+        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
+        return;
+    }
+    
+    if (patientHydrationError) {
+        showToast(patientHydrationError);
+        return;
+    }
+
+    if (!currentPatientData.accessPin && !isEditorMode) {
+        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
+        return;
+    }
+
+    const correctPin = isEditorMode ? pinInput : String(currentPatientData.accessPin).trim();
+    if (pinInput.trim() === correctPin || isEditorMode) {
         if (currentPatientData.status === 'concluded' || currentPatientData.status === 'finalized') {
             setStep('conclusion_view');
             
@@ -1021,7 +1050,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const loadQuestion = async (index: number) => {
-    const q = questions[index];
+    const q = visibleQuestions[index];
     setVisibleOptions([]); 
     
     if (!q) {
@@ -1034,7 +1063,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const handleAnswer = async (key: string) => {
     if (isInteractionLocked) return; 
     stopAudio();
-    const q = questions[currentQuestionIndex];
+    const q = visibleQuestions[currentQuestionIndex];
     const newAnswers = { ...answers, [q.id]: key };
     setAnswers(newAnswers);
     addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
@@ -1170,6 +1199,22 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setEditingQuestion(newQuestion);
   };
 
+  const [showHiddenList, setShowHiddenList] = useState(false);
+
+  const handleHideQuestion = async () => {
+    if (!editingQuestion) return;
+    const updated = questions.map(q => q.id === editingQuestion.id ? { ...q, hidden: true } : q);
+    setQuestions(updated);
+    await DataService.saveQuestions(updated);
+    showToast("Pregunta ocultada. Podrás recuperarla más adelante.");
+    setEditingQuestion(null);
+  };
+
+  const handleRecoverQuestion = (hiddenQ: Question) => {
+    setEditingQuestion(hiddenQ);
+    setShowHiddenList(false);
+  };
+
   const handleDeleteQuestion = async () => {
     if (!editingQuestion) return;
     if (confirm("¿Estás seguro de que quieres eliminar esta pregunta? Esta acción no se puede deshacer.")) {
@@ -1191,11 +1236,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         // Check if it exists
         const exists = questions.some(q => q.id === editingQuestion.id);
         let updated;
+        const finalQuestion = { ...editingQuestion, hidden: false };
         
         if (exists) {
-            updated = questions.map(q => q.id === editingQuestion.id ? editingQuestion : q);
+            updated = questions.map(q => q.id === editingQuestion.id ? finalQuestion : q);
         } else {
-            updated = [...questions, editingQuestion];
+            updated = [...questions, finalQuestion];
         }
         
         setQuestions(updated);
@@ -1346,7 +1392,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
              </div>
         ) : (
         <>
-            {step === 'questionnaire' && <div className="mb-8"><ProgressBar current={currentQuestionIndex + 1} total={questions.length} /></div>}
+            {step === 'questionnaire' && <div className="mb-8"><ProgressBar current={currentQuestionIndex + 1} total={visibleQuestions.length} /></div>}
 
             <div className="mb-6 space-y-6">
             {(step === 'verification' || step === 'pin_validation') && (
@@ -1362,7 +1408,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 </div>
             )}
 
-            {step === 'questionnaire' && questions[currentQuestionIndex] ? (
+            {step === 'questionnaire' && visibleQuestions[currentQuestionIndex] ? (
                 <div ref={questionCardRef} className={`p-8 md:p-10 pt-12 rounded-[2.5rem] relative border backdrop-blur-xl shadow-xl animate-in fade-in duration-700 ${cardClasses}`}>
                 <div className="flex justify-between items-center mb-6">
                     <span className={`text-xs font-black uppercase tracking-[0.3em] block opacity-70 ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>Reflexión del Momento</span>
@@ -1379,9 +1425,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     )}
                 </div>
 
-                <h2 className="text-2xl md:text-3xl font-friendly font-bold leading-snug drop-shadow-sm">{processText(questions[currentQuestionIndex].scenario)}</h2>
+                <h2 className="text-2xl md:text-3xl font-friendly font-bold leading-snug drop-shadow-sm">{processText(visibleQuestions[currentQuestionIndex].scenario)}</h2>
                 {isEditorMode && (
-                    <button onClick={() => setEditingQuestion(questions[currentQuestionIndex])} className="absolute -bottom-4 -right-4 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-2xl border-4 border-white"><i className="fas fa-edit text-lg"></i></button>
+                    <button onClick={() => setEditingQuestion(visibleQuestions[currentQuestionIndex])} className="absolute -bottom-4 -right-4 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-2xl border-4 border-white"><i className="fas fa-edit text-lg"></i></button>
                 )}
                 </div>
             ) : step === 'finish' ? (
@@ -1424,15 +1470,20 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         pattern="[0-9]*"
                         maxLength={4}
                         autoComplete="off"
-                        className={`w-full text-center tracking-[0.8em] text-5xl py-8 rounded-[2rem] border-2 outline-none transition-all mb-10 font-black ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
+                        disabled={isPatientHydrating}
+                        className={`w-full text-center tracking-[0.8em] text-5xl py-8 rounded-[2rem] border-2 outline-none transition-all mb-10 font-black ${isPatientHydrating ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
                         value={pinInput}
                         onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
                         onKeyPress={e => e.key === 'Enter' && pinInput.length === 4 && handlePinSubmit()}
                     />
                     
+                    {isPatientHydrating && (
+                        <p className="text-center text-blue-500 font-bold mb-4 animate-pulse">Preparando tu acceso seguro...</p>
+                    )}
+
                     <Button 
                         onClick={handlePinSubmit} 
-                        disabled={pinInput.length !== 4}
+                        disabled={pinInput.length !== 4 || isPatientHydrating}
                         className="w-full py-5 text-xl rounded-2xl shadow-xl"
                     >
                         Entrar al Cuestionario
@@ -1474,9 +1525,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             ) : null}
             </div>
 
-            {step === 'questionnaire' && questions[currentQuestionIndex] && (
+            {step === 'questionnaire' && visibleQuestions[currentQuestionIndex] && (
             <div className="space-y-4 no-print">
-                {questions[currentQuestionIndex].isScale && questions[currentQuestionIndex].scaleRange ? (
+                {visibleQuestions[currentQuestionIndex].isScale && visibleQuestions[currentQuestionIndex].scaleRange ? (
                     <div className="animate-in slide-in-from-bottom-4">
                         <div className={`p-1 rounded-2xl border-2 ${isDarkMode ? 'bg-white/5 border-white/20' : 'bg-white border-blue-100'}`}>
                             <select 
@@ -1484,8 +1535,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                                 onChange={(e) => handleAnswer(e.target.value)}
                                 defaultValue=""
                             >
-                                <option value="" disabled>Selecciona un valor ({questions[currentQuestionIndex].scaleRange.min} - {questions[currentQuestionIndex].scaleRange.max})</option>
-                                {Array.from({length: (questions[currentQuestionIndex].scaleRange.max - questions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + questions[currentQuestionIndex].scaleRange.min).map(val => (
+                                <option value="" disabled>Selecciona un valor ({visibleQuestions[currentQuestionIndex].scaleRange.min} - {visibleQuestions[currentQuestionIndex].scaleRange.max})</option>
+                                {Array.from({length: (visibleQuestions[currentQuestionIndex].scaleRange.max - visibleQuestions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + visibleQuestions[currentQuestionIndex].scaleRange.min).map(val => (
                                     <option key={val} value={val} className="text-black">{val}</option>
                                 ))}
                             </select>
@@ -1493,7 +1544,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         <p className={`text-center text-xs mt-3 font-bold uppercase tracking-widest ${isDarkMode ? 'text-blue-300' : 'text-blue-400'}`}>Selecciona una opción para continuar</p>
                     </div>
                 ) : (
-                    questions[currentQuestionIndex].options.map((opt, idx) => (
+                    visibleQuestions[currentQuestionIndex].options.map((opt, idx) => (
                         visibleOptions.includes(opt.key) && (
                             <button 
                             key={opt.key} 
@@ -1662,9 +1713,27 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
           <div className="w-full max-w-6xl p-6 md:p-8 shadow-2xl border border-white/10 bg-[#0f172a] text-blue-50 overflow-y-auto max-h-[95vh] rounded-[2.5rem]">
             <div className="flex justify-between items-center mb-4 border-b pb-4 border-white/10">
               <h3 className="text-2xl font-bold font-friendly flex items-center gap-4"><i className="fas fa-edit text-blue-500"></i> Editar Pregunta</h3>
-              <div className="flex gap-2">
-                  <button onClick={handleDeleteQuestion} className="px-4 py-2 rounded-lg bg-red-900/50 hover:bg-red-800 text-red-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-trash"></i> Eliminar Pregunta</button>
+              <div className="flex gap-2 relative">
+                  <button onClick={() => setShowHiddenList(!showHiddenList)} className="px-4 py-2 rounded-lg bg-indigo-900/50 hover:bg-indigo-800 text-indigo-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-undo"></i> Recuperar</button>
+                  <button onClick={handleHideQuestion} className="px-4 py-2 rounded-lg bg-orange-900/50 hover:bg-orange-800 text-orange-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-eye-slash"></i> Ocultar</button>
+                  <button onClick={handleDeleteQuestion} className="px-4 py-2 rounded-lg bg-red-900/50 hover:bg-red-800 text-red-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-trash"></i> Eliminar</button>
                   <button onClick={() => setEditingQuestion(null)} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-900/50 hover:text-red-400 transition-colors flex items-center justify-center"><i className="fas fa-times text-xl"></i></button>
+
+                  {/* Dropdown for hidden questions */}
+                  {showHiddenList && (
+                      <div className="absolute top-12 right-0 w-80 bg-[#1e293b] border border-white/20 shadow-2xl rounded-xl z-50 p-2 max-h-64 overflow-y-auto">
+                          <h4 className="text-xs text-white/50 font-bold uppercase p-2 border-b border-white/10 mb-2">Preguntas Ocultas</h4>
+                          {questions.filter(q => q.hidden).length === 0 ? (
+                              <p className="text-sm p-4 text-center text-white/40">No hay preguntas ocultas para recuperar.</p>
+                          ) : (
+                              questions.filter(q => q.hidden).map(hq => (
+                                  <button key={hq.id} onClick={() => handleRecoverQuestion(hq)} className="w-full text-left p-3 hover:bg-white/5 rounded-lg text-sm text-blue-200 transition-colors truncate">
+                                      {hq.scenario}
+                                  </button>
+                              ))
+                          )}
+                      </div>
+                  )}
               </div>
             </div>
             
@@ -1764,7 +1833,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             </div>
             <div className="flex gap-4 pt-6 border-t border-white/10 mt-6">
               <Button className="flex-1 py-4 text-lg" onClick={saveQuestionChanges} disabled={isStarting}>
-                {isStarting ? <><i className="fas fa-spinner fa-spin mr-2"></i> Guardando...</> : 'Guardar Cambios'}
+                {isStarting ? <><i className="fas fa-spinner fa-spin mr-2"></i> Guardando...</> : (editingQuestion.hidden || !questions.some(q => q.id === editingQuestion.id)) ? 'Publicar Pregunta' : 'Guardar Cambios'}
               </Button>
               <Button variant="outline" className="flex-1 py-4 border-white/20 text-white font-black hover:bg-white/5" onClick={() => setEditingQuestion(null)} disabled={isStarting}>Cancelar</Button>
             </div>

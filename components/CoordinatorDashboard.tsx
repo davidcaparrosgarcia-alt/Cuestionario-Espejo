@@ -521,6 +521,24 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         }
     }
     
+    const pendingWindows: {
+      email?: Window | null;
+      whatsapp?: Window | null;
+      sms?: Window | null;
+    } = {};
+
+    if (sendMethods.email) {
+      pendingWindows.email = window.open('', '_blank');
+    }
+
+    if (sendMethods.whatsapp && fullPhone) {
+      pendingWindows.whatsapp = window.open('', '_blank');
+    }
+
+    if (sendMethods.sms && fullPhone) {
+      pendingWindows.sms = window.open('', '_blank');
+    }
+
     let finalName = patient.nombre.trim();
     let idEncoded = '';
     let accessPin = '';
@@ -638,16 +656,21 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
         if (sendMethods.email) {
             const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(patient.email || '')}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-            window.open(gmailUrl, '_blank');
+            if (pendingWindows.email) pendingWindows.email.location.href = gmailUrl;
+            else window.open(gmailUrl, '_blank');
         }
 
         if (sendMethods.whatsapp && fullPhone) {
             const cleanPhone = fullPhone.replace(/\D/g, '');
-            window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`, '_blank');
+            const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`;
+            if (pendingWindows.whatsapp) pendingWindows.whatsapp.location.href = waUrl;
+            else window.open(waUrl, '_blank');
         }
 
         if (sendMethods.sms && fullPhone) {
-            window.open(`sms:${fullPhone}?body=${encodeURIComponent(smsBody)}`, '_blank');
+            const smsUrl = `sms:${fullPhone}?body=${encodeURIComponent(smsBody)}`;
+            if (pendingWindows.sms) pendingWindows.sms.location.href = smsUrl;
+            else window.open(smsUrl, '_blank');
         }
 
         if (selectedPendingRequestId) {

@@ -190,7 +190,15 @@ const App: React.FC = () => {
     setToast({ show: true, msg });
   };
 
+  const isPatientSessionHash = () => {
+    return window.location.hash.startsWith('#/session') || window.location.hash.startsWith('#/conclusion');
+  };
+
   const handleAccessCodeSubmit = async () => {
+      if (isPatientSessionHash()) {
+          showToast("Este enlace es solo para realizar el Cuestionario Espejo. Introduce la clave personal recibida con tu enlace.");
+          return;
+      }
       if (accessCodeInput === globalAccessCode) {
           sessionStorage.setItem('radar_access_granted', 'true');
           setAuthStep('SOCIAL_LOGIN');
@@ -236,11 +244,47 @@ const App: React.FC = () => {
   const handleGoogleLogin = async () => {
     const provider = new GoogleAuthProvider();
     try {
-      await signInWithPopup(auth, provider);
-      showToast("Sesión iniciada con Google");
-    } catch (error) {
+      showToast("Abriendo Google Login...");
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+      showToast("Sesión iniciada. Cargando perfil...");
+      
+      if (user && user.email) {
+          try {
+              const userData = await DataService.getUser(user.email);
+              if (userData) {
+                  setCoordinator({ nombre: userData.nombre, email: userData.email });
+                  setCoordinatorData(userData);
+                  setView('COORDINATOR');
+                  window.location.hash = '#/coordinator';
+              } else {
+                  const newUser: AuthUser = {
+                      email: user.email,
+                      nombre: user.displayName || 'Coordinador',
+                      pin: 'GOOGLE',
+                      securityQuestion: 'Google Auth',
+                      securityAnswer: 'google'
+                  };
+                  await DataService.saveUser(newUser);
+                  setCoordinator({ nombre: newUser.nombre, email: newUser.email });
+                  setCoordinatorData(newUser);
+                  setView('COORDINATOR');
+                  window.location.hash = '#/coordinator';
+              }
+          } catch (e) {
+              console.error("Error al cargar usuario tras login de Google", e);
+              setCoordinator({ nombre: user.displayName || 'Coordinador', email: user.email });
+              setView('COORDINATOR');
+              window.location.hash = '#/coordinator';
+          }
+      }
+    } catch (error: any) {
       console.error("Error Google Login:", error);
-      showToast("Error al iniciar sesión con Google");
+      if (error.code === 'auth/popup-blocked') {
+          showToast("El navegador ha bloqueado la ventana flotante. Por favor, permite las ventanas emergentes.");
+      } else {
+          showToast("Error al iniciar sesión con Google");
+      }
     }
   };
 
@@ -265,12 +309,11 @@ const App: React.FC = () => {
 
   return (
     // IMPORTANTE: Eliminado overflow-y-auto para restaurar el scroll nativo de la ventana
-    <div className="min-h-screen text-slate-800 overflow-x-hidden font-sans bg-[#faf9f6]">
+    <div className="min-h-screen text-slate-800 overflow-x-hidden font-sans luxury-leather-bg">
       {view === 'LANDING' && (
         <div className="min-h-screen flex items-center justify-center flex-col p-6 text-center space-y-8 animate-in fade-in duration-1000 pb-20 relative">
            
-           {/* Decoración de fondo sutil para Landing */}
-           <div className="absolute inset-0 pointer-events-none opacity-30 bg-cover bg-center" style={{backgroundImage: "url('https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop')"}}></div>
+           {/* Decoración de fondo sutil para Landing eliminada por preferir luxury-leather-bg estricto */}
            
            <div className="max-w-xl w-full relative z-10">
              <Logo />

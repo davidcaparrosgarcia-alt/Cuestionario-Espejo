@@ -1,1 +1,14 @@
 @import "tailwindcss";
+
+.luxury-leather-bg {
+  background-color: #faf9f6;
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(255,255,255,0.55) 0, rgba(255,255,255,0) 26%),
+    radial-gradient(circle at 80% 0%, rgba(220,214,202,0.35) 0, rgba(220,214,202,0) 28%),
+    linear-gradient(135deg, rgba(120,105,85,0.035) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(120,105,85,0.025) 25%, transparent 25%),
+    linear-gradient(45deg, rgba(255,255,255,0.35) 25%, transparent 25%),
+    linear-gradient(315deg, rgba(120,105,85,0.025) 25%, #faf9f6 25%);
+  background-position: 0 0, 0 0, 8px 0, 8px 0, 0 0, 0 0;
+  background-size: auto, auto, 16px 16px, 16px 16px, 16px 16px, 16px 16px;
+}

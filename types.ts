@@ -58,6 +58,7 @@ export interface DualAudio {
 
 export interface Question {
   id: string;
+  hidden?: boolean;
   scenario: string;
   options: {
     key: string;
