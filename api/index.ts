@@ -58,6 +58,52 @@ const frontendAuthApp = getFrontendAuthApp();
 
 const db = getFirestore(admin.app(), dbId);
 
+async function getNotificationRecipients(requestData: any): Promise<string[]> {
+  const recipients = new Set<string>();
+
+  try {
+    const settingsDoc = await db.collection("config").doc("global_config").get();
+    if (settingsDoc.exists) {
+      const data = settingsDoc.data();
+      if (data && Array.isArray(data.notificationEmails)) {
+        data.notificationEmails.forEach((email: string) => {
+          if (email && typeof email === 'string' && email.includes('@')) {
+            recipients.add(email.trim());
+          }
+        });
+      } else if (data && typeof data.notificationEmails === 'string' && data.notificationEmails.includes('@')) {
+        recipients.add(data.notificationEmails.trim());
+      }
+    }
+  } catch (error) {
+    console.error("Error reading diagnostic settings:", error instanceof Error ? error.message : "Unknown error");
+  }
+
+  if (process.env.NOTIFICATION_EMAILS) {
+    const envEmails = process.env.NOTIFICATION_EMAILS.split(',');
+    envEmails.forEach(email => {
+      const trimmed = email.trim();
+      if (trimmed && trimmed.includes('@')) {
+        recipients.add(trimmed);
+      }
+    });
+  }
+
+  if (recipients.size === 0 && process.env.SMTP_FROM) {
+    const match = process.env.SMTP_FROM.match(/<([^>]+)>/);
+    const email = match ? match[1] : process.env.SMTP_FROM;
+    if (email && email.includes('@')) {
+      recipients.add(email.trim());
+    }
+  }
+
+  if (recipients.size === 0 && requestData.notificationEmail && typeof requestData.notificationEmail === 'string' && requestData.notificationEmail.includes('@')) {
+    recipients.add(requestData.notificationEmail.trim());
+  }
+
+  return Array.from(recipients);
+}
+
 const app = express();
 
 app.use(express.json({ limit: "100kb" }));
@@ -174,6 +220,8 @@ app.get("/api/health", async (req, res) => {
     frontendAuthProjectId: FRONTEND_AUTH_PROJECT_ID,
     authVerifierAppName: FRONTEND_AUTH_APP_NAME,
     bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
+    smtpConfigured: !!process.env.SMTP_USER && !!process.env.SMTP_PASS,
+    notificationEmailsEnvConfigured: !!process.env.NOTIFICATION_EMAILS,
     firestoreDatabaseId: dbId,
     firestoreDatabaseIdConfigured: !!process.env.FIRESTORE_DATABASE_ID,
     firebaseProjectIdFromEnv: !!process.env.FIREBASE_PROJECT_ID,
@@ -266,24 +314,51 @@ app.post("/api/patient-requests", async (req, res) => {
 
     console.log("Patient request saved successfully", { docId });
 
-    // Send email notification to coordinator
-    const notificationEmail = requestData.notificationEmail || process.env.SMTP_FROM || "admin@example.com";
+    // Send email notification to coordinator(s)
+    const notificationRecipients = await getNotificationRecipients(requestData);
     
-    if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    if (process.env.SMTP_USER && process.env.SMTP_PASS && notificationRecipients.length > 0) {
       try {
+        const textContent = `Origen: ${newRequest.source || 'SoyBienestar'}
+Nombre: ${newRequest.nombre}
+Email: ${newRequest.email}
+Teléfono: ${newRequest.telefono || 'N/A'}
+${newRequest.rawSourcePayload?.edad ? `Edad: ${newRequest.rawSourcePayload.edad}\n` : ''}${newRequest.rawSourcePayload?.sexo ? `Sexo: ${newRequest.rawSourcePayload.sexo}\n` : ''}Canales solicitados:
+- Email: ${newRequest.preferredChannels?.email ? 'sí' : 'no'}
+- WhatsApp: ${newRequest.preferredChannels?.whatsapp ? 'sí' : 'no'}
+- SMS: ${newRequest.preferredChannels?.sms ? 'sí' : 'no'}
+
+Entra en Cuestionario Espejo para procesarla.`;
+
+        const htmlContent = `<p><strong>Origen:</strong> ${newRequest.source || 'SoyBienestar'}</p>
+<ul>
+  <li><strong>Nombre:</strong> ${newRequest.nombre}</li>
+  <li><strong>Email:</strong> ${newRequest.email}</li>
+  <li><strong>Teléfono:</strong> ${newRequest.telefono || 'N/A'}</li>
+  ${newRequest.rawSourcePayload?.edad ? `<li><strong>Edad:</strong> ${newRequest.rawSourcePayload.edad}</li>` : ''}
+  ${newRequest.rawSourcePayload?.sexo ? `<li><strong>Sexo:</strong> ${newRequest.rawSourcePayload.sexo}</li>` : ''}
+</ul>
+<p><strong>Canales solicitados:</strong></p>
+<ul>
+  <li>Email: ${newRequest.preferredChannels?.email ? 'sí' : 'no'}</li>
+  <li>WhatsApp: ${newRequest.preferredChannels?.whatsapp ? 'sí' : 'no'}</li>
+  <li>SMS: ${newRequest.preferredChannels?.sms ? 'sí' : 'no'}</li>
+</ul>
+<p>Entra en Cuestionario Espejo para procesarla.</p>`;
+
         await transporter.sendMail({
           from: process.env.SMTP_FROM || '"Cuestionario Espejo" <noreply@example.com>',
-          to: notificationEmail,
-          subject: "Nueva Petición de Cuestionario",
-          text: `Se ha recibido una nueva petición de cuestionario desde ${requestData.source}.\n\nNombre: ${newRequest.nombre}\nEmail: ${newRequest.email}\nTeléfono: ${newRequest.telefono || 'N/A'}\n\nPor favor, revisa la aplicación para procesarla.`,
-          html: `<p>Se ha recibido una nueva petición de cuestionario desde ${requestData.source}.</p><ul><li><strong>Nombre:</strong> ${newRequest.nombre}</li><li><strong>Email:</strong> ${newRequest.email}</li><li><strong>Teléfono:</strong> ${newRequest.telefono || 'N/A'}</li></ul><p>Por favor, revisa la aplicación para procesarla.</p>`,
+          to: notificationRecipients.join(","),
+          subject: "Nueva petición pendiente de Cuestionario Espejo",
+          text: textContent,
+          html: htmlContent,
         });
-        console.log("Email notification sent to", notificationEmail);
+        console.log("Email notification sent to", notificationRecipients.length, "recipients");
       } catch (error) {
-        console.error("Error sending email notification:", error);
+        console.error("Error sending email notification:", error instanceof Error ? error.message : "Unknown error");
       }
     } else {
-      console.log("SMTP credentials not configured. Skipping email notification.");
+      console.log("SMTP not configured or no recipients. Skipping email notification.");
     }
 
     res.status(201).json({ message: "Request received successfully", id: docId });

@@ -343,17 +343,34 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     e.target.value = '';
   };
 
+  const normalizeSexo = (value?: string) => {
+      if (!value) return "";
+      const normalized = value.toLowerCase().trim();
+      if (["hombre", "male", "masculino"].includes(normalized)) return "Hombre";
+      if (["mujer", "female", "femenino"].includes(normalized)) return "Mujer";
+      if (["prefiero_no_definirme", "no_definido", "no definido", "prefiero no definirme"].includes(normalized)) return "prefiero_no_definirme";
+      return "";
+  };
+
   const selectPendingRequest = (req: any) => {
       let extraNotes = "";
       if (req.source === "soybienestar") {
-          extraNotes = "Solicitud recibida desde SoyBienestar. Contiene contexto previo de consulta guiada.\n\n";
+          extraNotes = "Solicitud recibida desde SoyBienestar. Contiene contexto previo de consulta guiada.\n";
+          
+          if (req.preferredChannels) {
+              extraNotes += "Canal preferido solicitado:\n";
+              extraNotes += `- Email: ${req.preferredChannels.email ? 'sí' : 'no'}\n`;
+              extraNotes += `- WhatsApp: ${req.preferredChannels.whatsapp ? 'sí' : 'no'}\n`;
+              extraNotes += `- SMS: ${req.preferredChannels.sms ? 'sí' : 'no'}\n`;
+          }
+          extraNotes += "\n";
       }
 
       setPatient({
           nombre: req.nombre || req.displayName || '',
           email: req.email || '',
-          edad: req.edad || '',
-          sexo: req.sexo || '',
+          edad: req.edad ? String(req.edad) : '',
+          sexo: normalizeSexo(req.sexo),
           observaciones: extraNotes + (req.observaciones || req.notes || ''),
           telefono: req.telefono || '',
           source: req.source || "manual",
@@ -557,7 +574,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 email: patient.email,
                 telefono: fullPhone,
                 edad: patient.edad,
-                sexo: patient.sexo
+                sexo: patient.sexo,
+                source: patient.source || existingRecord!.source,
+                sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
+                soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
+                soybienestarContext: patient.soybienestarContext || existingRecord!.soybienestarContext,
+                preferredChannels: patient.preferredChannels || existingRecord!.preferredChannels
             };
             setRegistry(prev => prev.map(r => r.id === idEncoded ? updatedRecord : r));
             await DataService.updatePatient(idEncoded, { 
@@ -566,7 +588,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 email: patient.email,
                 telefono: fullPhone,
                 edad: patient.edad,
-                sexo: patient.sexo
+                sexo: patient.sexo,
+                source: patient.source || existingRecord!.source,
+                sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
+                soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
+                soybienestarContext: patient.soybienestarContext || existingRecord!.soybienestarContext,
+                preferredChannels: patient.preferredChannels || existingRecord!.preferredChannels
             });
         }
 
@@ -1212,6 +1239,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                         <select className="w-full p-2 border rounded-lg bg-slate-50" value={tempPatientDetails.sexo} onChange={e => setTempPatientDetails({...tempPatientDetails, sexo: e.target.value})}>
                                             <option value="Mujer">Mujer</option>
                                             <option value="Hombre">Hombre</option>
+                                            <option value="prefiero_no_definirme">Prefiero no definirme</option>
                                         </select>
                                     </div>
                                 </div>
@@ -1770,6 +1798,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         <option value="" disabled>Seleccionar...</option>
                         <option value="Mujer">Mujer</option>
                         <option value="Hombre">Hombre</option>
+                        <option value="prefiero_no_definirme">Prefiero no definirme</option>
                     </select>
                   </div>
                 </div>

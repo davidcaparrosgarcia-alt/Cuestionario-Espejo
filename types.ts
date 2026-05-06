@@ -42,7 +42,11 @@ export interface PatientData {
   sourceRequestId?: string;
   soybienestarUid?: string;
   soybienestarContext?: any;
-  preferredChannels?: string[];
+  preferredChannels?: {
+    email?: boolean;
+    whatsapp?: boolean;
+    sms?: boolean;
+  };
 }
 
 export interface DualAudio {
