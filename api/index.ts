@@ -228,6 +228,7 @@ app.get("/api/health", async (req, res) => {
     smtpPassFromEnv: !!process.env.SMTP_PASS,
     smtpFromFromEnv: !!process.env.SMTP_FROM,
     notificationEmailsFromEnv: !!process.env.NOTIFICATION_EMAILS,
+    appPublicUrlConfigured: !!process.env.APP_PUBLIC_URL,
     firestoreDatabaseId: dbId,
     firestoreDatabaseIdConfigured: !!process.env.FIRESTORE_DATABASE_ID,
     firebaseProjectIdFromEnv: !!process.env.FIREBASE_PROJECT_ID,
@@ -286,6 +287,8 @@ app.post("/api/patient-requests", async (req, res) => {
       nombre: finalNombre,
       email: requestData.email,
       telefono: requestData.telefono || null,
+      edad: requestData.edad || null,
+      sexo: requestData.sexo || null,
       preferredChannels: {
         email: !!preferredChannels.email,
         whatsapp: !!preferredChannels.whatsapp,
@@ -325,6 +328,7 @@ app.post("/api/patient-requests", async (req, res) => {
     
     if (process.env.SMTP_USER && process.env.SMTP_PASS && notificationRecipients.length > 0) {
       try {
+        const appUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
         const textContent = `Origen: ${newRequest.source || 'SoyBienestar'}
 Nombre: ${newRequest.nombre}
 Email: ${newRequest.email}
@@ -334,7 +338,8 @@ ${newRequest.rawSourcePayload?.edad ? `Edad: ${newRequest.rawSourcePayload.edad}
 - WhatsApp: ${newRequest.preferredChannels?.whatsapp ? 'sí' : 'no'}
 - SMS: ${newRequest.preferredChannels?.sms ? 'sí' : 'no'}
 
-Entra en Cuestionario Espejo para procesarla.`;
+Accede al panel:
+${appUrl}`;
 
         const htmlContent = `<p><strong>Origen:</strong> ${newRequest.source || 'SoyBienestar'}</p>
 <ul>
@@ -350,7 +355,7 @@ Entra en Cuestionario Espejo para procesarla.`;
   <li>WhatsApp: ${newRequest.preferredChannels?.whatsapp ? 'sí' : 'no'}</li>
   <li>SMS: ${newRequest.preferredChannels?.sms ? 'sí' : 'no'}</li>
 </ul>
-<p>Entra en Cuestionario Espejo para procesarla.</p>`;
+<p><a href="${appUrl}" target="_blank" rel="noopener noreferrer">Abrir Cuestionario Espejo</a></p>`;
 
         await transporter.sendMail({
           from: process.env.SMTP_FROM || '"Cuestionario Espejo" <noreply@example.com>',

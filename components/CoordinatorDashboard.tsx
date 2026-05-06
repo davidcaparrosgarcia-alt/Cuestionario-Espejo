@@ -352,6 +352,23 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       return "";
   };
 
+  const splitPhone = (rawPhone?: string) => {
+      const raw = String(rawPhone || "").trim();
+      if (!raw) return { prefix: "+34", body: "" };
+
+      const cleaned = raw.replace(/\s+/g, "");
+      if (cleaned.startsWith("+34")) {
+          return { prefix: "+34", body: cleaned.slice(3) };
+      }
+
+      const internationalMatch = cleaned.match(/^(\+\d{1,3})(\d+)$/);
+      if (internationalMatch) {
+          return { prefix: internationalMatch[1], body: internationalMatch[2] };
+      }
+
+      return { prefix: "+34", body: cleaned.replace(/\D/g, "") };
+  };
+
   const selectPendingRequest = (req: any) => {
       let extraNotes = "";
       if (req.source === "soybienestar") {
@@ -379,7 +396,25 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           soybienestarContext: req.soybienestarContext || null,
           preferredChannels: req.preferredChannels || null
       } as any);
-      if (req.phonePrefix) setPhonePrefix(req.phonePrefix);
+      
+      const phoneParts = splitPhone(req.telefono);
+      setPhonePrefix(phoneParts.prefix);
+      setPhoneBody(phoneParts.body);
+
+      if (req.preferredChannels) {
+          setSendMethods({
+              email: !!req.preferredChannels.email,
+              whatsapp: !!req.preferredChannels.whatsapp,
+              sms: !!req.preferredChannels.sms
+          });
+      } else {
+          setSendMethods({
+              email: true,
+              whatsapp: false,
+              sms: false
+          });
+      }
+
       setSelectedPendingRequestId(req.id);
       setShowRequestsDropdown(false);
   };
