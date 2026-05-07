@@ -158,7 +158,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   });
 
-  const visibleQuestions = isEditorMode ? questions : questions.filter(q => !q.hidden);
+  const activeQuestions = questions.filter(q => !q.hidden);
+  const hiddenQuestions = questions.filter(q => q.hidden);
 
   const [isPatientHydrating, setIsPatientHydrating] = useState(false);
   const [patientHydrationError, setPatientHydrationError] = useState<string | null>(null);
@@ -209,7 +210,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         setAnswers(fullPatient.answers);
                         // Si ya tiene respuestas pero no ha terminado, restauramos el índice
                         const answeredCount = Object.keys(fullPatient.answers).length;
-                        if (answeredCount > 0 && answeredCount < visibleQuestions.length) {
+                        if (answeredCount > 0 && answeredCount < activeQuestions.length) {
                             setCurrentQuestionIndex(answeredCount);
                         }
                     }
@@ -285,8 +286,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   useEffect(() => {
     // Preload next question audio
     const nextIdx = currentQuestionIndex + 1;
-    if (nextIdx < visibleQuestions.length) {
-      const nextQ = visibleQuestions[nextIdx];
+    if (nextIdx < activeQuestions.length) {
+      const nextQ = activeQuestions[nextIdx];
       const urls = [
         nextQ.audio?.female, nextQ.audio?.female2,
         nextQ.audio?.male, nextQ.audio?.male2,
@@ -578,9 +579,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   }, [visibleOptions]);
 
+  const isForbiddenDefaultBackground = (url?: string) => {
+    if (!url) return true;
+    return url.includes("images.unsplash.com") || url.includes("photo-1516550893923");
+  };
+
   const getCurrentBackground = () => {
-    if (globalConfig.backgrounds && globalConfig.backgrounds.length > 0) {
-        return globalConfig.backgrounds[0];
+    const configured = globalConfig.backgrounds?.find(bg => bg && !isForbiddenDefaultBackground(bg));
+    if (configured) {
+        return configured;
     }
     switch (step) {
       case 'intro': return BACKGROUNDS.intro;
@@ -860,11 +867,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setIsInteractionLocked(false);
       const newIndex = direction === 'next' ? currentQuestionIndex + 1 : currentQuestionIndex - 1;
       
-      if (newIndex >= 0 && newIndex < visibleQuestions.length) {
+      if (newIndex >= 0 && newIndex < activeQuestions.length) {
           setCurrentQuestionIndex(newIndex);
           // Forzar carga inmediata sin audio
           setVisibleOptions([]);
-          const q = visibleQuestions[newIndex];
+          const q = activeQuestions[newIndex];
           if (q) {
               // Mostrar todo inmediatamente para edición rápida
               if (!q.isScale) {
@@ -1050,7 +1057,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const loadQuestion = async (index: number) => {
-    const q = visibleQuestions[index];
+    const q = activeQuestions[index];
     setVisibleOptions([]); 
     
     if (!q) {
@@ -1063,7 +1070,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const handleAnswer = async (key: string) => {
     if (isInteractionLocked) return; 
     stopAudio();
-    const q = visibleQuestions[currentQuestionIndex];
+    const q = activeQuestions[currentQuestionIndex];
     const newAnswers = { ...answers, [q.id]: key };
     setAnswers(newAnswers);
     addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
@@ -1392,7 +1399,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
              </div>
         ) : (
         <>
-            {step === 'questionnaire' && <div className="mb-8"><ProgressBar current={currentQuestionIndex + 1} total={visibleQuestions.length} /></div>}
+            {step === 'questionnaire' && <div className="mb-8"><ProgressBar current={currentQuestionIndex + 1} total={activeQuestions.length} /></div>}
 
             <div className="mb-6 space-y-6">
             {(step === 'verification' || step === 'pin_validation') && (
@@ -1408,7 +1415,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 </div>
             )}
 
-            {step === 'questionnaire' && visibleQuestions[currentQuestionIndex] ? (
+            {step === 'questionnaire' && activeQuestions[currentQuestionIndex] ? (
                 <div ref={questionCardRef} className={`p-8 md:p-10 pt-12 rounded-[2.5rem] relative border backdrop-blur-xl shadow-xl animate-in fade-in duration-700 ${cardClasses}`}>
                 <div className="flex justify-between items-center mb-6">
                     <span className={`text-xs font-black uppercase tracking-[0.3em] block opacity-70 ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>Reflexión del Momento</span>
@@ -1425,9 +1432,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     )}
                 </div>
 
-                <h2 className="text-2xl md:text-3xl font-friendly font-bold leading-snug drop-shadow-sm">{processText(visibleQuestions[currentQuestionIndex].scenario)}</h2>
+                <h2 className="text-2xl md:text-3xl font-friendly font-bold leading-snug drop-shadow-sm">{processText(activeQuestions[currentQuestionIndex].scenario)}</h2>
                 {isEditorMode && (
-                    <button onClick={() => setEditingQuestion(visibleQuestions[currentQuestionIndex])} className="absolute -bottom-4 -right-4 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-2xl border-4 border-white"><i className="fas fa-edit text-lg"></i></button>
+                    <button onClick={() => setEditingQuestion(activeQuestions[currentQuestionIndex])} className="absolute -bottom-4 -right-4 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-2xl border-4 border-white"><i className="fas fa-edit text-lg"></i></button>
                 )}
                 </div>
             ) : step === 'finish' ? (
@@ -1525,9 +1532,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             ) : null}
             </div>
 
-            {step === 'questionnaire' && visibleQuestions[currentQuestionIndex] && (
+            {step === 'questionnaire' && activeQuestions[currentQuestionIndex] && (
             <div className="space-y-4 no-print">
-                {visibleQuestions[currentQuestionIndex].isScale && visibleQuestions[currentQuestionIndex].scaleRange ? (
+                {activeQuestions[currentQuestionIndex].isScale && activeQuestions[currentQuestionIndex].scaleRange ? (
                     <div className="animate-in slide-in-from-bottom-4">
                         <div className={`p-1 rounded-2xl border-2 ${isDarkMode ? 'bg-white/5 border-white/20' : 'bg-white border-blue-100'}`}>
                             <select 
@@ -1535,8 +1542,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                                 onChange={(e) => handleAnswer(e.target.value)}
                                 defaultValue=""
                             >
-                                <option value="" disabled>Selecciona un valor ({visibleQuestions[currentQuestionIndex].scaleRange.min} - {visibleQuestions[currentQuestionIndex].scaleRange.max})</option>
-                                {Array.from({length: (visibleQuestions[currentQuestionIndex].scaleRange.max - visibleQuestions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + visibleQuestions[currentQuestionIndex].scaleRange.min).map(val => (
+                                <option value="" disabled>Selecciona un valor ({activeQuestions[currentQuestionIndex].scaleRange.min} - {activeQuestions[currentQuestionIndex].scaleRange.max})</option>
+                                {Array.from({length: (activeQuestions[currentQuestionIndex].scaleRange.max - activeQuestions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + activeQuestions[currentQuestionIndex].scaleRange.min).map(val => (
                                     <option key={val} value={val} className="text-black">{val}</option>
                                 ))}
                             </select>
@@ -1544,7 +1551,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         <p className={`text-center text-xs mt-3 font-bold uppercase tracking-widest ${isDarkMode ? 'text-blue-300' : 'text-blue-400'}`}>Selecciona una opción para continuar</p>
                     </div>
                 ) : (
-                    visibleQuestions[currentQuestionIndex].options.map((opt, idx) => (
+                    activeQuestions[currentQuestionIndex].options.map((opt, idx) => (
                         visibleOptions.includes(opt.key) && (
                             <button 
                             key={opt.key} 
@@ -1714,23 +1721,37 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             <div className="flex justify-between items-center mb-4 border-b pb-4 border-white/10">
               <h3 className="text-2xl font-bold font-friendly flex items-center gap-4"><i className="fas fa-edit text-blue-500"></i> Editar Pregunta</h3>
               <div className="flex gap-2 relative">
-                  <button onClick={() => setShowHiddenList(!showHiddenList)} className="px-4 py-2 rounded-lg bg-indigo-900/50 hover:bg-indigo-800 text-indigo-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-undo"></i> Recuperar</button>
-                  <button onClick={handleHideQuestion} className="px-4 py-2 rounded-lg bg-orange-900/50 hover:bg-orange-800 text-orange-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-eye-slash"></i> Ocultar</button>
+                  {!questions.some(q => q.id === editingQuestion?.id) && (
+                      <button onClick={() => setShowHiddenList(!showHiddenList)} className="px-4 py-2 rounded-lg bg-indigo-900/50 hover:bg-indigo-800 text-indigo-200 text-xs font-bold transition-colors flex items-center gap-2">
+                          <i className="fas fa-undo"></i> Recuperar pregunta oculta
+                      </button>
+                  )}
+                  {questions.some(q => q.id === editingQuestion?.id && !q.hidden) && (
+                      <button onClick={handleHideQuestion} className="px-4 py-2 rounded-lg bg-orange-900/50 hover:bg-orange-800 text-orange-200 text-xs font-bold transition-colors flex items-center gap-2">
+                          <i className="fas fa-eye-slash"></i> Ocultar pregunta
+                      </button>
+                  )}
                   <button onClick={handleDeleteQuestion} className="px-4 py-2 rounded-lg bg-red-900/50 hover:bg-red-800 text-red-200 text-xs font-bold transition-colors flex items-center gap-2"><i className="fas fa-trash"></i> Eliminar</button>
                   <button onClick={() => setEditingQuestion(null)} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-900/50 hover:text-red-400 transition-colors flex items-center justify-center"><i className="fas fa-times text-xl"></i></button>
 
                   {/* Dropdown for hidden questions */}
-                  {showHiddenList && (
-                      <div className="absolute top-12 right-0 w-80 bg-[#1e293b] border border-white/20 shadow-2xl rounded-xl z-50 p-2 max-h-64 overflow-y-auto">
-                          <h4 className="text-xs text-white/50 font-bold uppercase p-2 border-b border-white/10 mb-2">Preguntas Ocultas</h4>
-                          {questions.filter(q => q.hidden).length === 0 ? (
+                  {showHiddenList && !questions.some(q => q.id === editingQuestion?.id) && (
+                      <div className="absolute top-12 left-0 w-full bg-[#1e293b] border border-white/20 shadow-[-0px_10px_40px_rgba(0,0,0,0.8)] rounded-xl z-[150] p-4 max-h-[60vh] overflow-y-auto">
+                          <h4 className="text-xs text-white/50 font-bold uppercase p-2 border-b border-white/10 mb-4">Preguntas Ocultas Disponibles para Recuperar</h4>
+                          {hiddenQuestions.length === 0 ? (
                               <p className="text-sm p-4 text-center text-white/40">No hay preguntas ocultas para recuperar.</p>
                           ) : (
-                              questions.filter(q => q.hidden).map(hq => (
-                                  <button key={hq.id} onClick={() => handleRecoverQuestion(hq)} className="w-full text-left p-3 hover:bg-white/5 rounded-lg text-sm text-blue-200 transition-colors truncate">
-                                      {hq.scenario}
-                                  </button>
-                              ))
+                              <div className="flex flex-col gap-3">
+                                  {hiddenQuestions.map(hq => (
+                                      <button 
+                                          key={hq.id} 
+                                          onClick={() => handleRecoverQuestion(hq)} 
+                                          className="w-full text-left p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-blue-600/30 whitespace-normal break-words leading-relaxed text-blue-100 transition-colors"
+                                      >
+                                          {hq.scenario}
+                                      </button>
+                                  ))}
+                              </div>
                           )}
                       </div>
                   )}

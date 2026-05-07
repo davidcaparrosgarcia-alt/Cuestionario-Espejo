@@ -371,14 +371,20 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const selectPendingRequest = (req: any) => {
       let extraNotes = "";
+      
+      const pEdad = req.edad ?? req.rawSourcePayload?.edad ?? '';
+      const pSexo = req.sexo ?? req.rawSourcePayload?.sexo ?? '';
+      const pTelefono = req.telefono ?? req.rawSourcePayload?.telefono ?? '';
+      const pChannels = req.preferredChannels ?? req.rawSourcePayload?.preferredChannels ?? null;
+
       if (req.source === "soybienestar") {
           extraNotes = "Solicitud recibida desde SoyBienestar. Contiene contexto previo de consulta guiada.\n";
           
-          if (req.preferredChannels) {
+          if (pChannels) {
               extraNotes += "Canal preferido solicitado:\n";
-              extraNotes += `- Email: ${req.preferredChannels.email ? 'sí' : 'no'}\n`;
-              extraNotes += `- WhatsApp: ${req.preferredChannels.whatsapp ? 'sí' : 'no'}\n`;
-              extraNotes += `- SMS: ${req.preferredChannels.sms ? 'sí' : 'no'}\n`;
+              extraNotes += `- Email: ${pChannels.email ? 'sí' : 'no'}\n`;
+              extraNotes += `- WhatsApp: ${pChannels.whatsapp ? 'sí' : 'no'}\n`;
+              extraNotes += `- SMS: ${pChannels.sms ? 'sí' : 'no'}\n`;
           }
           extraNotes += "\n";
       }
@@ -386,18 +392,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       setPatient({
           nombre: req.nombre || req.displayName || '',
           email: req.email || '',
-          edad: req.edad ? String(req.edad) : '',
-          sexo: normalizeSexo(req.sexo),
+          edad: pEdad ? String(pEdad) : '',
+          sexo: normalizeSexo(pSexo),
           observaciones: extraNotes + (req.observaciones || req.notes || ''),
-          telefono: req.telefono || '',
+          telefono: pTelefono || '',
           source: req.source || "manual",
           sourceRequestId: req.id,
           soybienestarUid: req.soybienestarUid || null,
           soybienestarContext: req.soybienestarContext || null,
-          preferredChannels: req.preferredChannels || null
+          preferredChannels: pChannels
       } as any);
       
-      const phoneParts = splitPhone(req.telefono);
+      const phoneParts = splitPhone(pTelefono);
       setPhonePrefix(phoneParts.prefix);
       setPhoneBody(phoneParts.body);
 
@@ -540,7 +546,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
 
     let finalName = patient.nombre.trim();
-    let idEncoded = '';
+    let sessionToken = '';
+    let dbPatientId = '';
     let accessPin = '';
     let isNewRecord = false;
     
@@ -570,7 +577,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     
     if (isNewRecord) {
         accessPin = Math.floor(1000 + Math.random() * 9000).toString();
+        dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
         const payload = { 
+          id: dbPatientId,
           nombre: finalName, 
           email: patient.email,
           telefono: fullPhone, 
@@ -579,17 +588,28 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           coordinatorEmail: profile.email,
           timestamp: now
         };
-        idEncoded = safeBtoa(JSON.stringify(payload));
+        sessionToken = safeBtoa(JSON.stringify(payload));
     } else {
         accessPin = existingRecord!.accessPin || Math.floor(1000 + Math.random() * 9000).toString();
-        idEncoded = existingRecord!.id;
+        dbPatientId = existingRecord!.id;
+        const payload = { 
+          id: dbPatientId,
+          nombre: finalName, 
+          email: patient.email,
+          telefono: fullPhone, 
+          edad: patient.edad, 
+          sexo: patient.sexo, 
+          coordinatorEmail: profile.email,
+          timestamp: now
+        };
+        sessionToken = safeBtoa(JSON.stringify(payload));
     }
     
     setLastGeneratedPin(accessPin);
 
     try {
         const baseUrl = window.location.origin + window.location.pathname;
-        const url = `${baseUrl}#/session?p=${idEncoded}`;
+        const url = `${baseUrl}#/session?p=${sessionToken}`;
         
         setLinkGenerated(url);
         
@@ -610,7 +630,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               ...patient as PatientData, 
               nombre: finalName,
               telefono: fullPhone,
-              id: idEncoded, 
+              id: dbPatientId, 
               coordinatorEmail: profile.email,
               status: 'sent', 
               dateSent: now,
@@ -634,8 +654,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 soybienestarContext: patient.soybienestarContext || existingRecord!.soybienestarContext,
                 preferredChannels: patient.preferredChannels || existingRecord!.preferredChannels
             };
-            setRegistry(prev => prev.map(r => r.id === idEncoded ? updatedRecord : r));
-            await DataService.updatePatient(idEncoded, { 
+            setRegistry(prev => prev.map(r => r.id === dbPatientId ? updatedRecord : r));
+            await DataService.updatePatient(dbPatientId, { 
                 dateSent: now, 
                 status: 'sent',
                 email: patient.email,
@@ -1126,6 +1146,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const handleDownloadPDF = async () => {
     let questionsToPrint = await DataService.getQuestions();
+    questionsToPrint = questionsToPrint.filter(q => !q.hidden);
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       triggerToast("Por favor, permite las ventanas emergentes.");

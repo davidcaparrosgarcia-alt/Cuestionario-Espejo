@@ -146,8 +146,21 @@ const App: React.FC = () => {
                 // Usamos el decodificador seguro
                 const decodedText = safeAtob(pEncoded);
                 const decoded = JSON.parse(decodedText);
-                // Aseguramos que el ID esté presente en los datos del paciente
-                setPatientData({ ...decoded, id: pEncoded });
+                
+                console.log("[PATIENT LINK] decoded session token", {
+                  hasId: !!decoded.id,
+                  idPreview: decoded.id ? String(decoded.id).slice(0, 20) : null
+                });
+
+                if (!decoded.id) {
+                  console.error("Link de sesión sin id de paciente", decoded);
+                  setView('LANDING');
+                  setToast({ show: true, msg: "Este enlace de cuestionario no es válido o está incompleto." });
+                  return;
+                }
+
+                // Aseguramos que el ID esté presente en los datos del paciente y use el ID decodificado
+                setPatientData({ ...decoded, id: decoded.id });
                 setIsEditorMode(false);
                 setView('PATIENT_SESSION');
               } catch (e) {
