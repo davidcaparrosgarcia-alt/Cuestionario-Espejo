@@ -138,7 +138,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         const parsed = JSON.parse(saved);
         // Validación básica: si no es un objeto, ignorar
         if (!parsed || typeof parsed !== 'object') return DEFAULT_CONFIG;
-        return parsed;
+        return { ...parsed, backgrounds: [] };
     } catch(e) {
         console.warn("Error al cargar radar_global_config de localStorage:", e);
         return DEFAULT_CONFIG;
@@ -179,9 +179,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         }
 
         const remoteConfig = await DataService.getGlobalConfig(DEFAULT_CONFIG);
+        const sanitizedRemoteConfig = { ...remoteConfig, backgrounds: [] };
+        
         setGlobalConfig(prev => {
-             if (JSON.stringify(prev) !== JSON.stringify(remoteConfig)) {
-                 return remoteConfig;
+             if (JSON.stringify(prev) !== JSON.stringify(sanitizedRemoteConfig)) {
+                 return sanitizedRemoteConfig;
              }
              return prev;
         });
@@ -579,21 +581,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   }, [visibleOptions]);
 
-  const isForbiddenDefaultBackground = (url?: string) => {
-    if (!url) return true;
-    return url.includes("images.unsplash.com") || url.includes("photo-1516550893923");
-  };
-
   const getCurrentBackground = () => {
-    const configured = globalConfig.backgrounds?.find(bg => bg && !isForbiddenDefaultBackground(bg));
-    if (configured) {
-        return configured;
-    }
-    switch (step) {
-      case 'intro': return BACKGROUNDS.intro;
-      case 'verification': return BACKGROUNDS.verification;
-      default: return BACKGROUNDS.general;
-    }
+    return FALLBACK_TEXTURE;
   };
 
   const generateClinicalReport = async () => {
@@ -958,40 +947,23 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }, 0);
   };
 
-  const handlePinSubmit = () => {
+  const handlePinSubmit = async () => {
+    const enteredPin = String(pinInput || "").trim();
+
+    if (!enteredPin) {
+      showToast("Introduce la clave personal recibida con tu enlace.");
+      return;
+    }
+
     if (isPatientHydrating) {
-        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
-        return;
-    }
-    
-    if (patientHydrationError) {
-        showToast(patientHydrationError);
+        showToast("Preparando tu acceso seguro. Espera unos segundos.");
         return;
     }
 
-    if (!currentPatientData.accessPin && !isEditorMode) {
-        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
-        return;
-    }
-
-    const correctPin = isEditorMode ? pinInput : String(currentPatientData.accessPin).trim();
-    if (pinInput.trim() === correctPin || isEditorMode) {
+    // Handled specially for editor
+    if (isEditorMode) {
         if (currentPatientData.status === 'concluded' || currentPatientData.status === 'finalized') {
             setStep('conclusion_view');
-            
-            // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed) o FINALIZADO (finalized)
-            if (currentPatientData.id && currentPatientData.status === 'concluded') {
-                DataService.updatePatient(currentPatientData.id, {
-                    status: 'finalized',
-                    dateConclusionViewed: Date.now(),
-                    conclusionViews: (currentPatientData.conclusionViews || 0) + 1
-                }).catch(e => console.error("Error updating status to finalized", e));
-            } else if (currentPatientData.id && currentPatientData.status === 'finalized') {
-                DataService.updatePatient(currentPatientData.id, {
-                    dateConclusionViewed: Date.now(),
-                    conclusionViews: (currentPatientData.conclusionViews || 0) + 1
-                }).catch(e => console.error("Error updating conclusion views", e));
-            }
         } else {
             const nameQ = processText(globalConfig.nameQuestionText);
             if (nameQ) {
@@ -1002,10 +974,87 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 proceedToQuestionnaire();
             }
         }
-    } else {
+        return;
+    }
+
+    if (patientHydrationError) {
+        showToast(patientHydrationError);
+        return;
+    }
+
+    if (!currentPatientData.id) {
+      showToast("No se ha podido identificar este enlace. Solicita un nuevo acceso.");
+      return;
+    }
+
+    try {
+      setIsPatientHydrating(true);
+
+      const freshPatient = await DataService.getPatientById(String(currentPatientData.id));
+
+      console.log("[PIN VALIDATION] fresh patient check", {
+        patientId: String(currentPatientData.id).slice(0, 30),
+        hasPatient: !!freshPatient,
+        hasAccessPin: !!freshPatient?.accessPin,
+        status: freshPatient?.status || null
+      });
+
+      if (!freshPatient) {
+        showToast("Este enlace no está disponible o ha caducado. Solicita un nuevo acceso.");
+        return;
+      }
+
+      if (!freshPatient.accessPin) {
+        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
+        return;
+      }
+
+      const expectedPin = String(freshPatient.accessPin).trim();
+
+      if (enteredPin !== expectedPin) {
+        setPinInput("");
         addMessage("El código de acceso es incorrecto. Por favor, inténtalo de nuevo.", 'ia');
         playOrSpeak("El código de acceso es incorrecto. Por favor, inténtalo de nuevo.");
-        setPinInput('');
+        showToast("Código incorrecto. Revisa la clave personal recibida con tu enlace.");
+        return;
+      }
+
+      setCurrentPatientData(freshPatient);
+      patientDataRef.current = freshPatient;
+      setPinInput("");
+
+      if (freshPatient.status === "concluded" || freshPatient.status === "finalized") {
+        setStep("conclusion_view");
+        
+        // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed) o FINALIZADO (finalized)
+        if (freshPatient.id && freshPatient.status === 'concluded') {
+            DataService.updatePatient(freshPatient.id, {
+                status: 'finalized',
+                dateConclusionViewed: Date.now(),
+                conclusionViews: (freshPatient.conclusionViews || 0) + 1
+            }).catch(e => console.error("Error updating status to finalized", e));
+        } else if (freshPatient.id && freshPatient.status === 'finalized') {
+            DataService.updatePatient(freshPatient.id, {
+                dateConclusionViewed: Date.now(),
+                conclusionViews: (freshPatient.conclusionViews || 0) + 1
+            }).catch(e => console.error("Error updating conclusion views", e));
+        }
+      } else {
+        const nameQ = processText(globalConfig.nameQuestionText);
+        if (nameQ) {
+            setStep("verification");
+            addMessage(nameQ, 'ia');
+            playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
+        } else {
+            proceedToQuestionnaire();
+        }
+      }
+
+    } catch (error) {
+      console.error("[PIN VALIDATION] error", error);
+      showToast("No hemos podido verificar la clave. Inténtalo de nuevo en unos segundos.");
+    } finally {
+      setIsPatientHydrating(false);
     }
   };
 
