@@ -409,11 +409,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       setPhonePrefix(phoneParts.prefix);
       setPhoneBody(phoneParts.body);
 
-      if (req.preferredChannels) {
+      if (pChannels) {
           setSendMethods({
-              email: !!req.preferredChannels.email,
-              whatsapp: !!req.preferredChannels.whatsapp,
-              sms: !!req.preferredChannels.sms
+              email: !!pChannels.email,
+              whatsapp: !!pChannels.whatsapp,
+              sms: !!pChannels.sms
           });
       } else {
           setSendMethods({
@@ -658,6 +658,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 telefono: fullPhone,
                 edad: patient.edad,
                 sexo: patient.sexo,
+                accessPin: accessPin,
+                proposedAccessCode: proposedAccessCode || existingRecord!.proposedAccessCode,
                 source: patient.source || existingRecord!.source,
                 sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
@@ -672,6 +674,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 telefono: fullPhone,
                 edad: patient.edad,
                 sexo: patient.sexo,
+                accessPin: accessPin,
+                proposedAccessCode: proposedAccessCode || existingRecord!.proposedAccessCode,
                 source: patient.source || existingRecord!.source,
                 sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
