@@ -238,6 +238,8 @@ app.get("/api/health", async (req, res) => {
     adminAppProjectId: admin.apps.length ? admin.app().options.projectId : null,
     projectIdLooksCorrect: resolvedProjectId === "gen-lang-client-0082734692",
     clientEmailLooksCorrect: clientEmail ? clientEmail.includes("gen-lang-client-0082734692") : false,
+    soybienestarWebhookConfigured: !!process.env.SOYBIENESTAR_WEBHOOK_URL,
+    soybienestarBridgeSecretConfigured: !!process.env.SOYBIENESTAR_BRIDGE_SECRET,
     firestoreCheck,
     firestoreError,
     permissionDiagnosis,
@@ -502,6 +504,68 @@ app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res)
       return res.status(200).json({ message: "Mock deletion due to lack of IAM permissions" });
     }
     res.status(200).json({ message: "Request processed (with warnings)" });
+  }
+});
+
+app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
+  const patient = req.body.patient;
+  if (!patient || !patient.id) {
+    return res.status(400).json({ error: "Missing patient data" });
+  }
+
+  const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
+  const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+
+  if (!webhookUrl) {
+    console.log("[SoyBienestar] Webhook no configurado. Skipping dossier notification.");
+    return res.json({ success: true, note: "Webhook not configured" });
+  }
+
+  const payload = {
+    event: "dossier_available",
+    soybienestarUid: patient.soybienestarUid || null,
+    sourceRequestId: patient.sourceRequestId || null,
+    linkedQuestionnairePatientId: patient.id,
+    email: patient.email,
+    telefono: patient.telefono || null,
+    accessPinProvidedBySoyBienestar: !!patient.proposedAccessCode,
+    status: patient.status,
+    occurredAt: Date.now(),
+    dossier: {
+      finalConclusion: patient.finalConclusion || "",
+      conversationSummary: patient.conversationSummary || "",
+      audioConclusion: patient.conclusionAudio || patient.audioConclusion || null,
+      dateConclusionSent: patient.dateConclusionSent || null
+    }
+  };
+
+  try {
+    const headers: any = {
+      "Content-Type": "application/json"
+    };
+
+    if (bridgeSecret) {
+      headers["x-bridge-secret"] = bridgeSecret;
+    }
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      console.error(`[SoyBienestar] Webhook devolvió estado ${response.status}`, await response.text());
+      // No fallar la petición completa para no romper el guardado del paciente
+      return res.json({ success: false, note: `Webhook devolvió HTTP ${response.status}` });
+    }
+
+    console.log(`[SoyBienestar] Webhook informado correctamente para paciente ${patient.id}.`);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("[SoyBienestar] Error al enviar dossier via webhook:", e);
+    // Retornamos HTTP 200 porque es un proceso en background y no debe romper el dashboard
+    return res.json({ success: false, note: "Error de conexión con webhook", error: String(e) });
   }
 });
 

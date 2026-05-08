@@ -42,6 +42,7 @@ export interface PatientData {
   sourceRequestId?: string;
   soybienestarUid?: string;
   soybienestarContext?: any;
+  proposedAccessCode?: string;
   preferredChannels?: {
     email?: boolean;
     whatsapp?: boolean;

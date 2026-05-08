@@ -376,6 +376,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       const pSexo = req.sexo ?? req.rawSourcePayload?.sexo ?? '';
       const pTelefono = req.telefono ?? req.rawSourcePayload?.telefono ?? '';
       const pChannels = req.preferredChannels ?? req.rawSourcePayload?.preferredChannels ?? null;
+      const pAccessCode = req.proposedAccessCode ?? req.rawSourcePayload?.proposedAccessCode ?? undefined;
 
       if (req.source === "soybienestar") {
           extraNotes = "Solicitud recibida desde SoyBienestar. Contiene contexto previo de consulta guiada.\n";
@@ -400,6 +401,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           sourceRequestId: req.id,
           soybienestarUid: req.soybienestarUid || null,
           soybienestarContext: req.soybienestarContext || null,
+          proposedAccessCode: pAccessCode,
           preferredChannels: pChannels
       } as any);
       
@@ -575,8 +577,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         }
     }
     
+    const proposedAccessCode =
+      patient.proposedAccessCode ||
+      (patient as any).rawSourcePayload?.proposedAccessCode ||
+      "";
+
     if (isNewRecord) {
-        accessPin = Math.floor(1000 + Math.random() * 9000).toString();
+        accessPin = proposedAccessCode
+          ? String(proposedAccessCode).trim().toUpperCase()
+          : Math.floor(1000 + Math.random() * 9000).toString();
         dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
         const payload = { 
           id: dbPatientId,
@@ -590,7 +599,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         };
         sessionToken = safeBtoa(JSON.stringify(payload));
     } else {
-        accessPin = existingRecord!.accessPin || Math.floor(1000 + Math.random() * 9000).toString();
+        accessPin = existingRecord!.accessPin || (proposedAccessCode ? String(proposedAccessCode).trim().toUpperCase() : Math.floor(1000 + Math.random() * 9000).toString());
         dbPatientId = existingRecord!.id;
         const payload = { 
           id: dbPatientId,
@@ -634,7 +643,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               coordinatorEmail: profile.email,
               status: 'sent', 
               dateSent: now,
-              accessPin: accessPin
+              accessPin: accessPin,
+              proposedAccessCode: proposedAccessCode || undefined
             };
             
             setRegistry(prev => [...prev, newRecord]);
@@ -768,6 +778,30 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       }
   };
 
+  const notifySoyBienestarDossierReady = async (patient: PatientData) => {
+    if (patient.source !== "soybienestar" && !patient.soybienestarUid) return;
+    if (!patient.finalConclusion) return;
+    if (patient.status !== "concluded" && patient.status !== "finalized") return;
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      const token = await user.getIdToken();
+      const res = await fetch('/api/notify-dossier', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ patient })
+      });
+      if (!res.ok) {
+        console.error("Failed to notify dossier readiness, status:", res.status);
+      }
+    } catch (e) {
+      console.error("Error notifying dossier readiness:", e);
+    }
+  };
+
   const handleSaveConclusion = async () => {
     if (!selectedPatientConclusion) return;
     const updatedPatient = { 
@@ -782,6 +816,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     });
     setSelectedPatientConclusion(updatedPatient);
     triggerToast("Conclusión y audio guardados correctamente");
+    await notifySoyBienestarDossierReady(updatedPatient);
   };
 
   const handleEditDetails = () => {
@@ -817,6 +852,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     body = body.replace(/\[Nombre\]/g, p.nombre.split(' ')[0])
                .replace(/\[Link\]/g, url)
                .replace(/\[PIN\]/g, p.accessPin || 'Consulta con tu coordinador');
+
+    if (p.source === "soybienestar" || p.soybienestarUid) {
+        body = `Hola ${p.nombre.split(' ')[0]},\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a tus resultados desde el espacio personalizado de SoyBienestar cuando el equipo los active.\n\nGracias.`;
+    }
                
     return { url, body };
   };
@@ -827,6 +866,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         if (r.id === id) {
             const updated = { ...r, status: 'concluded' as const, dateConclusionSent: now, conclusionViews: 0 };
             DataService.updatePatient(id, { status: 'concluded', dateConclusionSent: now, conclusionViews: 0 });
+            notifySoyBienestarDossierReady(updated);
             return updated;
         }
         return r;
