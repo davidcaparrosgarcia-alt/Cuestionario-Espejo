@@ -783,7 +783,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const notifySoyBienestarDossierReady = async (patient: PatientData) => {
-    if (patient.source !== "soybienestar" && !patient.soybienestarUid) return;
+    if (patient.source !== "soybienestar" && !patient.soybienestarUid && !patient.sourceRequestId) return;
     if (!patient.finalConclusion) return;
     if (patient.status !== "concluded" && patient.status !== "finalized") return;
     try {
@@ -798,29 +798,53 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         },
         body: JSON.stringify({ patient })
       });
-      if (!res.ok) {
+      if (res.ok) {
+        const data = await res.json();
+        const syncStatus = data.success ? "ok" : (data.note === "Webhook not configured" ? "skipped" : "error");
+        await DataService.updatePatient(patient.id, {
+          lastSoyBienestarDossierSyncAt: Date.now(),
+          lastSoyBienestarDossierSyncStatus: syncStatus
+        });
+      } else {
         console.error("Failed to notify dossier readiness, status:", res.status);
+        await DataService.updatePatient(patient.id, {
+          lastSoyBienestarDossierSyncAt: Date.now(),
+          lastSoyBienestarDossierSyncStatus: "error"
+        });
       }
     } catch (e) {
       console.error("Error notifying dossier readiness:", e);
+      await DataService.updatePatient(patient.id, {
+        lastSoyBienestarDossierSyncAt: Date.now(),
+        lastSoyBienestarDossierSyncStatus: "error"
+      });
     }
   };
 
   const handleSaveConclusion = async () => {
     if (!selectedPatientConclusion) return;
-    const updatedPatient = { 
+    const now = Date.now();
+    const updatedPatient: PatientData = { 
         ...selectedPatientConclusion, 
         finalConclusion: editingConclusion,
-        audioConclusion: editingAudio 
+        audioConclusion: editingAudio,
+        dateConclusionSent: now,
+        status: selectedPatientConclusion.status === "finalized" ? "finalized" : "concluded"
     };
     setRegistry(registry.map(r => r.id === updatedPatient.id ? updatedPatient : r));
     await DataService.updatePatient(updatedPatient.id, { 
         finalConclusion: editingConclusion, 
-        audioConclusion: editingAudio 
+        audioConclusion: editingAudio || null,
+        dateConclusionSent: now,
+        status: updatedPatient.status
     });
     setSelectedPatientConclusion(updatedPatient);
     triggerToast("Conclusión y audio guardados correctamente");
-    await notifySoyBienestarDossierReady(updatedPatient);
+    
+    const isSoyBienestarPatient = updatedPatient.source === "soybienestar" || !!updatedPatient.soybienestarUid || !!updatedPatient.sourceRequestId;
+    if (isSoyBienestarPatient) {
+      await notifySoyBienestarDossierReady(updatedPatient);
+    }
   };
 
   const handleEditDetails = () => {

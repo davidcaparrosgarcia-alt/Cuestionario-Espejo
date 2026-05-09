@@ -43,6 +43,8 @@ export interface PatientData {
   soybienestarUid?: string;
   soybienestarContext?: any;
   proposedAccessCode?: string;
+  lastSoyBienestarDossierSyncAt?: number;
+  lastSoyBienestarDossierSyncStatus?: "ok" | "error" | "skipped";
   preferredChannels?: {
     email?: boolean;
     whatsapp?: boolean;

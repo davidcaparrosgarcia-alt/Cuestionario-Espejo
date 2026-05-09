@@ -516,8 +516,8 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
   const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
   const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
 
-  if (!webhookUrl) {
-    console.log("[SoyBienestar] Webhook no configurado. Skipping dossier notification.");
+  if (!webhookUrl || !bridgeSecret) {
+    console.log("[SoyBienestar] Webhook o bridge secret no configurado. Skipping dossier notification.");
     return res.json({ success: true, note: "Webhook not configured" });
   }
 
