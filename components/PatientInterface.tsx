@@ -1522,15 +1522,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <input 
                         ref={pinInputRef}
                         type="text" 
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        maxLength={4}
+                        maxLength={6}
                         autoComplete="off"
                         disabled={isPatientHydrating}
                         className={`w-full text-center tracking-[0.8em] text-5xl py-8 rounded-[2rem] border-2 outline-none transition-all mb-10 font-black ${isPatientHydrating ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
                         value={pinInput}
-                        onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
-                        onKeyPress={e => e.key === 'Enter' && pinInput.length === 4 && handlePinSubmit()}
+                        onChange={e => setPinInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))}
+                        onKeyPress={e => e.key === 'Enter' && pinInput.length >= 4 && handlePinSubmit()}
                     />
                     
                     {isPatientHydrating && (
@@ -1539,7 +1537,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
                     <Button 
                         onClick={handlePinSubmit} 
-                        disabled={pinInput.length !== 4 || isPatientHydrating}
+                        disabled={pinInput.length < 4 || isPatientHydrating}
                         className="w-full py-5 text-xl rounded-2xl shadow-xl"
                     >
                         Entrar al Cuestionario

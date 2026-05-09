@@ -107,12 +107,12 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
                 <div className="mb-8">
                     <input 
                         type="password" 
-                        maxLength={4} 
+                        maxLength={6} 
                         className={`w-full text-center text-4xl tracking-[0.5em] p-5 rounded-2xl border-2 outline-none transition-all ${pinError ? 'border-red-500 bg-red-50' : 'border-blue-100 focus:border-blue-500 bg-white'}`}
                         placeholder="****"
                         value={pinInput}
-                        onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
-                        onKeyPress={e => e.key === 'Enter' && pinInput.length === 4 && verifyPin()}
+                        onChange={e => setPinInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))}
+                        onKeyPress={e => e.key === 'Enter' && pinInput.length >= 4 && verifyPin()}
                     />
                     {pinError && <p className="text-red-500 text-xs font-bold mt-2 animate-pulse">Clave incorrecta</p>}
                 </div>
