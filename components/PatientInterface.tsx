@@ -934,12 +934,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 } else {
                     proceedToQuestionnaire();
                 }
-            } else {
-                const welcome = processText(globalConfig.welcomeText);
-                if (welcome) {
-                    addMessage(welcome, 'ia');
-                    playOrSpeak(welcome, globalConfig.welcomeAudio);
-                }
             }
         } finally {
             setIsStarting(false);
@@ -948,13 +942,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const normalizePatientAccessCode = (value: string) =>
-      String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 6);
+      String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
 
   const handlePinSubmit = async () => {
     const enteredPin = normalizePatientAccessCode(pinInput);
 
-    if (!enteredPin) {
-      showToast("Introduce la clave personal recibida con tu enlace.");
+    if (enteredPin.length !== 4) {
+      showToast("Esta clave no es válida. Solicita un nuevo enlace de acceso.");
       return;
     }
 
@@ -1013,12 +1007,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       }
 
       const expectedPin = normalizePatientAccessCode(freshPatient.accessPin);
+      
+      if (expectedPin.length !== 4) {
+        showToast("Esta clave no es válida. Solicita un nuevo enlace de acceso.");
+        return;
+      }
 
       if (enteredPin !== expectedPin) {
         setPinInput("");
-        addMessage("El código de acceso es incorrecto. Por favor, inténtalo de nuevo.", 'ia');
-        playOrSpeak("El código de acceso es incorrecto. Por favor, inténtalo de nuevo.");
-        showToast("Código incorrecto. Revisa la clave personal recibida con tu enlace.");
+        addMessage("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.", 'ia');
+        playOrSpeak("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.");
+        showToast("Clave incorrecta. Revisa la clave personal recibida con tu enlace.");
         return;
       }
 
@@ -1043,6 +1042,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             }).catch(e => console.error("Error updating conclusion views", e));
         }
       } else {
+        const welcome = processText(globalConfig.welcomeText);
+        if (welcome) {
+            addMessage(welcome, 'ia');
+            await playOrSpeak(welcome, globalConfig.welcomeAudio);
+        }
+        
         const nameQ = processText(globalConfig.nameQuestionText);
         if (nameQ) {
             setStep("verification");
@@ -1515,7 +1520,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 )}
                 </div>
             ) : step === 'pin_validation' ? (
-                <div className={`max-w-md mx-auto p-10 rounded-[3rem] border shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-500 ${cardClasses}`}>
+                <div className={`max-w-md mx-auto p-8 sm:p-10 rounded-[3rem] border shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-500 box-border overflow-hidden ${cardClasses}`}>
                     <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-8 text-3xl shadow-lg">
                         <i className="fas fa-key"></i>
                     </div>
@@ -1530,10 +1535,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
-                        maxLength={6}
+                        maxLength={4}
                         autoComplete="off"
                         disabled={isPatientHydrating}
-                        className={`w-full text-center tracking-[0.8em] text-5xl py-8 rounded-[2rem] border-2 outline-none transition-all mb-10 font-black ${isPatientHydrating ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
+                        className={`w-full max-w-full box-border text-center uppercase tracking-[0.35em] text-3xl sm:text-4xl py-6 rounded-[2rem] border-2 outline-none transition-all mb-8 font-black ${isPatientHydrating ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
                         value={pinInput}
                         onChange={e => setPinInput(normalizePatientAccessCode(e.target.value))}
                         onPaste={e => {
@@ -1541,7 +1546,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                             const pasted = e.clipboardData.getData("text");
                             setPinInput(normalizePatientAccessCode(pasted));
                         }}
-                        onKeyPress={e => e.key === 'Enter' && pinInput.length >= 4 && handlePinSubmit()}
+                        onKeyPress={e => e.key === 'Enter' && pinInput.length === 4 && handlePinSubmit()}
                     />
                     
                     {isPatientHydrating && (
@@ -1550,7 +1555,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
                     <Button 
                         onClick={handlePinSubmit} 
-                        disabled={pinInput.length < 4 || isPatientHydrating}
+                        disabled={pinInput.length !== 4 || isPatientHydrating}
                         className="w-full py-5 text-xl rounded-2xl shadow-xl"
                     >
                         Entrar al Cuestionario

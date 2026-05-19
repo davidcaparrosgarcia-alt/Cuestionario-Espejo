@@ -253,7 +253,7 @@ app.get("/api/health", async (req, res) => {
 const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
 function normalizeAccessCode(code: string) {
-  return String(code || "").trim().toLowerCase();
+  return String(code || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
 }
 
 function isValidNewAccessCode(code: string) {
@@ -328,7 +328,8 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
     const resolvedCoordinatorEmail = resolveDefaultCoordinatorEmail();
 
     const now = Date.now();
-    const accessPin = proposedAccessCode || generateAccessCode(4);
+    const validProposed = proposedAccessCode && /^[a-z0-9]{4}$/.test(proposedAccessCode) ? proposedAccessCode : null;
+    const accessPin = validProposed || generateAccessCode(4);
     const dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
     
     const payload = {
@@ -349,7 +350,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
       status: "sent", // Equivalent enough for them to start answering
       dateSent: now,
       accessPin,
-      proposedAccessCode,
+      proposedAccessCode: validProposed,
       source: "soybienestar",
       sourceRequestId: requestId || null,
       soybienestarUid: soybienestarUid || null,
@@ -357,7 +358,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
       preferredChannels: preferredChannels || null,
       directAccessCreated: true,
       directQuestionnaireUrlCreatedAt: now,
-      accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy"
+      accessCodeFormat: "v2_4_alphanumeric" as const
     };
 
     // Sanitize undefined

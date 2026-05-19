@@ -6,7 +6,7 @@ export interface CoordinatorProfile {
 
 export interface AuthUser {
   email: string;
-  pin: string; // 4 a 6 dígitos
+  pin: string; // Clave del coordinador
   nombre: string;
   securityQuestion: string;
   securityAnswer: string;
@@ -44,6 +44,8 @@ export interface PatientData {
   soybienestarContext?: any;
   proposedAccessCode?: string;
   accessCodeFormat?: 'legacy' | 'v2_4_alphanumeric';
+  directAccessCreated?: boolean;
+  directQuestionnaireUrlCreatedAt?: number;
   lastSoyBienestarDossierSyncAt?: number;
   lastSoyBienestarDossierSyncStatus?: "ok" | "error" | "skipped";
   preferredChannels?: {

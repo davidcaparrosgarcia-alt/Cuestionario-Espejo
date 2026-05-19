@@ -17,7 +17,7 @@ interface DashboardProps {
 const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
 function normalizeAccessCode(code: string) {
-  return String(code || "").trim().toLowerCase();
+  return String(code || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4);
 }
 
 function generateAccessCode(length = 4) {
@@ -654,10 +654,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       (patient as any).rawSourcePayload?.proposedAccessCode ||
       "";
 
+    const validProposed = proposedAccessCode && /^[a-z0-9]{4}$/.test(normalizeAccessCode(proposedAccessCode)) 
+      ? normalizeAccessCode(proposedAccessCode) 
+      : null;
+
     if (isNewRecord) {
-        accessPin = proposedAccessCode
-          ? normalizeAccessCode(proposedAccessCode)
-          : generateAccessCode(4);
+        accessPin = validProposed || generateAccessCode(4);
         dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
         const payload = { 
           id: dbPatientId,
@@ -671,7 +673,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         };
         sessionToken = safeBtoa(JSON.stringify(payload));
     } else {
-        accessPin = existingRecord!.accessPin || (proposedAccessCode ? normalizeAccessCode(proposedAccessCode) : generateAccessCode(4));
+        accessPin = existingRecord!.accessPin || validProposed || generateAccessCode(4);
         dbPatientId = existingRecord!.id;
         const payload = { 
           id: dbPatientId,
@@ -1880,8 +1882,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <div key={p.id} className="group relative flex flex-col p-4 bg-white rounded-2xl border border-slate-100 hover:border-teal-300 transition-all shadow-sm hover:shadow-md gap-3">
                         <div className="flex justify-between items-start w-full">
                             <div className="flex flex-col overflow-hidden">
-                            <button onClick={() => setSelectedPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate mb-0.5 transition-colors">{p.nombre}</button>
-                            <span className="text-xs text-slate-400 font-bold truncate">{p.email}</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <button onClick={() => setSelectedPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors">{p.nombre}</button>
+                                    {p.directAccessCreated && p.source === 'soybienestar' && (
+                                        <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100" title="Generado desde enlace directo automático">Acceso Directo</span>
+                                    )}
+                                </div>
+                                <span className="text-xs text-slate-400 font-bold truncate">{p.email}</span>
                             </div>
                             
                             <div className="flex items-center gap-1 shrink-0">
