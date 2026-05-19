@@ -654,9 +654,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       (patient as any).rawSourcePayload?.proposedAccessCode ||
       "";
 
-    const validProposed = proposedAccessCode && /^[a-z0-9]{4}$/.test(normalizeAccessCode(proposedAccessCode)) 
+    const validProposed = proposedAccessCode && isValidNewAccessCode(proposedAccessCode) 
       ? normalizeAccessCode(proposedAccessCode) 
       : null;
+
+    let previousAccessPin: string | undefined;
+    let accessPinMigratedAt: number | undefined;
 
     if (isNewRecord) {
         accessPin = validProposed || generateAccessCode(4);
@@ -673,7 +676,16 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         };
         sessionToken = safeBtoa(JSON.stringify(payload));
     } else {
-        accessPin = existingRecord!.accessPin || validProposed || generateAccessCode(4);
+        const existingValidPin = existingRecord!.accessPin && isValidNewAccessCode(existingRecord!.accessPin)
+          ? normalizeAccessCode(existingRecord!.accessPin)
+          : null;
+
+        if (!existingValidPin && existingRecord!.accessPin) {
+            previousAccessPin = normalizeAccessCode(existingRecord!.accessPin);
+            accessPinMigratedAt = now;
+        }
+
+        accessPin = existingValidPin || validProposed || generateAccessCode(4);
         dbPatientId = existingRecord!.id;
         const payload = { 
           id: dbPatientId,
@@ -700,7 +712,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         
         body = body.replace(/\[Nombre\]/g, finalName.split(' ')[0])
                    .replace(/\[Link\]/g, url)
-                   .replace(/\[PIN\]/g, accessPin);
+                   .replace(/\[PIN\]/g, accessPin.toUpperCase());
 
         if (isNewRecord) {
             // If we are replacing, delete the old record first
@@ -719,7 +731,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               dateSent: now,
               accessPin: accessPin,
               proposedAccessCode: proposedAccessCode || undefined,
-              accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy"
+              accessCodeFormat: "v2_4_alphanumeric" as const
             };
             
             setRegistry(prev => [...prev, newRecord]);
@@ -735,7 +747,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 sexo: patient.sexo,
                 accessPin: accessPin,
                 proposedAccessCode: proposedAccessCode || existingRecord!.proposedAccessCode,
-                accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy",
+                accessCodeFormat: "v2_4_alphanumeric" as const,
+                ...(previousAccessPin && { previousAccessPin, accessPinMigratedAt }),
                 source: patient.source || existingRecord!.source,
                 sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
@@ -752,6 +765,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 sexo: patient.sexo,
                 accessPin: accessPin,
                 proposedAccessCode: proposedAccessCode || existingRecord!.proposedAccessCode,
+                ...(previousAccessPin && { previousAccessPin, accessPinMigratedAt }),
                 source: patient.source || existingRecord!.source,
                 sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
@@ -762,7 +776,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
         let subject = isResend ? "Actualización Importante: Cuestionario Espejo" : "Tu enlace para el Cuestionario Espejo";
         
-        const smsBody = `Hola ${finalName.split(' ')[0]}, enlace: ${url} . CLAVE DE ACCESO: ${accessPin} (Guárdala).`;
+        const smsBody = `Hola ${finalName.split(' ')[0]}, enlace: ${url} . CLAVE DE ACCESO: ${accessPin.toUpperCase()} (Guárdala).`;
 
         if (sendMethods.email) {
             openEmailComposer(patient.email || '', subject, body, pendingWindows.email);
@@ -797,7 +811,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             setSelectedPendingRequestId(null);
         }
 
-        triggerToast(isResend ? "Cuestionario reenviado con PIN" : `Enlace generado. PIN: ${accessPin}`);
+        triggerToast(isResend ? "Cuestionario reenviado con PIN" : `Enlace generado. PIN: ${accessPin.toUpperCase()}`);
     } catch (e) {
         console.error(e);
         triggerToast("Error al generar el enlace");
@@ -952,7 +966,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     
     body = body.replace(/\[Nombre\]/g, p.nombre.split(' ')[0])
                .replace(/\[Link\]/g, url)
-               .replace(/\[PIN\]/g, p.accessPin || 'Consulta con tu coordinador');
+               .replace(/\[PIN\]/g, p.accessPin ? p.accessPin.toUpperCase() : 'Consulta con tu coordinador');
 
     if (p.source === "soybienestar" || p.soybienestarUid) {
         body = `Hola ${p.nombre.split(' ')[0]},\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a tus resultados desde el espacio personalizado de SoyBienestar cuando el equipo los active.\n\nGracias.`;
@@ -1069,7 +1083,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                     </div>
                     <div>
                         <span class="label">Clave de Acceso a la Conclusión</span>
-                        <span class="value">${p.accessPin || 'N/A'}</span>
+                        <span class="value">${p.accessPin ? p.accessPin.toUpperCase() : 'N/A'}</span>
                     </div>
                     <div>
                         <span class="label">Audio Incluido</span>
@@ -1177,7 +1191,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         </td>
                         <td>
                              <span class="label">PIN ACCESO CONCLUSIÓN</span>
-                             <span class="value" style="color: #2563eb;">${p.accessPin || 'N/A'}</span>
+                             <span class="value" style="color: #2563eb;">${p.accessPin ? p.accessPin.toUpperCase() : 'N/A'}</span>
                         </td>
                         <td>
                             <span class="label">Estado Actual</span>
@@ -1503,7 +1517,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     </div>
                                     <div className="col-span-2 mt-2">
                                         <span className="block text-xs font-bold text-slate-500 uppercase">PIN de Acceso</span>
-                                        <span className="block text-xl font-bold text-blue-600 tracking-widest">{selectedPatientDetails.accessPin || "N/A"}</span>
+                                        <span className="block text-xl font-bold text-blue-600 tracking-widest">{selectedPatientDetails.accessPin ? selectedPatientDetails.accessPin.toUpperCase() : "N/A"}</span>
                                     </div>
                                     <div className="col-span-2 mt-2">
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones Iniciales</span>
@@ -2098,7 +2112,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   <div className="mt-10 p-8 bg-teal-50/50 rounded-3xl border border-teal-100 animate-in zoom-in-95 duration-300">
                     <div className="flex items-center justify-between mb-4">
                         <p className="text-xs font-black text-teal-600 uppercase tracking-widest">Enlace y PIN Generados</p>
-                        <span className="text-lg font-black text-teal-700 bg-white px-4 py-1 rounded-xl border border-teal-200">PIN: {lastGeneratedPin}</span>
+                        <span className="text-lg font-black text-teal-700 bg-white px-4 py-1 rounded-xl border border-teal-200">PIN: {lastGeneratedPin?.toUpperCase()}</span>
                     </div>
                     
                     <div className="flex gap-2 p-1.5 bg-white rounded-2xl border border-teal-200/50 shadow-sm overflow-hidden mb-6">
@@ -2118,7 +2132,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <button 
                                     onClick={() => {
                                         const subject = "Tu enlace para el Cuestionario Espejo";
-                                        const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin}`;
+                                        const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin?.toUpperCase()}`;
                                         openEmailComposer(patient.email || '', subject, body, null);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"
@@ -2129,7 +2143,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             {sendMethods.whatsapp && (
                                 <button 
                                     onClick={() => {
-                                        const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin}`;
+                                        const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin?.toUpperCase()}`;
                                         const fullPhone = phoneBody ? `${phonePrefix}${phoneBody}`.trim() : '';
                                         openWhatsAppComposer(fullPhone, body, null);
                                     }}
@@ -2142,7 +2156,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <button 
                                     onClick={() => {
                                         const fullPhone = phoneBody ? `${phonePrefix}${phoneBody}`.trim() : '';
-                                        const body = `Hola ${patient.nombre.split(' ')[0]}, enlace: ${linkGenerated} . PIN: ${lastGeneratedPin}`;
+                                        const body = `Hola ${patient.nombre.split(' ')[0]}, enlace: ${linkGenerated} . PIN: ${lastGeneratedPin?.toUpperCase()}`;
                                         openSmsComposer(fullPhone, body, null);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"

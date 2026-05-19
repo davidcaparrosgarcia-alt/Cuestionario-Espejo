@@ -43,7 +43,9 @@ export interface PatientData {
   soybienestarUid?: string;
   soybienestarContext?: any;
   proposedAccessCode?: string;
-  accessCodeFormat?: 'legacy' | 'v2_4_alphanumeric';
+  accessCodeFormat?: 'v2_4_alphanumeric';
+  previousAccessPin?: string;
+  accessPinMigratedAt?: number;
   directAccessCreated?: boolean;
   directQuestionnaireUrlCreatedAt?: number;
   lastSoyBienestarDossierSyncAt?: number;
