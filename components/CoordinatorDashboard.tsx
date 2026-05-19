@@ -14,11 +14,75 @@ interface DashboardProps {
   onEnterEditMode: () => void;
 }
 
+const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
+
+function normalizeAccessCode(code: string) {
+  return String(code || "").trim().toLowerCase();
+}
+
+function generateAccessCode(length = 4) {
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code += ACCESS_CODE_CHARS[Math.floor(Math.random() * ACCESS_CODE_CHARS.length)];
+  }
+  return code;
+}
+
 const safeBtoa = (str: string) => {
   return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
       function toSolidBytes(match, p1) {
           return String.fromCharCode(parseInt(p1, 16));
   }));
+};
+
+const isMobileDevice = () => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
+const openEmailComposer = (to: string, subject: string, body: string, popupWindow: Window | null) => {
+    const isMobile = isMobileDevice();
+    const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    
+    if (isMobile) {
+        if (popupWindow) popupWindow.close();
+        window.location.href = mailtoUrl;
+    } else {
+        if (popupWindow) popupWindow.location.href = gmailUrl;
+        else window.open(gmailUrl, '_blank');
+    }
+};
+
+const openWhatsAppComposer = (phone: string, body: string, popupWindow: Window | null) => {
+    const isMobile = isMobileDevice();
+    const cleanPhone = phone.replace(/\D/g, '');
+    const nativeWaUrl = `whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(body)}`;
+    const webWaUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`;
+    
+    if (isMobile) {
+        if (popupWindow) popupWindow.close();
+        window.location.href = nativeWaUrl;
+        setTimeout(() => { window.location.href = webWaUrl; }, 500);
+    } else {
+        if (popupWindow) popupWindow.location.href = webWaUrl;
+        else window.open(webWaUrl, '_blank');
+    }
+};
+
+const openSmsComposer = (phone: string, body: string, popupWindow: Window | null) => {
+    const isMobile = isMobileDevice();
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const separator = isIOS ? '&' : '?';
+    const cleanPhone = phone.replace(/\s+/g, '');
+    const smsUrl = `sms:${cleanPhone}${separator}body=${encodeURIComponent(body)}`;
+
+    if (isMobile) {
+        if (popupWindow) popupWindow.close();
+        window.location.href = smsUrl;
+    } else {
+        if (popupWindow) popupWindow.location.href = smsUrl;
+        else window.open(smsUrl, '_blank');
+    }
 };
 
 const formatDate = (timestamp?: number) => {
@@ -584,8 +648,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
     if (isNewRecord) {
         accessPin = proposedAccessCode
-          ? String(proposedAccessCode).trim().toUpperCase()
-          : Math.floor(1000 + Math.random() * 9000).toString();
+          ? normalizeAccessCode(proposedAccessCode)
+          : generateAccessCode(4);
         dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
         const payload = { 
           id: dbPatientId,
@@ -599,7 +663,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         };
         sessionToken = safeBtoa(JSON.stringify(payload));
     } else {
-        accessPin = existingRecord!.accessPin || (proposedAccessCode ? String(proposedAccessCode).trim().toUpperCase() : Math.floor(1000 + Math.random() * 9000).toString());
+        accessPin = existingRecord!.accessPin || (proposedAccessCode ? normalizeAccessCode(proposedAccessCode) : generateAccessCode(4));
         dbPatientId = existingRecord!.id;
         const payload = { 
           id: dbPatientId,
@@ -689,22 +753,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         const smsBody = `Hola ${finalName.split(' ')[0]}, enlace: ${url} . CLAVE DE ACCESO: ${accessPin} (Guárdala).`;
 
         if (sendMethods.email) {
-            const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(patient.email || '')}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-            if (pendingWindows.email) pendingWindows.email.location.href = gmailUrl;
-            else window.open(gmailUrl, '_blank');
+            openEmailComposer(patient.email || '', subject, body, pendingWindows.email);
         }
 
         if (sendMethods.whatsapp && fullPhone) {
-            const cleanPhone = fullPhone.replace(/\D/g, '');
-            const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`;
-            if (pendingWindows.whatsapp) pendingWindows.whatsapp.location.href = waUrl;
-            else window.open(waUrl, '_blank');
+            openWhatsAppComposer(fullPhone, body, pendingWindows.whatsapp);
         }
 
         if (sendMethods.sms && fullPhone) {
-            const smsUrl = `sms:${fullPhone}?body=${encodeURIComponent(smsBody)}`;
-            if (pendingWindows.sms) pendingWindows.sms.location.href = smsUrl;
-            else window.open(smsUrl, '_blank');
+            openSmsComposer(fullPhone, smsBody, pendingWindows.sms);
+        }
+
+        if (isMobileDevice()) {
+            navigator.clipboard.writeText(body).catch(() => {});
         }
 
         if (selectedPendingRequestId) {
@@ -905,8 +966,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!selectedPatientConclusion) return;
     const { url, body } = getConclusionUrlAndBody(selectedPatientConclusion);
     const subject = "Resultados y Conclusión - Cuestionario Espejo";
-    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(selectedPatientConclusion.email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    window.open(gmailUrl, '_blank');
+    
+    openEmailComposer(selectedPatientConclusion.email || '', subject, body, null);
     
     markAsConcluded(selectedPatientConclusion.id);
     triggerToast("Gmail abierto y estado actualizado a Concluido");
@@ -918,9 +979,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       return;
     }
     const { body } = getConclusionUrlAndBody(selectedPatientConclusion);
-    const cleanPhone = selectedPatientConclusion.telefono.replace(/\D/g, '');
-    
-    window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`, '_blank');
+    openWhatsAppComposer(selectedPatientConclusion.telefono, body, null);
     
     markAsConcluded(selectedPatientConclusion.id);
     triggerToast("WhatsApp abierto y estado actualizado a Concluido");
@@ -2043,7 +2102,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     onClick={() => {
                                         const subject = "Tu enlace para el Cuestionario Espejo";
                                         const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin}`;
-                                        window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(patient.email || '')}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
+                                        openEmailComposer(patient.email || '', subject, body, null);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"
                                 >
@@ -2055,8 +2114,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     onClick={() => {
                                         const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin}`;
                                         const fullPhone = phoneBody ? `${phonePrefix}${phoneBody}`.trim() : '';
-                                        const cleanPhone = fullPhone.replace(/\D/g, '');
-                                        window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(body)}`, '_blank');
+                                        openWhatsAppComposer(fullPhone, body, null);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"
                                 >
@@ -2068,7 +2126,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     onClick={() => {
                                         const fullPhone = phoneBody ? `${phonePrefix}${phoneBody}`.trim() : '';
                                         const body = `Hola ${patient.nombre.split(' ')[0]}, enlace: ${linkGenerated} . PIN: ${lastGeneratedPin}`;
-                                        window.open(`sms:${fullPhone}?body=${encodeURIComponent(body)}`, '_blank');
+                                        openSmsComposer(fullPhone, body, null);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"
                                 >

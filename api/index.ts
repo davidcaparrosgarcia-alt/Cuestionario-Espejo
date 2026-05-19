@@ -250,6 +250,112 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
+const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
+
+function generateAccessCode(length = 4) {
+  let code = "";
+  for (let i = 0; i < length; i++) {
+    code += ACCESS_CODE_CHARS[Math.floor(Math.random() * ACCESS_CODE_CHARS.length)];
+  }
+  return code;
+}
+
+const safeBtoa = (str: string) => {
+  return Buffer.from(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
+      function toSolidBytes(match, p1) {
+          return String.fromCharCode(Number('0x' + p1));
+      })).toString('base64');
+};
+
+app.post("/api/direct-questionnaire-link", async (req, res) => {
+  try {
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
+    if (!bridgeSecret) {
+      return res.status(500).json({ error: "Configuracion incompleta: falta secreto de bridge." });
+    }
+    if (req.headers['x-bridge-secret'] !== bridgeSecret) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const {
+      requestId,
+      soybienestarUid,
+      nombre,
+      email,
+      telefono,
+      edad,
+      sexo,
+      preferredChannels,
+      soybienestarContext
+    } = req.body;
+
+    const proposedAccessCode = req.body.proposedAccessCode 
+        ? String(req.body.proposedAccessCode).trim().toLowerCase() 
+        : null;
+
+    if (!email && !nombre) {
+      return res.status(400).json({ error: "Nombre o Email es requerido." });
+    }
+
+    const now = Date.now();
+    const accessPin = proposedAccessCode || generateAccessCode(4);
+    const dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
+    
+    const payload = {
+      id: dbPatientId,
+      timestamp: now
+    };
+    const sessionToken = safeBtoa(JSON.stringify(payload));
+
+    const patientData = {
+      id: dbPatientId,
+      nombre: nombre || "Usuario SoyBienestar",
+      email: email || null,
+      telefono: telefono || null,
+      edad: edad || null,
+      sexo: sexo || null,
+      observaciones: "Generado directamente por SoyBienestar",
+      status: "sent", // Equivalent enough for them to start answering
+      dateSent: now,
+      accessPin,
+      proposedAccessCode,
+      source: "soybienestar",
+      sourceRequestId: requestId || null,
+      soybienestarUid: soybienestarUid || null,
+      soybienestarContext: soybienestarContext || null,
+      preferredChannels: preferredChannels || null,
+      directAccessCreated: true,
+      directQuestionnaireUrlCreatedAt: now
+    };
+
+    // Sanitize undefined
+    Object.keys(patientData).forEach(key => {
+       if ((patientData as any)[key] === undefined) {
+         delete (patientData as any)[key];
+       }
+    });
+
+    await db.collection("patients").doc(dbPatientId).set(patientData);
+
+    let baseUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
+    if (!baseUrl.endsWith('/')) {
+        baseUrl += '/';
+    }
+    const questionnaireUrl = `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`;
+
+    res.json({
+      success: true,
+      patientId: dbPatientId,
+      questionnaireUrl,
+      accessCode: accessPin
+    });
+
+  } catch (error) {
+    console.error("Error in /api/direct-questionnaire-link:", error);
+    res.status(500).json({ error: "Error al generar enlace directo." });
+  }
+});
+
 // Endpoint to receive new patient requests from external web form
 app.post("/api/patient-requests", async (req, res) => {
   try {
@@ -291,6 +397,7 @@ app.post("/api/patient-requests", async (req, res) => {
       telefono: requestData.telefono || null,
       edad: requestData.edad || null,
       sexo: requestData.sexo || null,
+      proposedAccessCode: requestData.proposedAccessCode ? String(requestData.proposedAccessCode).trim().toLowerCase() : null,
       preferredChannels: {
         email: !!preferredChannels.email,
         whatsapp: !!preferredChannels.whatsapp,
@@ -457,7 +564,11 @@ app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
     console.log("GET /api/patient-requests - Returning", results.length, "pending requests");
     res.json(results);
   } catch (e: any) {
-    console.error("Error fetching patient requests:", e);
+    console.error("Error fetching patient requests:", {
+      name: e instanceof Error ? e.name : "Unknown",
+      message: e instanceof Error ? e.message : String(e),
+      code: e?.code
+    });
     
     // In development mode without explicit credentials, Firebase Admin won't have permission to access Firestore
     if (process.env.NODE_ENV !== 'production' && !process.env.FIREBASE_PRIVATE_KEY && e.code === 7) {
@@ -478,6 +589,17 @@ app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
       ]);
     }
     
+    if (req.headers['x-debug-bridge'] === 'true' || process.env.NODE_ENV !== 'production') {
+      return res.status(500).json({ 
+        error: "Internal server error",
+        details: e instanceof Error ? e.message : String(e),
+        endpoint: "/api/patient-requests",
+        collection: "patientRequests",
+        firebaseAdminReady: !!admin.apps.length,
+        projectId: admin.apps.length ? admin.app().options.projectId : null
+      });
+    }
+
     res.status(500).json({ error: "Internal server error" });
   }
 });
