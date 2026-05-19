@@ -28,6 +28,14 @@ function generateAccessCode(length = 4) {
   return code;
 }
 
+function isValidNewAccessCode(code: string) {
+  return /^[a-z0-9]{4}$/.test(normalizeAccessCode(code));
+}
+
+function isValidLegacyAccessCode(code: string) {
+  return /^[a-z0-9]{4,6}$/.test(normalizeAccessCode(code));
+}
+
 const safeBtoa = (str: string) => {
   return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
       function toSolidBytes(match, p1) {
@@ -310,7 +318,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             clinicalPrompt: DEFAULT_CLINICAL_PROMPT,
             conclusionPrompt: DEFAULT_CONCLUSION_PROMPT,
             questionnaireMessage: `Hola [Nombre],\n\nAquí tienes tu enlace directo para realizar el Cuestionario Espejo:\n[Link]\n\nIMPORTANTE: Tu clave de acceso personal para ver los resultados finales será: [PIN]\nPor favor, guárdala bien, ya que la necesitarás obligatoriamente más adelante para desbloquear la conclusión.\n\nGracias.`,
-            conclusionMessage: `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave numérica de 4 dígitos que se te entregó al iniciar el cuestionario ([PIN]).`,
+            conclusionMessage: `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave personal de acceso que se te entregó al iniciar el cuestionario ([PIN]).`,
             notificationEmails: profile.email
         } as any);
         
@@ -708,7 +716,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               status: 'sent', 
               dateSent: now,
               accessPin: accessPin,
-              proposedAccessCode: proposedAccessCode || undefined
+              proposedAccessCode: proposedAccessCode || undefined,
+              accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy"
             };
             
             setRegistry(prev => [...prev, newRecord]);
@@ -724,6 +733,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 sexo: patient.sexo,
                 accessPin: accessPin,
                 proposedAccessCode: proposedAccessCode || existingRecord!.proposedAccessCode,
+                accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy",
                 source: patient.source || existingRecord!.source,
                 sourceRequestId: patient.sourceRequestId || existingRecord!.sourceRequestId,
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
@@ -936,7 +946,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
     const url = baseUrl ? `${baseUrl}#/conclusion?id=${encodeURIComponent(p.id)}` : `${window.location.origin + window.location.pathname}#/conclusion?id=${encodeURIComponent(p.id)}`;
     
-    let body = globalConfig?.conclusionMessage || `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave numérica de 4 dígitos que se te entregó al iniciar el cuestionario ([PIN]).`;
+    let body = globalConfig?.conclusionMessage || `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave personal de acceso que se te entregó al iniciar el cuestionario ([PIN]).`;
     
     body = body.replace(/\[Nombre\]/g, p.nombre.split(' ')[0])
                .replace(/\[Link\]/g, url)

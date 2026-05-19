@@ -102,7 +102,7 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
                 <Logo />
                 <div className="mt-8 mb-6">
                     <h3 className="text-xl font-bold text-blue-900 mb-2">Acceso Protegido</h3>
-                    <p className="text-sm text-slate-500 font-medium">Introduce la clave de 4 dígitos que se te entregó al iniciar el cuestionario.</p>
+                    <p className="text-sm text-slate-500 font-medium">Introduce la clave personal que se te entregó al iniciar el cuestionario.</p>
                 </div>
                 <div className="mb-8">
                     <input 

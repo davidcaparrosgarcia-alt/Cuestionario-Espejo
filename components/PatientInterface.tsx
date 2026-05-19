@@ -1517,7 +1517,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         <i className="fas fa-key"></i>
                     </div>
                     <h3 className={`text-3xl font-bold mb-3 text-center font-friendly ${isDarkMode ? 'text-blue-200' : 'text-blue-900'}`}>Código de Acceso</h3>
-                    <p className={`text-sm mb-10 text-center font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Introduce el código de 4 dígitos para validar tu identidad.</p>
+                    <p className={`text-sm mb-10 text-center font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Introduce la clave personal de acceso para validar tu identidad.</p>
                     
                     <input 
                         ref={pinInputRef}

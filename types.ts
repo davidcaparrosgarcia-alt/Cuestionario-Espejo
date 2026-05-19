@@ -22,7 +22,7 @@ export interface PatientData {
   telefono: string;
   email: string;
   coordinatorEmail?: string; 
-  accessPin?: string; // Clave de 4 dígitos para ver la conclusión
+  accessPin?: string; // Clave personal alfanumérica para ver la conclusión
   // Estados actualizados según nueva lógica
   status: 'pending' | 'sent' | 'viewed' | 'completed' | 'concluded' | 'finalized';
   answers?: Record<string, string>;
@@ -43,6 +43,7 @@ export interface PatientData {
   soybienestarUid?: string;
   soybienestarContext?: any;
   proposedAccessCode?: string;
+  accessCodeFormat?: 'legacy' | 'v2_4_alphanumeric';
   lastSoyBienestarDossierSyncAt?: number;
   lastSoyBienestarDossierSyncStatus?: "ok" | "error" | "skipped";
   preferredChannels?: {

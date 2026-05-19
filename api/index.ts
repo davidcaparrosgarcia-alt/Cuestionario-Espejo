@@ -252,6 +252,18 @@ app.get("/api/health", async (req, res) => {
 
 const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
+function normalizeAccessCode(code: string) {
+  return String(code || "").trim().toLowerCase();
+}
+
+function isValidNewAccessCode(code: string) {
+  return /^[a-z0-9]{4}$/.test(normalizeAccessCode(code));
+}
+
+function isValidLegacyAccessCode(code: string) {
+  return /^[a-z0-9]{4,6}$/.test(normalizeAccessCode(code));
+}
+
 function generateAccessCode(length = 4) {
   let code = "";
   for (let i = 0; i < length; i++) {
@@ -269,7 +281,7 @@ const safeBtoa = (str: string) => {
 
 app.post("/api/direct-questionnaire-link", async (req, res) => {
   try {
-    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
     if (!bridgeSecret) {
       return res.status(500).json({ error: "Configuracion incompleta: falta secreto de bridge." });
     }
@@ -290,12 +302,30 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
     } = req.body;
 
     const proposedAccessCode = req.body.proposedAccessCode 
-        ? String(req.body.proposedAccessCode).trim().toLowerCase() 
+        ? normalizeAccessCode(req.body.proposedAccessCode) 
         : null;
 
     if (!email && !nombre) {
       return res.status(400).json({ error: "Nombre o Email es requerido." });
     }
+
+    function resolveDefaultCoordinatorEmail() {
+      if (process.env.DEFAULT_COORDINATOR_EMAIL && process.env.DEFAULT_COORDINATOR_EMAIL.includes("@")) {
+        return process.env.DEFAULT_COORDINATOR_EMAIL.trim().toLowerCase();
+      }
+
+      if (process.env.NOTIFICATION_EMAILS) {
+        const first = process.env.NOTIFICATION_EMAILS
+          .split(",")
+          .map(e => e.trim().toLowerCase())
+          .find(e => e.includes("@"));
+        if (first) return first;
+      }
+
+      return "cuestionarioespejo@gmail.com";
+    }
+
+    const resolvedCoordinatorEmail = resolveDefaultCoordinatorEmail();
 
     const now = Date.now();
     const accessPin = proposedAccessCode || generateAccessCode(4);
@@ -309,6 +339,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
 
     const patientData = {
       id: dbPatientId,
+      coordinatorEmail: resolvedCoordinatorEmail,
       nombre: nombre || "Usuario SoyBienestar",
       email: email || null,
       telefono: telefono || null,
@@ -325,7 +356,8 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
       soybienestarContext: soybienestarContext || null,
       preferredChannels: preferredChannels || null,
       directAccessCreated: true,
-      directQuestionnaireUrlCreatedAt: now
+      directQuestionnaireUrlCreatedAt: now,
+      accessCodeFormat: (accessPin.length === 4 ? "v2_4_alphanumeric" : "legacy") as "v2_4_alphanumeric" | "legacy"
     };
 
     // Sanitize undefined
@@ -346,6 +378,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
     res.json({
       success: true,
       patientId: dbPatientId,
+      coordinatorEmail: resolvedCoordinatorEmail,
       questionnaireUrl,
       accessCode: accessPin
     });
@@ -397,7 +430,7 @@ app.post("/api/patient-requests", async (req, res) => {
       telefono: requestData.telefono || null,
       edad: requestData.edad || null,
       sexo: requestData.sexo || null,
-      proposedAccessCode: requestData.proposedAccessCode ? String(requestData.proposedAccessCode).trim().toLowerCase() : null,
+      proposedAccessCode: requestData.proposedAccessCode ? normalizeAccessCode(requestData.proposedAccessCode) : null,
       preferredChannels: {
         email: !!preferredChannels.email,
         whatsapp: !!preferredChannels.whatsapp,
