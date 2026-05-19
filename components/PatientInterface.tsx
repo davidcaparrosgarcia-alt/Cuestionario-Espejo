@@ -947,8 +947,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }, 0);
   };
 
+  const normalizePatientAccessCode = (value: string) =>
+      String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 6);
+
   const handlePinSubmit = async () => {
-    const enteredPin = String(pinInput || "").trim();
+    const enteredPin = normalizePatientAccessCode(pinInput);
 
     if (!enteredPin) {
       showToast("Introduce la clave personal recibida con tu enlace.");
@@ -1009,7 +1012,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         return;
       }
 
-      const expectedPin = String(freshPatient.accessPin).trim();
+      const expectedPin = normalizePatientAccessCode(freshPatient.accessPin);
 
       if (enteredPin !== expectedPin) {
         setPinInput("");
@@ -1516,18 +1519,28 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-8 text-3xl shadow-lg">
                         <i className="fas fa-key"></i>
                     </div>
-                    <h3 className={`text-3xl font-bold mb-3 text-center font-friendly ${isDarkMode ? 'text-blue-200' : 'text-blue-900'}`}>Código de Acceso</h3>
-                    <p className={`text-sm mb-10 text-center font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Introduce la clave personal de acceso para validar tu identidad.</p>
+                    <h3 className={`text-3xl font-bold mb-3 text-center font-friendly ${isDarkMode ? 'text-blue-200' : 'text-blue-900'}`}>Clave personal de acceso</h3>
+                    <p className={`text-sm mb-2 text-center font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Introduce la clave personal de acceso para validar tu identidad.</p>
+                    <p className={`text-xs mb-10 text-center font-medium ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>Puede contener letras y números.</p>
                     
                     <input 
                         ref={pinInputRef}
                         type="text" 
+                        inputMode="text"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
                         maxLength={6}
                         autoComplete="off"
                         disabled={isPatientHydrating}
                         className={`w-full text-center tracking-[0.8em] text-5xl py-8 rounded-[2rem] border-2 outline-none transition-all mb-10 font-black ${isPatientHydrating ? 'opacity-50 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-black/20 border-white/10 text-white focus:border-blue-500' : 'bg-white border-blue-200 focus:border-blue-500 text-blue-900'}`}
                         value={pinInput}
-                        onChange={e => setPinInput(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 6))}
+                        onChange={e => setPinInput(normalizePatientAccessCode(e.target.value))}
+                        onPaste={e => {
+                            e.preventDefault();
+                            const pasted = e.clipboardData.getData("text");
+                            setPinInput(normalizePatientAccessCode(pasted));
+                        }}
                         onKeyPress={e => e.key === 'Enter' && pinInput.length >= 4 && handlePinSubmit()}
                     />
                     

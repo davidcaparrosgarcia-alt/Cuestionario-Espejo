@@ -43,7 +43,13 @@ const safeAtob = (str: string) => {
 };
 
 const App: React.FC = () => {
-  const [view, setView] = useState<View>('LANDING');
+  const [view, setView] = useState<View>(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith('#/session')) return 'PATIENT_SESSION';
+    if (hash.startsWith('#/conclusion')) return 'CONCLUSION_VIEW';
+    if (hash === '#/coordinator') return 'COORDINATOR'; // Will be verified by auth
+    return 'LANDING';
+  });
   const [patientData, setPatientData] = useState<Partial<PatientData>>({});
   const [coordinator, setCoordinator] = useState<CoordinatorProfile | null>(null);
   const [isEditorMode, setIsEditorMode] = useState(false);
@@ -83,17 +89,20 @@ const App: React.FC = () => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       const isGranted = sessionStorage.getItem('radar_access_granted') === 'true';
       const hash = window.location.hash;
+      const isPatientSession = hash.startsWith('#/session') || hash.startsWith('#/conclusion');
       
       if (user && user.email) {
         if (!isGranted) {
           // Si está logueado en Firebase pero no ha metido el código, forzamos LANDING
           setAuthStep('ACCESS_CODE');
-          setView('LANDING');
+          if (!isPatientSession) {
+            setView('LANDING');
+          }
           return;
         }
 
         // Si estamos en una sesión de paciente o conclusión, no redirigimos al dashboard
-        if (hash.startsWith('#/session') || hash.startsWith('#/conclusion')) {
+        if (isPatientSession) {
             return;
         }
 
