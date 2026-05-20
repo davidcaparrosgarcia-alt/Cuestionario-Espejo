@@ -391,15 +391,24 @@ const App: React.FC = () => {
       )}
       
       {view === 'PATIENT_SESSION' && (
-        <PatientInterface 
-          patientData={patientData} 
-          isEditorMode={isEditorMode}
-          onExitEditor={() => {
-            setIsEditorMode(false);
-            setView('COORDINATOR');
-            window.location.hash = '#/coordinator';
-          }}
-        />
+        isEditorMode || patientData.id ? (
+          <PatientInterface 
+            patientData={patientData} 
+            isEditorMode={isEditorMode}
+            onExitEditor={() => {
+              setIsEditorMode(false);
+              setView('COORDINATOR');
+              window.location.hash = '#/coordinator';
+            }}
+          />
+        ) : (
+          <div className="min-h-screen flex items-center justify-center font-sans luxury-leather-bg">
+              <div className="text-center space-y-4 animate-in fade-in duration-500">
+                  <div className="w-12 h-12 border-4 border-amber-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <p className="text-amber-800 font-medium">Preparando acceso seguro...</p>
+              </div>
+          </div>
+        )
       )}
       
       {view === 'CONCLUSION_VIEW' && conclusionPatientId && (

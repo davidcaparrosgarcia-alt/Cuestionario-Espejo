@@ -192,7 +192,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         if (currentPatientData.id && !isEditorMode) {
             setIsPatientHydrating(true);
             try {
+                console.log("[PATIENT HYDRATION] Fetching patient by ID:", currentPatientData.id);
                 const fullPatient = await DataService.getPatientById(currentPatientData.id);
+                console.log("[PATIENT HYDRATION] Result:", fullPatient ? "Found" : "Not Found");
+                
                 if (fullPatient) {
                     setCurrentPatientData(fullPatient);
                     
@@ -229,6 +232,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     };
     fetchData();
   }, [currentPatientData.id, isEditorMode]);
+
+  // Sincronizar props (patientData -> currentPatientData) si llega tarde
+  useEffect(() => {
+    if (!isEditorMode && initialPatientData?.id && initialPatientData.id !== currentPatientData.id) {
+      console.log("[PATIENT SESSION] syncing patient id from props", {
+        previousId: currentPatientData.id || null,
+        nextId: initialPatientData.id
+      });
+      setCurrentPatientData(initialPatientData);
+      setPatientHydrationError(null);
+    }
+  }, [initialPatientData?.id, isEditorMode]);
   
   const [step, setStep] = useState<'intro' | 'pin_validation' | 'verification' | 'questionnaire' | 'finish' | 'locked' | 'conclusion_view'>('intro');
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -977,6 +992,19 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     if (patientHydrationError) {
         showToast(patientHydrationError);
         return;
+    }
+
+    console.log("[PIN VALIDATION] current patient before validation", {
+      currentPatientId: currentPatientData.id || null,
+      initialPatientId: initialPatientData?.id || null,
+      hasHydrationError: !!patientHydrationError,
+      isPatientHydrating
+    });
+
+    if (!currentPatientData.id && initialPatientData?.id) {
+      setCurrentPatientData(initialPatientData);
+      showToast("Preparando tu acceso seguro. Vuelve a pulsar entrar en unos segundos.");
+      return;
     }
 
     if (!currentPatientData.id) {

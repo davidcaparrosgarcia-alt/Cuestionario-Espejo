@@ -16,13 +16,16 @@ try {
 const dbId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || "(default)";
 const projectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
 
+const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
+const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
+
 if (!admin.apps.length) {
   try {
-    const credential = (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) 
+    const credential = (FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) 
       ? admin.credential.cert({
           projectId: projectId,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          clientEmail: FIREBASE_CLIENT_EMAIL,
+          privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         })
       : admin.credential.applicationDefault();
 
@@ -30,7 +33,7 @@ if (!admin.apps.length) {
       credential,
       projectId: projectId,
     });
-    console.log("Firebase Admin initialized successfully.");
+    console.log(`Firebase Admin initialized successfully in project ${projectId}.`);
   } catch (error) {
     console.error("Failed to initialize Firebase Admin:", error);
   }
@@ -144,110 +147,243 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+function resolveDefaultCoordinatorEmail() {
+  if (process.env.DEFAULT_COORDINATOR_EMAIL && process.env.DEFAULT_COORDINATOR_EMAIL.includes("@")) {
+    return process.env.DEFAULT_COORDINATOR_EMAIL.trim().toLowerCase();
+  }
+  if (process.env.NOTIFICATION_EMAILS) {
+    const first = process.env.NOTIFICATION_EMAILS
+      .split(",")
+      .map(e => e.trim().toLowerCase())
+      .find(e => e.includes("@"));
+    if (first) return first;
+  }
+  return "cuestionarioespejo@gmail.com";
+}
+
 // API routes FIRST
 app.get("/api/health", async (req, res) => {
   let firestoreCheck = "not_run";
   let firestoreError = undefined;
-  let permissionDiagnosis = undefined;
+  let diagnosticWriteResult = undefined;
   
   let patientRequestsTotalCount = undefined;
   let patientRequestsPendingCount = undefined;
+  let patientsTotalCount = undefined;
+  let patientsDirectSoybienestarCount = undefined;
   let latestPatientRequestPreview = undefined;
+  let latestDirectPatientPreview = undefined;
 
   const resolvedProjectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+  const resolvedDbId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || "(default)";
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+
+  const frontendProjectId = firebaseConfig.projectId || null;
+  const frontendDbId = firebaseConfig.firestoreDatabaseId || "(default)";
+  const backendProjectId = resolvedProjectId || null;
+  const backendDbId = resolvedDbId || "(default)";
+
+  const firestoreMismatchWarning = 
+    (backendProjectId !== frontendProjectId) || (backendDbId !== frontendDbId);
+
+  const firestoreMismatchDetails = {
+    backendProjectId,
+    frontendProjectId,
+    backendDbId,
+    frontendDbId,
+    firebaseProjectIdEnv: process.env.FIREBASE_PROJECT_ID || null,
+    firestoreDatabaseIdEnv: process.env.FIRESTORE_DATABASE_ID || null
+  };
 
   if (req.query.checkFirestore === '1') {
     try {
-      const snapshot = await db.collection("patientRequests").limit(20).get();
-      firestoreCheck = "ok";
+      // Diagnostic write/read
+      const diagRef = db.collection("diagnosticBridgeChecks").doc("latest");
+      const diagData = {
+        timestamp: Date.now(),
+        serverTime: new Date().toISOString(),
+        projectId: resolvedProjectId,
+        dbId: resolvedDbId,
+        nodeEnv: process.env.NODE_ENV || "unknown"
+      };
+      await diagRef.set(diagData);
+      const readBack = await diagRef.get();
       
-      patientRequestsTotalCount = snapshot.size;
+      // Collection counts and previews
+      const reqSnap = await db.collection("patientRequests").limit(20).get();
+      patientRequestsTotalCount = reqSnap.size;
       patientRequestsPendingCount = 0;
-      let latestDoc: any = null;
-      let latestTime = 0;
+      let latestReqDoc: any = null;
+      let latestReqTime = 0;
 
-      snapshot.forEach(doc => {
+      reqSnap.forEach(doc => {
         const data = doc.data();
-        if (data.status === "pending") {
-          patientRequestsPendingCount!++;
-        }
-        const createdAt = data.createdAt || 0;
-        if (createdAt > latestTime) {
-          latestTime = createdAt;
-          latestDoc = data;
+        if (data.status === "pending") patientRequestsPendingCount!++;
+        if ((data.createdAt || 0) > latestReqTime) {
+          latestReqTime = data.createdAt;
+          latestReqDoc = { id: doc.id, ...data };
         }
       });
 
-      if (latestDoc) {
+      if (latestReqDoc) {
         latestPatientRequestPreview = {
-          id: latestDoc.id,
-          source: latestDoc.source,
-          status: latestDoc.status,
-          createdAt: latestDoc.createdAt,
-          createdAtIso: new Date(latestDoc.createdAt || Date.now()).toISOString(),
-          hasEmail: !!latestDoc.email,
-          hasTelefono: !!latestDoc.telefono,
-          hasSoybienestarContext: !!latestDoc.soybienestarContext && Object.keys(latestDoc.soybienestarContext).length > 0
+          id: latestReqDoc.id,
+          source: latestReqDoc.source,
+          status: latestReqDoc.status,
+          createdAt: latestReqDoc.createdAt
         };
       }
+
+      const patSnap = await db.collection("patients").limit(20).get();
+      patientsTotalCount = patSnap.size;
+      patientsDirectSoybienestarCount = 0;
+      let latestDirectDoc: any = null;
+      let latestDirectTime = 0;
+
+      patSnap.forEach(doc => {
+        const data = doc.data();
+        const isDirect = data.source === "soybienestar" || data.directAccessCreated === true;
+        if (isDirect) patientsDirectSoybienestarCount!++;
+        
+        if (isDirect && (data.createdAt || data.timestamp || 0) > latestDirectTime) {
+          latestDirectTime = data.createdAt || data.timestamp;
+          latestDirectDoc = { id: doc.id, ...data };
+        }
+      });
+
+      if (latestDirectDoc) {
+        latestDirectPatientPreview = {
+          id: latestDirectDoc.id,
+          nombre: latestDirectDoc.nombre,
+          source: latestDirectDoc.source,
+          createdAt: latestDirectTime
+        };
+      }
+
+      firestoreCheck = "ok";
+      diagnosticWriteResult = {
+        path: "diagnosticBridgeChecks/latest",
+        success: true,
+        readBack: readBack.exists,
+        intendedProject: resolvedProjectId,
+        intendedDbId: resolvedDbId
+      };
     } catch (e: any) {
       firestoreCheck = "error";
       firestoreError = {
         message: e.message || String(e),
         code: e.code,
       };
-
-      if (e.code === 7 || (e.message && e.message.includes('PERMISSION_DENIED'))) {
-        permissionDiagnosis = {
-          likelyCause: "La cuenta de servicio cargada en FIREBASE_CLIENT_EMAIL no tiene permisos IAM suficientes sobre Firestore/Datastore o no corresponde al proyecto/base de datos configurada.",
-          suggestedRoles: ["Cloud Datastore User", "Cloud Datastore Owner para desarrollo"],
-          whereToFix: `Google Cloud Console > IAM > proyecto ${resolvedProjectId}`
-        };
-      }
     }
   }
 
-  const clientEmailDomainPreview = clientEmail 
-      ? clientEmail.split('@')[1] || "invalid-format" 
-      : null;
+  const clientEmailProjectHint = clientEmail ? (clientEmail.match(/@(.+?)\.iam/)?.[1] || "unknown") : null;
 
   res.json({ 
     status: "ok",
-    env: process.env.NODE_ENV || "development",
-    adminAvailable: !!admin.apps.length,
-    backendProjectId: projectId,
-    frontendAuthProjectId: FRONTEND_AUTH_PROJECT_ID,
-    authVerifierAppName: FRONTEND_AUTH_APP_NAME,
-    bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
-    smtpConfigured: !!process.env.SMTP_USER && !!process.env.SMTP_PASS,
-    notificationEmailsEnvConfigured: !!process.env.NOTIFICATION_EMAILS,
-    smtpHostFromEnv: !!process.env.SMTP_HOST,
-    smtpPortFromEnv: !!process.env.SMTP_PORT,
-    smtpUserFromEnv: !!process.env.SMTP_USER,
-    smtpPassFromEnv: !!process.env.SMTP_PASS,
-    smtpFromFromEnv: !!process.env.SMTP_FROM,
-    notificationEmailsFromEnv: !!process.env.NOTIFICATION_EMAILS,
-    appPublicUrlConfigured: !!process.env.APP_PUBLIC_URL,
-    firestoreDatabaseId: dbId,
-    firestoreDatabaseIdConfigured: !!process.env.FIRESTORE_DATABASE_ID,
-    firebaseProjectIdFromEnv: !!process.env.FIREBASE_PROJECT_ID,
-    firebaseClientEmailFromEnv: !!process.env.FIREBASE_CLIENT_EMAIL,
-    firebasePrivateKeyFromEnv: !!process.env.FIREBASE_PRIVATE_KEY,
-    firebaseClientEmailDomainPreview: clientEmailDomainPreview,
-    adminAppProjectId: admin.apps.length ? admin.app().options.projectId : null,
-    projectIdLooksCorrect: resolvedProjectId === "gen-lang-client-0082734692",
-    clientEmailLooksCorrect: clientEmail ? clientEmail.includes("gen-lang-client-0082734692") : false,
-    soybienestarWebhookConfigured: !!process.env.SOYBIENESTAR_WEBHOOK_URL,
-    soybienestarBridgeSecretConfigured: !!process.env.SOYBIENESTAR_BRIDGE_SECRET,
+    backendProjectId,
+    backendDbId,
+    frontendProjectId,
+    frontendDbId,
+    firestoreMismatchWarning,
+    firestoreMismatchDetails,
+    backendAdmin: {
+      adminInitialized: !!admin.apps.length,
+      adminProjectId: admin.apps.length ? admin.app().options.projectId : null,
+      dbId: resolvedDbId,
+      firebaseProjectIdEnv: process.env.FIREBASE_PROJECT_ID || null,
+      firestoreDatabaseIdEnv: process.env.FIRESTORE_DATABASE_ID || null,
+      clientEmailProjectHint: clientEmailProjectHint,
+      firebaseConfigProjectId: firebaseConfig.projectId,
+      firebaseConfigFirestoreDatabaseId: firebaseConfig.firestoreDatabaseId
+    },
+    frontendConfig: {
+      projectId: firebaseConfig.projectId,
+      firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+      authDomain: firebaseConfig.authDomain
+    },
+    defaultCoordinatorEmailConfigured: !!(process.env.DEFAULT_COORDINATOR_EMAIL || process.env.NOTIFICATION_EMAILS),
+    resolvedCoordinatorEmailPreview: resolveDefaultCoordinatorEmail(),
+    testWrites: diagnosticWriteResult,
     firestoreCheck,
     firestoreError,
-    permissionDiagnosis,
     patientRequestsTotalCount,
     patientRequestsPendingCount,
+    patientsTotalCount,
+    patientsDirectSoybienestarCount,
     latestPatientRequestPreview,
+    latestDirectPatientPreview,
+    bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
+    smtpConfigured: !!process.env.SMTP_USER && !!process.env.SMTP_PASS,
+    appPublicUrlEnv: process.env.APP_PUBLIC_URL || null,
     time: new Date().toISOString()
   });
+});
+
+app.post("/api/debug-direct-patient-roundtrip", async (req, res) => {
+  try {
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
+    if (req.headers['x-bridge-secret'] !== bridgeSecret) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+    if (req.headers['x-debug-bridge'] !== 'true') {
+      return res.status(400).json({ error: "Solo para debug" });
+    }
+
+    const now = Date.now();
+    const dbPatientId = `debug_roundtrip_${now}`;
+    const accessPin = generateAccessCode(4);
+    
+    const resolvedProjectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+    const resolvedDbId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || "(default)";
+    const frontendProjectId = firebaseConfig.projectId || null;
+    const frontendDbId = firebaseConfig.firestoreDatabaseId || "(default)";
+
+    const patientData = {
+      id: dbPatientId,
+      coordinatorEmail: resolveDefaultCoordinatorEmail(),
+      nombre: "Debug Roundtrip",
+      email: "debug-roundtrip@soybienestar.test",
+      status: "sent",
+      dateSent: now,
+      accessPin,
+      source: "debug-roundtrip",
+      debugOnly: true,
+      createdAt: now,
+      directAccessCreated: true,
+      accessCodeFormat: "v2_4_alphanumeric" as const
+    };
+
+    await db.collection("patients").doc(dbPatientId).set(patientData);
+    
+    // Read back immediately
+    const snap = await db.collection("patients").doc(dbPatientId).get();
+
+    let baseUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
+    if (!baseUrl.endsWith('/')) baseUrl += '/';
+    
+    const payload = { id: dbPatientId, timestamp: now };
+    const sessionToken = safeBtoa(JSON.stringify(payload));
+
+    const firestoreMismatchWarning = 
+      (resolvedProjectId !== frontendProjectId) || (resolvedDbId !== frontendDbId);
+
+    res.json({
+      success: true,
+      patientId: dbPatientId,
+      accessPin,
+      questionnaireUrl: `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`,
+      adminReadBack: snap.exists,
+      backendProjectId: resolvedProjectId,
+      backendDbId: resolvedDbId,
+      frontendProjectId,
+      frontendDbId,
+      firestoreMismatchWarning
+    });
+
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 const ACCESS_CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
@@ -307,22 +443,6 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
 
     if (!email && !nombre) {
       return res.status(400).json({ error: "Nombre o Email es requerido." });
-    }
-
-    function resolveDefaultCoordinatorEmail() {
-      if (process.env.DEFAULT_COORDINATOR_EMAIL && process.env.DEFAULT_COORDINATOR_EMAIL.includes("@")) {
-        return process.env.DEFAULT_COORDINATOR_EMAIL.trim().toLowerCase();
-      }
-
-      if (process.env.NOTIFICATION_EMAILS) {
-        const first = process.env.NOTIFICATION_EMAILS
-          .split(",")
-          .map(e => e.trim().toLowerCase())
-          .find(e => e.includes("@"));
-        if (first) return first;
-      }
-
-      return "cuestionarioespejo@gmail.com";
     }
 
     const resolvedCoordinatorEmail = resolveDefaultCoordinatorEmail();

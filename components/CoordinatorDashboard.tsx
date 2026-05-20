@@ -311,6 +311,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   useEffect(() => {
+    // Audit Firestore config on mount
+    import('../firebase-applet-config.json').then(config => {
+      console.log("[CLIENT FIRESTORE CONFIG]", {
+        projectId: config.projectId,
+        firestoreDatabaseId: config.firestoreDatabaseId,
+        authDomain: config.authDomain
+      });
+    });
+
     const loadPatients = async () => {
       try {
         const config = await DataService.getGlobalConfig({
@@ -333,8 +342,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         setGlobalConfig(config);
         setTempConfig(config);
 
-        const patients = await DataService.getPatients(profile.email);
-        const sampleId = `sample-martin-${profile.email.replace(/[@.]/g, '-')}`;
+        const normalizedEmail = profile.email.toLowerCase();
+        console.log("[CLIENT PATIENT QUERY] Fetching patients for coordinator:", normalizedEmail);
+        const patients = await DataService.getPatients(normalizedEmail);
+        console.log("[CLIENT PATIENT QUERY] Results found:", patients.length);
+        
+        const sampleId = `sample-martin-${normalizedEmail.replace(/[@.]/g, '-')}`;
         
         let finalPatients = [...patients];
         
