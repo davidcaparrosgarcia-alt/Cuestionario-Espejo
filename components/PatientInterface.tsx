@@ -256,6 +256,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   
   const [clinicalReport, setClinicalReport] = useState<string>('');
   const [finalConclusion, setFinalConclusion] = useState<string>('');
+  const [clinicalReportGenerationError, setClinicalReportGenerationError] = useState<{error: boolean, message: string} | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [hasSentResults, setHasSentResults] = useState(false);
   const sequenceIdRef = useRef<number>(0);
@@ -602,6 +603,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   const generateClinicalReport = async () => {
     setIsGeneratingReport(true);
+    setClinicalReportGenerationError(null);
     const context = transcript.map(t => `${t.sender}: ${t.text}`).join('\n');
     const reportData = await gemini.generateFullReport(
         currentPatientData, 
@@ -610,8 +612,16 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         globalConfig.clinicalPrompt,
         globalConfig.conclusionPrompt
     );
-    setClinicalReport(reportData.internalReport);
-    setFinalConclusion(reportData.externalConclusion);
+    
+    if (reportData.error) {
+        setClinicalReportGenerationError({
+            error: true,
+            message: reportData.errorMessage || "Unknown error"
+        });
+    }
+    
+    setClinicalReport(reportData.internalReport || "");
+    setFinalConclusion(reportData.externalConclusion || "");
     setIsGeneratingReport(false);
   };
 
@@ -631,6 +641,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 conversationSummary: clinicalReport,
                 finalConclusion: finalConclusion
             });
+            
+            fetch('/api/notify-soybienestar-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ patientId: currentPatientData.id, event: 'questionnaire_completed' })
+            }).catch(e => console.error("Notification error", e));
         } catch(e) {
             console.error("Error saving results to Firebase", e);
         }
@@ -1070,15 +1086,29 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             }).catch(e => console.error("Error updating conclusion views", e));
         }
       } else {
+        // Enviar evento de validación
+        if (freshPatient.id) {
+            fetch('/api/notify-soybienestar-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ patientId: freshPatient.id, event: 'questionnaire_started' })
+            }).catch(e => console.error("Notification error", e));
+        }
+
+        const nameQ = processText(globalConfig.nameQuestionText);
+        if (nameQ) {
+            setStep("verification");
+        } else {
+            setStep("questionnaire");
+        }
+
         const welcome = processText(globalConfig.welcomeText);
         if (welcome) {
             addMessage(welcome, 'ia');
             await playOrSpeak(welcome, globalConfig.welcomeAudio);
         }
         
-        const nameQ = processText(globalConfig.nameQuestionText);
         if (nameQ) {
-            setStep("verification");
             addMessage(nameQ, 'ia');
             playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
         } else {
@@ -1535,6 +1565,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     </div>
                 ) : (
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
+                        {clinicalReportGenerationError && (
+                            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                                <p className="text-sm font-bold text-amber-800">Nota: No se pudo generar la valoración automática de tu sesión, pero tus respuestas se han guardado correctamente.</p>
+                            </div>
+                        )}
                         <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.finishText)}</p>
                         <Button onClick={handleSendResults} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700"><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</Button>
                     </div>

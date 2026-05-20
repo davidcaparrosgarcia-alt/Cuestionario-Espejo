@@ -9,7 +9,7 @@ export class GeminiService {
       return res.internalReport;
   }
 
-  async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string, globalConfig?: any): Promise<{ internalReport: string, externalConclusion: string }> {
+  async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string, globalConfig?: any): Promise<{ internalReport: string, externalConclusion: string, error?: boolean, errorMessage?: string, provider?: string, model?: string }> {
     // PREPARACIÓN PARA FALLBACK (Arquitectura futura)
     // 1. Leer configuración de proveedores
     let config = globalConfig;
@@ -103,22 +103,21 @@ export class GeminiService {
       const text = response.text || "{}";
       const data = JSON.parse(text);
       
-      // 4. Registrar éxito (Lógica futura: actualizar lastSuccessAt, reportsGenerated en Firestore)
-      // if (aiFallbackEnabled) { updateProviderStatus(activeProvider, 'active', null); }
-
       return {
           internalReport: data.internalReport || "No se pudo generar la valoración automática.",
-          externalConclusion: data.externalConclusion || "No se pudo generar la conclusión para el paciente."
+          externalConclusion: data.externalConclusion || "No se pudo generar la conclusión para el paciente.",
+          provider: activeProvider,
+          model: activeModel
       };
-    } catch (e) {
-      console.error("Error generating full report:", e);
-      
-      // 5. Registrar fallo (Lógica futura: actualizar lastFailureAt, status='failed', intentar fallback)
-      // if (aiFallbackEnabled) { updateProviderStatus(activeProvider, 'failed', e.message); }
-
+    } catch (e: any) {
+      console.error("[GeminiService] Error en generateFullReport:", e.message, { hasKey: !!process.env.GEMINI_API_KEY, activeModel });
       return {
-          internalReport: "Error de conexión con el motor de análisis clínico.",
-          externalConclusion: "Error de conexión con el motor de análisis clínico."
+          internalReport: "",
+          externalConclusion: "",
+          error: true,
+          errorMessage: e.message || String(e),
+          provider: activeProvider,
+          model: activeModel
       };
     }
   }

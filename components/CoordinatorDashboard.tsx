@@ -887,16 +887,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!patient.finalConclusion) return;
     if (patient.status !== "concluded" && patient.status !== "finalized") return;
     try {
-      const user = auth.currentUser;
-      if (!user) return;
-      const token = await user.getIdToken();
-      const res = await fetch('/api/notify-dossier', {
+      const res = await fetch('/api/notify-soybienestar-status', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ patient })
+        body: JSON.stringify({ patientId: patient.id, event: 'dossier_available' })
       });
       if (res.ok) {
         const data = await res.json();
@@ -1912,7 +1908,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <div className="flex items-center gap-2 mb-0.5">
                                     <button onClick={() => setSelectedPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors">{p.nombre}</button>
                                     {p.directAccessCreated && p.source === 'soybienestar' && (
-                                        <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100" title="Generado desde enlace directo automático">Acceso Directo</span>
+                                        <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100" title="Generado desde enlace directo automático">SoyBienestar · acceso directo</span>
                                     )}
                                 </div>
                                 <span className="text-xs text-slate-400 font-bold truncate">{p.email}</span>

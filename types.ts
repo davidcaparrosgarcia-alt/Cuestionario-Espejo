@@ -50,6 +50,10 @@ export interface PatientData {
   directQuestionnaireUrlCreatedAt?: number;
   lastSoyBienestarDossierSyncAt?: number;
   lastSoyBienestarDossierSyncStatus?: "ok" | "error" | "skipped";
+  lastSoyBienestarStatusSyncAt?: number;
+  lastSoyBienestarStatusSyncEvent?: string;
+  lastSoyBienestarStatusSyncStatus?: string;
+  preInformeSoyBienestar?: string;
   preferredChannels?: {
     email?: boolean;
     whatsapp?: boolean;

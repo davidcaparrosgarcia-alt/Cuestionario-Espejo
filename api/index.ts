@@ -478,7 +478,17 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
       preferredChannels: preferredChannels || null,
       directAccessCreated: true,
       directQuestionnaireUrlCreatedAt: now,
-      accessCodeFormat: "v2_4_alphanumeric" as const
+      accessCodeFormat: "v2_4_alphanumeric" as const,
+      preInformeSoyBienestar: soybienestarContext || req.body.source === 'soybienestar' ? `=== PRE-INFORME SOYBIENESTAR ===
+Nombre: ${nombre || 'No especificado'}
+Email: ${email || 'No especificado'}
+Edad: ${edad || 'No especificada'}
+Sexo: ${sexo || 'No especificado'}
+Origen: Solicitud desde SoyBienestar
+Estado: Pendiente de completar cuestionario
+
+Contexto disponible:
+${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay datos de contexto adicionales.'}` : null
     };
 
     // Sanitize undefined
@@ -842,6 +852,86 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
     console.error("[SoyBienestar] Error al enviar dossier via webhook:", e);
     // Retornamos HTTP 200 porque es un proceso en background y no debe romper el dashboard
     return res.json({ success: false, note: "Error de conexión con webhook", error: String(e) });
+  }
+});
+
+app.post("/api/notify-soybienestar-status", async (req, res) => {
+  try {
+    const { patientId, event } = req.body;
+    if (!patientId || !event) {
+      return res.status(400).json({ error: "Faltan datos patientId o event" });
+    }
+
+    const patientDoc = await db.collection("patients").doc(patientId).get();
+    if (!patientDoc.exists) {
+      return res.status(404).json({ error: "Paciente no encontrado" });
+    }
+
+    const patient = patientDoc.data()!;
+    const isDirect = patient.source === "soybienestar" || patient.soybienestarUid || patient.sourceRequestId;
+    
+    if (!isDirect) {
+      return res.json({ success: true, note: "El paciente no procede de SoyBienestar" });
+    }
+
+    const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+
+    if (!webhookUrl || !bridgeSecret) {
+      console.log("[SoyBienestar] Webhook o bridge secret no configurado. Skipping status notification.");
+      return res.json({ success: false, note: "Webhook not configured" });
+    }
+
+    const payload: any = {
+      event,
+      soybienestarUid: patient.soybienestarUid || null,
+      sourceRequestId: patient.sourceRequestId || null,
+      linkedQuestionnairePatientId: patient.id,
+      email: patient.email || null,
+      telefono: patient.telefono || null,
+      status: patient.status,
+      occurredAt: Date.now(),
+      accessPinProvidedBySoyBienestar: !!patient.proposedAccessCode
+    };
+
+    if (event === "dossier_available") {
+      payload.dossier = {
+        finalConclusion: patient.finalConclusion || null,
+        conversationSummary: patient.conversationSummary || null,
+        audioConclusion: patient.conclusionAudio || patient.audioConclusion || null,
+        dateConclusionSent: patient.dateConclusionSent || null
+      };
+    }
+
+    const headers: any = {
+      "Content-Type": "application/json",
+      "x-bridge-secret": bridgeSecret
+    };
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      console.error(`[SoyBienestar] Webhook HTTP ${response.status}`, await response.text());
+      return res.status(500).json({ error: `Webhook error ${response.status}` });
+    }
+
+    const syncInfo = {
+      lastSoyBienestarStatusSyncAt: Date.now(),
+      lastSoyBienestarStatusSyncEvent: event,
+      lastSoyBienestarStatusSyncStatus: patient.status
+    };
+
+    await db.collection("patients").doc(patientId).update(syncInfo);
+
+    return res.json({ success: true, syncInfo });
+
+  } catch (error: any) {
+    console.error("[SoyBienestar] Error en notify-soybienestar-status:", error);
+    return res.status(500).json({ error: error.message });
   }
 });
 
