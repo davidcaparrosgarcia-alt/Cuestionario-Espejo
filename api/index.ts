@@ -459,6 +459,12 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
     };
     const sessionToken = safeBtoa(JSON.stringify(payload));
 
+    let baseUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
+    if (!baseUrl.endsWith('/')) {
+        baseUrl += '/';
+    }
+    const questionnaireUrl = `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`;
+
     const patientData = {
       id: dbPatientId,
       coordinatorEmail: resolvedCoordinatorEmail,
@@ -479,6 +485,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
       preferredChannels: preferredChannels || null,
       directAccessCreated: true,
       directQuestionnaireUrlCreatedAt: now,
+      questionnaireUrl: questionnaireUrl,
       accessCodeFormat: "v2_4_alphanumeric" as const,
       preInformeSoyBienestar: soybienestarContext || req.body.source === 'soybienestar' ? `=== PRE-INFORME SOYBIENESTAR ===
 Nombre: ${nombre || 'No especificado'}
@@ -501,12 +508,6 @@ ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay d
 
     await db.collection("patients").doc(dbPatientId).set(patientData);
 
-    let baseUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
-    if (!baseUrl.endsWith('/')) {
-        baseUrl += '/';
-    }
-    const questionnaireUrl = `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`;
-
     res.json({
       success: true,
       patientId: dbPatientId,
@@ -518,6 +519,117 @@ ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay d
   } catch (error) {
     console.error("Error in /api/direct-questionnaire-link:", error);
     res.status(500).json({ error: "Error al generar enlace directo." });
+  }
+});
+
+app.post("/api/resend-questionnaire-link", async (req, res) => {
+  try {
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
+    if (!bridgeSecret) {
+      return res.status(500).json({ error: "Configuracion incompleta: falta secreto de bridge." });
+    }
+    if (req.headers['x-bridge-secret'] !== bridgeSecret) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const { soybienestarUid, sourceRequestId, email, patientId } = req.body;
+
+    if (!soybienestarUid && !sourceRequestId && !email && !patientId) {
+       return res.status(400).json({ error: "Se requiere al menos un identificador (soybienestarUid, sourceRequestId, email, patientId)." });
+    }
+
+    let foundPatient: any = null;
+    let foundDocId: string | null = null;
+
+    if (patientId) {
+      const docSnap = await db.collection("patients").doc(patientId).get();
+      if (docSnap.exists) {
+        foundPatient = docSnap.data();
+        foundDocId = docSnap.id;
+      }
+    }
+
+    if (!foundPatient && soybienestarUid) {
+      const snap = await db.collection("patients").where("soybienestarUid", "==", soybienestarUid).limit(10).get();
+      if (!snap.empty) {
+        snap.forEach(doc => {
+           const data = doc.data();
+           if (data.status !== "deleted" && (data.source === "soybienestar" || data.directAccessCreated || data.soybienestarUid || data.sourceRequestId)) {
+              if (!foundPatient || (data.dateSent || data.directQuestionnaireUrlCreatedAt || 0) > (foundPatient.dateSent || foundPatient.directQuestionnaireUrlCreatedAt || 0)) {
+                  foundPatient = data;
+                  foundDocId = doc.id;
+              }
+           }
+        });
+      }
+    }
+
+    if (!foundPatient && sourceRequestId) {
+      const snap = await db.collection("patients").where("sourceRequestId", "==", sourceRequestId).limit(10).get();
+      if (!snap.empty) {
+        snap.forEach(doc => {
+           const data = doc.data();
+           if (data.status !== "deleted" && (data.source === "soybienestar" || data.directAccessCreated || data.soybienestarUid || data.sourceRequestId)) {
+              if (!foundPatient || (data.dateSent || data.directQuestionnaireUrlCreatedAt || 0) > (foundPatient.dateSent || foundPatient.directQuestionnaireUrlCreatedAt || 0)) {
+                  foundPatient = data;
+                  foundDocId = doc.id;
+              }
+           }
+        });
+      }
+    }
+    
+    if (!foundPatient && email) {
+      const snap = await db.collection("patients").where("email", "==", email).limit(10).get();
+      if (!snap.empty) {
+        snap.forEach(doc => {
+           const data = doc.data();
+           if (data.status !== "deleted" && (data.source === "soybienestar" || data.directAccessCreated || data.soybienestarUid || data.sourceRequestId)) {
+              if (!foundPatient || (data.dateSent || data.directQuestionnaireUrlCreatedAt || 0) > (foundPatient.dateSent || foundPatient.directQuestionnaireUrlCreatedAt || 0)) {
+                  foundPatient = data;
+                  foundDocId = doc.id;
+              }
+           }
+        });
+      }
+    }
+
+    if (foundPatient && foundPatient.status === "deleted") {
+       foundPatient = null;
+    }
+    
+    if (foundPatient && !(foundPatient.source === "soybienestar" || foundPatient.directAccessCreated || foundPatient.soybienestarUid || foundPatient.sourceRequestId)) {
+       foundPatient = null; 
+    }
+
+    if (!foundPatient) {
+       return res.status(200).json({ success: false, reason: "not_found_or_deleted" });
+    }
+
+    let qUrl = foundPatient.questionnaireUrl;
+    if (!qUrl) {
+       const timestamp = foundPatient.dateSent || foundPatient.directQuestionnaireUrlCreatedAt || Date.now();
+       const payload = { id: foundPatient.id || foundDocId, timestamp };
+       const sessionToken = safeBtoa(JSON.stringify(payload));
+       
+       let baseUrl = process.env.APP_PUBLIC_URL || "https://cuestionario-espejo.vercel.app";
+       if (!baseUrl.endsWith('/')) { baseUrl += '/'; }
+       qUrl = `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`;
+
+       await db.collection("patients").doc(foundPatient.id || foundDocId!).update({ questionnaireUrl: qUrl });
+    }
+
+    res.json({
+       success: true,
+       questionnaireUrl: qUrl,
+       accessCode: foundPatient.accessPin,
+       patientId: foundPatient.id || foundDocId,
+       status: foundPatient.status
+    });
+
+  } catch (error) {
+     console.error("Error in /api/resend-questionnaire-link:", error);
+     res.status(500).json({ error: "Error al reenviar enlace." });
   }
 });
 
@@ -794,6 +906,79 @@ app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res)
   }
 });
 
+async function notifySoyBienestarFromPatient(db: any, id: string, data: any, event: string, overrideStatus?: string) {
+  const isDirect = data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated;
+  if (!isDirect) {
+    return { status: "skipped", reason: "not_soybienestar" };
+  }
+
+  const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
+  const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+
+  if (!webhookUrl || !bridgeSecret) {
+    return { status: "skipped", reason: "missing_config" };
+  }
+
+  const payload: any = {
+    event,
+    soybienestarUid: data.soybienestarUid || null,
+    sourceRequestId: data.sourceRequestId || null,
+    linkedQuestionnairePatientId: id,
+    email: data.email || null,
+    telefono: data.telefono || null,
+    status: overrideStatus || data.status || null,
+    occurredAt: Date.now(),
+    accessPinProvidedBySoyBienestar: !!data.proposedAccessCode
+  };
+
+  if (event === "dossier_available") {
+    payload.dossier = {
+      finalConclusion: data.finalConclusion || null,
+      conversationSummary: data.conversationSummary || null,
+      audioConclusion: data.conclusionAudio || data.audioConclusion || null,
+      dateConclusionSent: data.dateConclusionSent || null
+    };
+  }
+
+  try {
+    const headers: any = {
+      "Content-Type": "application/json",
+      "x-bridge-secret": bridgeSecret
+    };
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      console.error(`[SoyBienestar] HTTP ${response.status}`, await response.text());
+      await db.collection("patients").doc(id).update({
+        lastSoyBienestarStatusSyncAt: Date.now(),
+        lastSoyBienestarStatusSyncEvent: event,
+        lastSoyBienestarStatusSyncStatus: "error"
+      });
+      return { status: "error", code: response.status };
+    }
+    
+    await db.collection("patients").doc(id).update({
+      lastSoyBienestarStatusSyncAt: Date.now(),
+      lastSoyBienestarStatusSyncEvent: event,
+      lastSoyBienestarStatusSyncStatus: "ok"
+    });
+    return { status: "ok" };
+  } catch (e) {
+    console.error(`[SoyBienestar] Exception notifying ${event}:`, e);
+    await db.collection("patients").doc(id).update({
+      lastSoyBienestarStatusSyncAt: Date.now(),
+      lastSoyBienestarStatusSyncEvent: event,
+      lastSoyBienestarStatusSyncStatus: "error"
+    });
+    return { status: "error", error: e };
+  }
+}
+
 app.post("/api/patients/:id/soft-delete", requireCoordinatorAuth, async (req, res) => {
   const id = req.params.id;
   const previousStatus = req.body.previousStatus;
@@ -819,6 +1004,12 @@ app.post("/api/patients/:id/soft-delete", requireCoordinatorAuth, async (req, re
       previousStatusBeforeDelete: previousStatus || data?.status || "sent",
       status: "deleted"
     });
+
+    // Notifier a SoyBienestar fallos no bloquean la eliminación
+    if (data && (data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated)) {
+       // Llamar al webhook
+       notifySoyBienestarFromPatient(db, id, data, "questionnaire_deleted", "deleted").catch(e => console.error("Error from notify helper:", e));
+    }
 
     res.json({ success: true, id, deletedAt: Date.now() });
   } catch (e: any) {
@@ -933,7 +1124,7 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
       return res.status(400).json({ error: "Faltan datos patientId o event" });
     }
 
-    const allowedEvents = ['questionnaire_started', 'questionnaire_completed', 'dossier_available'];
+    const allowedEvents = ['questionnaire_started', 'questionnaire_completed', 'dossier_available', 'questionnaire_deleted'];
     if (!allowedEvents.includes(event)) {
       return res.status(400).json({ error: "Evento no soportado" });
     }
