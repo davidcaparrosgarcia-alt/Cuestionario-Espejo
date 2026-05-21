@@ -1013,7 +1013,7 @@ export const DataService = {
     }
   },
 
-  async deletePatient(patientId: string, deletedBy: string = "coordinator", previousStatus: string = "pending") {
+  async softDeletePatient(patientId: string, deletedBy: string = "coordinator", previousStatus: string = "pending") {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
@@ -1021,9 +1021,9 @@ export const DataService = {
       
       const updates = {
           deletedAt: Date.now(),
-          deletedBy: deletedBy,
-          deletedReason: null,
-          previousStatusBeforeDelete: previousStatus,
+          deletedBy: deletedBy || "coordinator",
+          deletedReason: deleteField(),
+          previousStatusBeforeDelete: previousStatus || "pending",
           status: 'deleted'
       };
       

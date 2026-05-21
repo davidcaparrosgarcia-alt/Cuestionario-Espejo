@@ -531,13 +531,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const deleteRecord = async (id: string, previousStatus: string) => {
-    if (!window.confirm("¿Estás seguro/a de que deseas borrar esta ficha de paciente?\n\nNo se eliminará definitivamente, pero dejará de aparecer en la lista principal. Podrás recuperarla desde fichas borradas.")) return;
+    if (!window.confirm("¿Estás seguro/a de que deseas enviar esta ficha a la papelera?\n\nNo se eliminará definitivamente. Podrás recuperarla desde Fichas borradas.")) return;
     
     // Optimistic update
     const updated = registry.map(r => r.id === id ? { ...r, deletedAt: Date.now(), status: 'deleted' as const } : r);
     setRegistry(updated);
     try {
-      await DataService.deletePatient(id, profile.email || fullProfile.email || "coordinator", previousStatus);
+      await DataService.softDeletePatient(id, profile.email || fullProfile.email || "coordinator", previousStatus);
       
       // Si es el paciente de ejemplo, marcamos en el perfil que ha sido borrado
       const sampleId = `sample-martin-${profile.email.replace(/[@.]/g, '-')}`;
@@ -753,7 +753,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         if (isNewRecord) {
             // If we are replacing, delete the old record first (soft delete)
             if (forceAction === 'replace' && existingRecord) {
-                await DataService.deletePatient(existingRecord.id, profile.email || "coordinator", existingRecord.status);
+                await DataService.softDeletePatient(existingRecord.id, profile.email || "coordinator", existingRecord.status);
                 setRegistry(prev => prev.filter(r => r.id !== existingRecord!.id));
             }
 
@@ -1924,15 +1924,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   <div className="flex items-center gap-2">
                       <h3 className="font-black text-xs uppercase text-slate-400 tracking-widest">{showDeletedMode ? 'Fichas Borradas' : 'Actividad Reciente'}</h3>
                       <button onClick={() => setIsSearchOpen(!isSearchOpen)} className="w-6 h-6 rounded bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 flex items-center justify-center transition-colors"><i className="fas fa-search text-xs"></i></button>
-                      <button onClick={() => setShowDeletedMode(!showDeletedMode)} className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${showDeletedMode ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                          {showDeletedMode ? 'Ocultar papelera' : <><i className="fas fa-trash-alt mr-1"></i> Papelera</>}
-                      </button>
                   </div>
                   <span className="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-600 font-bold">{filteredRegistry.length}</span>
                 </div>
                   <div className="space-y-4">
                   {filteredRegistry.length === 0 ? (
-                    <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">No hay registros</p>
+                    <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">{showDeletedMode ? 'No hay fichas borradas.' : 'No hay registros'}</p>
                   ) : (
                     [...filteredRegistry].sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0)).map((p) => (
                       <div key={p.id} className="group relative flex flex-col p-4 bg-white rounded-2xl border border-slate-100 hover:border-teal-300 transition-all shadow-sm hover:shadow-md gap-3">
@@ -2013,6 +2010,20 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       </div>
                     ))
                   )}
+                </div>
+                <div className="mt-6 flex justify-end">
+                    <button 
+                        onClick={() => setShowDeletedMode(!showDeletedMode)} 
+                        className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-colors border ${
+                            showDeletedMode 
+                            ? 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200' 
+                            : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 hover:text-slate-600'
+                        }`}
+                    >
+                        {showDeletedMode ? 'Volver a inicio' : (
+                            <><i className="fas fa-trash-alt mr-1.5"></i> Papelera {registry.filter(p => p.status === 'deleted' || p.deletedAt).length > 0 ? `(${registry.filter(p => p.status === 'deleted' || p.deletedAt).length})` : ''}</>
+                        )}
+                    </button>
                 </div>
               </div>
             </Card>
