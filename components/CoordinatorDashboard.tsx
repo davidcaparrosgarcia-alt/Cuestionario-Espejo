@@ -533,11 +533,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const deleteRecord = async (id: string, previousStatus: string) => {
     if (!window.confirm("¿Estás seguro/a de que deseas enviar esta ficha a la papelera?\n\nNo se eliminará definitivamente. Podrás recuperarla desde Fichas borradas.")) return;
     
+    const previousRegistry = registry;
     // Optimistic update
     const updated = registry.map(r => r.id === id ? { ...r, deletedAt: Date.now(), status: 'deleted' as const } : r);
     setRegistry(updated);
     try {
+      console.log("[SOFT DELETE] starting", { id, previousStatus });
       await DataService.softDeletePatient(id, profile.email || fullProfile.email || "coordinator", previousStatus);
+      console.log("[SOFT DELETE] success", { id });
       
       // Si es el paciente de ejemplo, marcamos en el perfil que ha sido borrado
       const sampleId = `sample-martin-${profile.email.replace(/[@.]/g, '-')}`;
@@ -547,11 +550,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           onProfileUpdate(update);
       }
       
-      triggerToast("Registro eliminado y movido a la papelera");
+      triggerToast("Ficha enviada a la papelera. Puedes recuperarla desde Fichas borradas.");
     } catch (e) {
-      console.error("Error deleting patient", e);
-      triggerToast("Error al borrar el registro");
-      setRegistry(registry); // Revert optimistic update
+      console.error("[SOFT DELETE] failed", e);
+      triggerToast("No se pudo enviar la ficha a la papelera. Revisa permisos o consola.");
+      setRegistry(previousRegistry); // Revert optimistic update
     }
   };
 
@@ -1447,7 +1450,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           p.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
           (p.telefono && p.telefono.includes(searchTerm));
       
-      const matchesStatus = filterStatus === 'all' || p.status === filterStatus;
+      const matchesStatus = showDeletedMode 
+          ? true 
+          : (filterStatus === 'all' || p.status === filterStatus);
       
       // FILTRO DE FECHAS AÑADIDO
       const pDate = p.dateSent || 0;
@@ -1457,6 +1462,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
       return matchesSearch && matchesStatus && matchesDate;
   });
+
+  const deletedCount = registry.filter(p => p.status === 'deleted' || !!p.deletedAt).length;
 
   return (
     <div className="min-h-screen overflow-y-auto relative">
@@ -2013,7 +2020,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 </div>
                 <div className="mt-6 flex justify-end">
                     <button 
-                        onClick={() => setShowDeletedMode(!showDeletedMode)} 
+                        onClick={() => {
+                            const nextMode = !showDeletedMode;
+                            setShowDeletedMode(nextMode);
+                            setFilterStatus('all');
+                        }} 
                         className={`px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-colors border ${
                             showDeletedMode 
                             ? 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200' 
@@ -2021,7 +2032,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         }`}
                     >
                         {showDeletedMode ? 'Volver a inicio' : (
-                            <><i className="fas fa-trash-alt mr-1.5"></i> Papelera {registry.filter(p => p.status === 'deleted' || p.deletedAt).length > 0 ? `(${registry.filter(p => p.status === 'deleted' || p.deletedAt).length})` : ''}</>
+                            <><i className="fas fa-trash-alt mr-1.5"></i> Papelera {deletedCount > 0 ? `(${deletedCount})` : ''}</>
                         )}
                     </button>
                 </div>

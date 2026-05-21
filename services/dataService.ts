@@ -1019,12 +1019,12 @@ export const DataService = {
     try {
       FirestoreDebug.log('update (soft delete)', 'patients/' + patientId);
       
-      const updates = {
+      const updates: Partial<PatientData> = {
           deletedAt: Date.now(),
           deletedBy: deletedBy || "coordinator",
-          deletedReason: deleteField(),
+          deletedReason: null,
           previousStatusBeforeDelete: previousStatus || "pending",
-          status: 'deleted'
+          status: 'deleted' as any
       };
       
       await updateDoc(doc(db, 'patients', patientId), updates);
