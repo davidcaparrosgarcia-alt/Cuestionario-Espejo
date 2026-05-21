@@ -1,7 +1,7 @@
 import express from "express";
 import nodemailer from "nodemailer";
 import admin from "firebase-admin";
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import fs from "fs";
 import path from "path";
 
@@ -123,7 +123,8 @@ const requireCoordinatorAuth = async (req: express.Request, res: express.Respons
   }
   const token = authHeader.split("Bearer ")[1];
   try {
-    await admin.auth(frontendAuthApp).verifyIdToken(token);
+    const decodedToken = await admin.auth(frontendAuthApp).verifyIdToken(token);
+    (req as any).user = decodedToken;
     next();
   } catch (error) {
     console.error("Coordinator auth failed", {
@@ -790,6 +791,75 @@ app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res)
       return res.status(200).json({ message: "Mock deletion due to lack of IAM permissions" });
     }
     res.status(200).json({ message: "Request processed (with warnings)" });
+  }
+});
+
+app.post("/api/patients/:id/soft-delete", requireCoordinatorAuth, async (req, res) => {
+  const id = req.params.id;
+  const previousStatus = req.body.previousStatus;
+  const coordinatorEmail = ((req as any).user?.email || "").toLowerCase();
+
+  try {
+    const docRef = db.collection("patients").doc(id);
+    const docSnap = await docRef.get();
+    
+    if (!docSnap.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado" });
+    }
+
+    const data = docSnap.data();
+    if (data?.coordinatorEmail && data.coordinatorEmail.toLowerCase() !== coordinatorEmail) {
+      return res.status(403).json({ success: false, error: "Acceso denegado: este paciente pertenece a otro coordinador" });
+    }
+
+    await docRef.update({
+      deletedAt: Date.now(),
+      deletedBy: coordinatorEmail || "coordinator",
+      deletedReason: null,
+      previousStatusBeforeDelete: previousStatus || data?.status || "sent",
+      status: "deleted"
+    });
+
+    res.json({ success: true, id, deletedAt: Date.now() });
+  } catch (e: any) {
+    console.error(`Error soft-deleting patient ${id}:`, e);
+    res.status(500).json({ success: false, error: e.message || "Error al enviar ficha a papelera" });
+  }
+});
+
+app.post("/api/patients/:id/restore", requireCoordinatorAuth, async (req, res) => {
+  const id = req.params.id;
+  const coordinatorEmail = ((req as any).user?.email || "").toLowerCase();
+
+  try {
+    const docRef = db.collection("patients").doc(id);
+    const docSnap = await docRef.get();
+    
+    if (!docSnap.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado" });
+    }
+
+    const data = docSnap.data();
+    if (data?.coordinatorEmail && data.coordinatorEmail.toLowerCase() !== coordinatorEmail) {
+      return res.status(403).json({ success: false, error: "Acceso denegado: este paciente pertenece a otro coordinador" });
+    }
+
+    const restoredStatus = data?.previousStatusBeforeDelete || "sent";
+
+    await docRef.update({
+      status: restoredStatus,
+      restoredAt: Date.now(),
+      restoredBy: coordinatorEmail || "coordinator",
+      deletedAt: FieldValue.delete(),
+      deletedBy: FieldValue.delete(),
+      deletedReason: FieldValue.delete(),
+      previousStatusBeforeDelete: FieldValue.delete()
+    });
+
+    res.json({ success: true, id, restoredStatus });
+  } catch (e: any) {
+    console.error(`Error restoring patient ${id}:`, e);
+    res.status(500).json({ success: false, error: e.message || "Error al restaurar ficha" });
   }
 });
 

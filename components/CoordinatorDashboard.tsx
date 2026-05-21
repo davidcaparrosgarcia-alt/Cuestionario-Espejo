@@ -553,7 +553,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       triggerToast("Ficha enviada a la papelera. Puedes recuperarla desde Fichas borradas.");
     } catch (e) {
       console.error("[SOFT DELETE] failed", e);
-      triggerToast("No se pudo enviar la ficha a la papelera. Revisa permisos o consola.");
+      triggerToast("No se pudo enviar la ficha a la papelera. Revisa permisos o endpoint backend.");
       setRegistry(previousRegistry); // Revert optimistic update
     }
   };
@@ -562,16 +562,17 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       const record = registry.find(r => r.id === id);
       if (!record) return;
       
+      const previousRegistry = registry;
       const restoredStatus = record.previousStatusBeforeDelete || 'sent';
       const updated = registry.map(r => r.id === id ? { ...r, status: restoredStatus as any, deletedAt: null } : r);
       setRegistry(updated);
       try {
           await DataService.restorePatient(id, profile.email || fullProfile.email || "coordinator", restoredStatus);
-          triggerToast("Registro restaurado correctamente");
+          triggerToast("Ficha restaurada correctamente.");
       } catch (e) {
           console.error("Error restoring patient", e);
           triggerToast("Error al restaurar el registro");
-          setRegistry(registry); // Revert optimistic update
+          setRegistry(previousRegistry); // Revert optimistic update
       }
   };
 

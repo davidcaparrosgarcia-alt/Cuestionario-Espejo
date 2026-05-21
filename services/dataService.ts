@@ -1014,47 +1014,48 @@ export const DataService = {
   },
 
   async softDeletePatient(patientId: string, deletedBy: string = "coordinator", previousStatus: string = "pending") {
-    if (!db) return;
-    const path = `patients/${patientId}`;
-    try {
-      FirestoreDebug.log('update (soft delete)', 'patients/' + patientId);
-      
-      const updates: Partial<PatientData> = {
-          deletedAt: Date.now(),
-          deletedBy: deletedBy || "coordinator",
-          deletedReason: null,
-          previousStatusBeforeDelete: previousStatus || "pending",
-          status: 'deleted' as any
-      };
-      
-      await updateDoc(doc(db, 'patients', patientId), updates);
-      
-      this._patientsCache = {}; // Invalidate all patient caches
-      delete this._patientByIdCache[patientId];
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
+    const user = auth.currentUser;
+    if (!user) throw new Error("No hay usuario autenticado");
+
+    const token = await user.getIdToken();
+    const res = await fetch(`/api/patients/${patientId}/soft-delete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({ previousStatus })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || "Error soft delete backend");
     }
+
+    this._patientsCache = {};
+    delete this._patientByIdCache[patientId];
   },
 
   async restorePatient(patientId: string, restoredBy: string = "coordinator", restoredStatus: string = "sent") {
-      if (!db) return;
-      const path = `patients/${patientId}`;
-      try {
-          FirestoreDebug.log('update (restore)', 'patients/' + patientId);
-          await updateDoc(doc(db, 'patients', patientId), {
-              deletedAt: deleteField(),
-              deletedBy: deleteField(),
-              deletedReason: deleteField(),
-              status: restoredStatus,
-              previousStatusBeforeDelete: deleteField(),
-              restoredAt: Date.now(),
-              restoredBy: restoredBy
-          });
-          this._patientsCache = {};
-          delete this._patientByIdCache[patientId];
-      } catch (error) {
-          handleFirestoreError(error, OperationType.UPDATE, path);
+    const user = auth.currentUser;
+    if (!user) throw new Error("No hay usuario autenticado");
+
+    const token = await user.getIdToken();
+    const res = await fetch(`/api/patients/${patientId}/restore`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
       }
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || "Error restore backend");
+    }
+
+    this._patientsCache = {};
+    delete this._patientByIdCache[patientId];
   },
 
   async getPatientById(patientId: string): Promise<PatientData | null> {
