@@ -916,6 +916,15 @@ async function notifySoyBienestarFromPatient(db: any, id: string, data: any, eve
   const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
 
   if (!webhookUrl || !bridgeSecret) {
+    try {
+      await db.collection("patients").doc(id).update({
+        lastSoyBienestarStatusSyncAt: Date.now(),
+        lastSoyBienestarStatusSyncEvent: event,
+        lastSoyBienestarStatusSyncStatus: "skipped"
+      });
+    } catch (e) {
+      console.error("[SoyBienestar] Error updating skipped status in Firestore:", e);
+    }
     return { status: "skipped", reason: "missing_config" };
   }
 
@@ -997,21 +1006,33 @@ app.post("/api/patients/:id/soft-delete", requireCoordinatorAuth, async (req, re
       return res.status(403).json({ success: false, error: "Acceso denegado: este paciente pertenece a otro coordinador" });
     }
 
+    const deletedAt = Date.now();
     await docRef.update({
-      deletedAt: Date.now(),
+      deletedAt,
       deletedBy: coordinatorEmail || "coordinator",
       deletedReason: null,
       previousStatusBeforeDelete: previousStatus || data?.status || "sent",
       status: "deleted"
     });
 
+    let soyBienestarSyncResult = null;
     // Notifier a SoyBienestar fallos no bloquean la eliminación
     if (data && (data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated)) {
-       // Llamar al webhook
-       notifySoyBienestarFromPatient(db, id, data, "questionnaire_deleted", "deleted").catch(e => console.error("Error from notify helper:", e));
+       try {
+         // Esperar el resultado de la sincronización sin que un fallo bloquee el proceso
+         soyBienestarSyncResult = await notifySoyBienestarFromPatient(db, id, data, "questionnaire_deleted", "deleted");
+       } catch (e) {
+         console.error("[SOFT DELETE] Error calling notifySoyBienestarFromPatient:", e);
+         soyBienestarSyncResult = { status: "error", error: String(e) };
+       }
     }
 
-    res.json({ success: true, id, deletedAt: Date.now() });
+    res.json({
+      success: true,
+      id,
+      deletedAt,
+      soyBienestarSyncResult
+    });
   } catch (e: any) {
     console.error(`Error soft-deleting patient ${id}:`, e);
     res.status(500).json({ success: false, error: e.message || "Error al enviar ficha a papelera" });
@@ -1189,7 +1210,7 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
     const syncInfo = {
       lastSoyBienestarStatusSyncAt: Date.now(),
       lastSoyBienestarStatusSyncEvent: event,
-      lastSoyBienestarStatusSyncStatus: patient.status
+      lastSoyBienestarStatusSyncStatus: "ok"
     };
 
     await db.collection("patients").doc(patientId).update(syncInfo);
