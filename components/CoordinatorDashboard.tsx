@@ -217,6 +217,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [showDeletedMode, setShowDeletedMode] = useState(false);
 
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [duplicatePatientRecord, setDuplicatePatientRecord] = useState<PatientData | null>(null);
@@ -529,11 +530,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       }
   };
 
-  const deleteRecord = async (id: string) => {
-    const updated = registry.filter(r => r.id !== id);
+  const deleteRecord = async (id: string, previousStatus: string) => {
+    if (!window.confirm("¿Estás seguro/a de que deseas borrar esta ficha de paciente?\n\nNo se eliminará definitivamente, pero dejará de aparecer en la lista principal. Podrás recuperarla desde fichas borradas.")) return;
+    
+    // Optimistic update
+    const updated = registry.map(r => r.id === id ? { ...r, deletedAt: Date.now(), status: 'deleted' as const } : r);
     setRegistry(updated);
     try {
-      await DataService.deletePatient(id);
+      await DataService.deletePatient(id, profile.email || fullProfile.email || "coordinator", previousStatus);
       
       // Si es el paciente de ejemplo, marcamos en el perfil que ha sido borrado
       const sampleId = `sample-martin-${profile.email.replace(/[@.]/g, '-')}`;
@@ -543,10 +547,29 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           onProfileUpdate(update);
       }
       
-      triggerToast("Registro eliminado correctamente");
+      triggerToast("Registro eliminado y movido a la papelera");
     } catch (e) {
-      triggerToast("Error al eliminar el registro");
+      console.error("Error deleting patient", e);
+      triggerToast("Error al borrar el registro");
+      setRegistry(registry); // Revert optimistic update
     }
+  };
+
+  const restoreRecord = async (id: string) => {
+      const record = registry.find(r => r.id === id);
+      if (!record) return;
+      
+      const restoredStatus = record.previousStatusBeforeDelete || 'sent';
+      const updated = registry.map(r => r.id === id ? { ...r, status: restoredStatus as any, deletedAt: null } : r);
+      setRegistry(updated);
+      try {
+          await DataService.restorePatient(id, profile.email || fullProfile.email || "coordinator", restoredStatus);
+          triggerToast("Registro restaurado correctamente");
+      } catch (e) {
+          console.error("Error restoring patient", e);
+          triggerToast("Error al restaurar el registro");
+          setRegistry(registry); // Revert optimistic update
+      }
   };
 
   const changeStatus = async (id: string, direction: 'forward' | 'backward') => {
@@ -728,9 +751,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                    .replace(/\[PIN\]/g, accessPin.toUpperCase());
 
         if (isNewRecord) {
-            // If we are replacing, delete the old record first
+            // If we are replacing, delete the old record first (soft delete)
             if (forceAction === 'replace' && existingRecord) {
-                await DataService.deletePatient(existingRecord.id);
+                await DataService.deletePatient(existingRecord.id, profile.email || "coordinator", existingRecord.status);
                 setRegistry(prev => prev.filter(r => r.id !== existingRecord!.id));
             }
 
@@ -1412,6 +1435,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const filteredRegistry = registry.filter(p => {
+      // Filtrar según modo borrados
+      if (showDeletedMode) {
+          if (p.status !== 'deleted' && !p.deletedAt) return false;
+      } else {
+          if (p.status === 'deleted' || p.deletedAt) return false;
+      }
+
       const matchesSearch = searchTerm === '' || 
           p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || 
           p.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1892,8 +1922,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               <div className="mt-12">
                 <div className="flex justify-between items-center mb-6">
                   <div className="flex items-center gap-2">
-                      <h3 className="font-black text-xs uppercase text-slate-400 tracking-widest">Actividad Reciente</h3>
-                      <button onClick={() => setIsSearchOpen(true)} className="w-6 h-6 rounded bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 flex items-center justify-center transition-colors"><i className="fas fa-search text-xs"></i></button>
+                      <h3 className="font-black text-xs uppercase text-slate-400 tracking-widest">{showDeletedMode ? 'Fichas Borradas' : 'Actividad Reciente'}</h3>
+                      <button onClick={() => setIsSearchOpen(!isSearchOpen)} className="w-6 h-6 rounded bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 flex items-center justify-center transition-colors"><i className="fas fa-search text-xs"></i></button>
+                      <button onClick={() => setShowDeletedMode(!showDeletedMode)} className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider transition-colors ${showDeletedMode ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                          {showDeletedMode ? 'Ocultar papelera' : <><i className="fas fa-trash-alt mr-1"></i> Papelera</>}
+                      </button>
                   </div>
                   <span className="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-600 font-bold">{filteredRegistry.length}</span>
                 </div>
@@ -1915,43 +1948,55 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             </div>
                             
                             <div className="flex items-center gap-1 shrink-0">
-                            <button 
-                                onClick={() => changeStatus(p.id, 'backward')}
-                                disabled={p.status === 'pending'}
-                                className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
-                                title="Retroceder estado"
-                            >
-                                <i className="fas fa-chevron-left text-xs"></i>
-                            </button>
-                            
-                            <div 
-                                className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg text-center min-w-[80px] ${
-                                p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
-                                p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
-                                p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
-                                p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
-                                p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
-                                p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
-                                }`}
-                            >
-                                {statusLabels[p.status]}
-                            </div>
+                            {showDeletedMode || p.status === 'deleted' ? (
+                                <button 
+                                    onClick={() => restoreRecord(p.id)}
+                                    className="px-3 py-1.5 ml-1 text-xs font-bold text-teal-600 bg-teal-50 hover:bg-teal-100 rounded-lg transition-all flex items-center gap-2 uppercase tracking-wide border border-teal-200"
+                                    title="Restaurar ficha"
+                                >
+                                    <i className="fas fa-undo"></i> Restaurar
+                                </button>
+                            ) : (
+                                <>
+                                    <button 
+                                        onClick={() => changeStatus(p.id, 'backward')}
+                                        disabled={p.status === 'pending'}
+                                        className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
+                                        title="Retroceder estado"
+                                    >
+                                        <i className="fas fa-chevron-left text-xs"></i>
+                                    </button>
+                                    
+                                    <div 
+                                        className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg text-center min-w-[80px] ${
+                                        p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
+                                        p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
+                                        p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
+                                        p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
+                                        p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
+                                        p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
+                                        }`}
+                                    >
+                                        {statusLabels[p.status]}
+                                    </div>
 
-                            <button 
-                                onClick={() => changeStatus(p.id, 'forward')}
-                                disabled={p.status === 'finalized'}
-                                className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
-                                title="Avanzar estado"
-                            >
-                                <i className="fas fa-chevron-right text-xs"></i>
-                            </button>
-                            
-                            <button 
-                                onClick={() => deleteRecord(p.id)}
-                                className="p-2 ml-1 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                            >
-                                <i className="fas fa-trash"></i>
-                            </button>
+                                    <button 
+                                        onClick={() => changeStatus(p.id, 'forward')}
+                                        disabled={p.status === 'finalized'}
+                                        className="text-slate-300 hover:text-slate-500 disabled:opacity-30 disabled:cursor-not-allowed p-1 transition-colors"
+                                        title="Avanzar estado"
+                                    >
+                                        <i className="fas fa-chevron-right text-xs"></i>
+                                    </button>
+                                    
+                                    <button 
+                                        onClick={() => deleteRecord(p.id, p.status)}
+                                        className="p-2 ml-1 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                    >
+                                        <i className="fas fa-trash"></i>
+                                    </button>
+                                </>
+                            )}
                             </div>
                         </div>
 

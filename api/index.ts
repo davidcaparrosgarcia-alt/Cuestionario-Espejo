@@ -793,6 +793,7 @@ app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res)
   }
 });
 
+// Legacy endpoint. Prefer /api/notify-soybienestar-status
 app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
   const patient = req.body.patient;
   if (!patient || !patient.id) {
@@ -860,6 +861,11 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
     const { patientId, event } = req.body;
     if (!patientId || !event) {
       return res.status(400).json({ error: "Faltan datos patientId o event" });
+    }
+
+    const allowedEvents = ['questionnaire_started', 'questionnaire_completed', 'dossier_available'];
+    if (!allowedEvents.includes(event)) {
+      return res.status(400).json({ error: "Evento no soportado" });
     }
 
     const patientDoc = await db.collection("patients").doc(patientId).get();

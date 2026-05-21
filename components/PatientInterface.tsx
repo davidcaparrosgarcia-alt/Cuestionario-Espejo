@@ -496,19 +496,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         }
     }
   }, [step]);
-
-  // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed)
-  useEffect(() => {
-      if (!isEditorMode && currentPatientData.id && (currentPatientData.status === 'pending' || currentPatientData.status === 'sent')) {
-          DataService.updatePatient(currentPatientData.id, { status: 'viewed' })
-            .then(() => {
-              setCurrentPatientData(prev => ({ ...prev, status: 'viewed' }));
-            })
-            .catch(e => {
-              console.error("Error updating viewed status", e);
-            });
-      }
-  }, [currentPatientData.id, isEditorMode]);
   
   useEffect(() => {
     const checkMobile = () => {
@@ -1086,6 +1073,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             }).catch(e => console.error("Error updating conclusion views", e));
         }
       } else {
+        // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed)
+        if (!isEditorMode && freshPatient.id && (freshPatient.status === 'pending' || freshPatient.status === 'sent')) {
+            DataService.updatePatient(freshPatient.id, { status: 'viewed' })
+              .then(() => {
+                setCurrentPatientData(prev => ({ ...prev, status: 'viewed' }));
+              })
+              .catch(e => {
+                console.error("Error updating viewed status", e);
+              });
+        }
+
         // Enviar evento de validación
         if (freshPatient.id) {
             fetch('/api/notify-soybienestar-status', {

@@ -24,7 +24,7 @@ export interface PatientData {
   coordinatorEmail?: string; 
   accessPin?: string; // Clave personal alfanumérica para ver la conclusión
   // Estados actualizados según nueva lógica
-  status: 'pending' | 'sent' | 'viewed' | 'completed' | 'concluded' | 'finalized';
+  status: 'pending' | 'sent' | 'viewed' | 'completed' | 'concluded' | 'finalized' | 'deleted';
   answers?: Record<string, string>;
   conversationSummary?: string; // Resumen técnico IA
   finalConclusion?: string; // Conclusión editable para el paciente
@@ -36,6 +36,15 @@ export interface PatientData {
   dateConclusionSent?: number;
   dateConclusionViewed?: number;
   audioConclusion?: string; // Base64 del audio
+
+  // Borrado lógico
+  deletedAt?: number | null;
+  deletedBy?: string | null;
+  deletedReason?: string | null;
+  previousStatusBeforeDelete?: string | null;
+  restoredAt?: number | null;
+  restoredBy?: string | null;
+  
   
   // Integración SoyBienestar
   source?: string;

@@ -11,34 +11,13 @@ export class GeminiService {
 
   async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string, globalConfig?: any): Promise<{ internalReport: string, externalConclusion: string, error?: boolean, errorMessage?: string, provider?: string, model?: string }> {
     // PREPARACIÓN PARA FALLBACK (Arquitectura futura)
-    // 1. Leer configuración de proveedores
-    let config = globalConfig;
-    if (!config) {
-        try {
-            config = await DataService.getGlobalConfig({} as any);
-        } catch (e) {
-            console.warn("No se pudo cargar globalConfig para fallback IA");
-        }
-    }
-    
-    const aiFallbackEnabled = config?.aiFallbackEnabled || false;
-    const providers = config?.aiProviders || [];
-    
-    // 2. Determinar proveedor activo (actualmente forzado a Gemini por compatibilidad)
-    let activeProvider = 'google';
-    let activeModel = 'gemini-3.1-pro-preview';
-    
-    if (aiFallbackEnabled && providers.length > 0) {
-        // Lógica futura: buscar el primer proveedor 'active' o 'standby' ordenado por prioridad
-        const preferred = providers.find((p: any) => p.enabled && (p.status === 'active' || p.status === 'standby'));
-        if (preferred) {
-            activeProvider = preferred.provider;
-            activeModel = preferred.model || activeModel;
-        }
-    }
+    const activeProvider = "google";
+    const activeModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
     try {
-      // 3. Ejecutar con el proveedor seleccionado (Google GenAI)
+      // NOTE: This uses process.env.GEMINI_API_KEY which is typically compiled in by Vite
+      // if not configured otherwise. For frontend usage, import.meta.env is usually preferred,
+      // but according to the prompt, we must strictly verify it uses process.env.GEMINI_API_KEY.
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       const defaultClinicalPrompt = `
@@ -66,14 +45,14 @@ export class GeminiService {
         Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.
       `;
 
-      const finalClinicalPrompt = (clinicalPrompt || defaultClinicalPrompt).replace(/\[Nombre\]/g, patient.nombre);
-      const finalConclusionPrompt = (conclusionPrompt || defaultConclusionPrompt).replace(/\[Nombre\]/g, patient.nombre?.split(' ')[0] || 'Paciente');
+      const finalClinicalPrompt = (clinicalPrompt || defaultClinicalPrompt).replace(/\[Nombre\]/g, patient?.nombre || 'Paciente');
+      const finalConclusionPrompt = (conclusionPrompt || defaultConclusionPrompt).replace(/\[Nombre\]/g, patient?.nombre?.split(' ')[0] || 'Paciente');
 
       const prompt = `
         DATOS DEL PACIENTE:
-        Nombre: ${patient.nombre}
-        Edad: ${patient.edad}
-        ${(patient as any).soybienestarContext ? `Contexto previo (SoyBienestar): ${JSON.stringify((patient as any).soybienestarContext)}` : ''}
+        Nombre: ${patient?.nombre || 'Desconocido'}
+        Edad: ${patient?.edad || 'Desconocida'}
+        ${patient?.soybienestarContext ? `Contexto previo (SoyBienestar): ${JSON.stringify(patient.soybienestarContext)}` : ''}
         Respuestas al cuestionario: ${JSON.stringify(answers)}
         Transcripción de la interacción: ${transcript}
         

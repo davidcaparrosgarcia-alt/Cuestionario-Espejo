@@ -9,7 +9,8 @@ import {
   query, 
   where, 
   deleteDoc,
-  getDocFromServer
+  getDocFromServer,
+  deleteField
 } from 'firebase/firestore';
 import { QUESTIONS as INITIAL_QUESTIONS } from '../constants';
 import { Question, GlobalConfig, PatientData, AuthUser } from '../types';
@@ -1012,27 +1013,48 @@ export const DataService = {
     }
   },
 
-  async deletePatient(patientId: string) {
+  async deletePatient(patientId: string, deletedBy: string = "coordinator", previousStatus: string = "pending") {
     if (!db) return;
     const path = `patients/${patientId}`;
     try {
-      // 1. Obtener referencia antigua antes de borrar
-      const oldDoc = await getDoc(doc(db, 'patients', patientId));
-      const oldMappings = oldDoc.exists() 
-        ? this._extractPatientAudioRefs(oldDoc.data()) 
-        : {};
-
-      FirestoreDebug.log('delete', 'patients/' + patientId);
-      await deleteDoc(doc(db, 'patients', patientId));
+      FirestoreDebug.log('update (soft delete)', 'patients/' + patientId);
+      
+      const updates = {
+          deletedAt: Date.now(),
+          deletedBy: deletedBy,
+          deletedReason: null,
+          previousStatusBeforeDelete: previousStatus,
+          status: 'deleted'
+      };
+      
+      await updateDoc(doc(db, 'patients', patientId), updates);
+      
       this._patientsCache = {}; // Invalidate all patient caches
       delete this._patientByIdCache[patientId];
-
-      // 2. Limpiar audio huérfano y sincronizar referencias
-      await this._syncAudioRefs(oldMappings, {});
-
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
+      handleFirestoreError(error, OperationType.UPDATE, path);
     }
+  },
+
+  async restorePatient(patientId: string, restoredBy: string = "coordinator", restoredStatus: string = "sent") {
+      if (!db) return;
+      const path = `patients/${patientId}`;
+      try {
+          FirestoreDebug.log('update (restore)', 'patients/' + patientId);
+          await updateDoc(doc(db, 'patients', patientId), {
+              deletedAt: deleteField(),
+              deletedBy: deleteField(),
+              deletedReason: deleteField(),
+              status: restoredStatus,
+              previousStatusBeforeDelete: deleteField(),
+              restoredAt: Date.now(),
+              restoredBy: restoredBy
+          });
+          this._patientsCache = {};
+          delete this._patientByIdCache[patientId];
+      } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, path);
+      }
   },
 
   async getPatientById(patientId: string): Promise<PatientData | null> {
