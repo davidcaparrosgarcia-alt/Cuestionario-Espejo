@@ -246,6 +246,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   // VISTA AMPLIADA DE PACIENTES
   const [showPatientsExpandedView, setShowPatientsExpandedView] = useState(false);
+  const [patientsSortDirection, setPatientsSortDirection] = useState<'asc' | 'desc'>('desc');
   const [patientsSortMode, setPatientsSortMode] = useState<
     'lastActivity' | 'alphabetical' | 'dateSent' | 'dateAnswered' | 'dateConclusionSent' | 'status'
   >('lastActivity');
@@ -1522,20 +1523,21 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const sortPatients = (items: PatientData[]) => {
     const list = [...items];
+    const direction = patientsSortDirection === 'asc' ? 1 : -1;
     switch (patientsSortMode) {
       case 'alphabetical':
-        return list.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+        return list.sort((a, b) => direction * String(a.nombre || '').localeCompare(String(b.nombre || '')));
       case 'dateSent':
-        return list.sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0));
+        return list.sort((a, b) => direction * ((a.dateSent || 0) - (b.dateSent || 0)));
       case 'dateAnswered':
-        return list.sort((a, b) => (b.dateAnswered || 0) - (a.dateAnswered || 0));
+        return list.sort((a, b) => direction * ((a.dateAnswered || 0) - (b.dateAnswered || 0)));
       case 'dateConclusionSent':
-        return list.sort((a, b) => (b.dateConclusionSent || 0) - (a.dateConclusionSent || 0));
+        return list.sort((a, b) => direction * ((a.dateConclusionSent || 0) - (b.dateConclusionSent || 0)));
       case 'status':
-        return list.sort((a, b) => String(a.status || '').localeCompare(String(b.status || '')));
+        return list.sort((a, b) => direction * String(a.status || '').localeCompare(String(b.status || '')));
       case 'lastActivity':
       default:
-        return list.sort((a, b) => getPatientLastActivityAt(b) - getPatientLastActivityAt(a));
+        return list.sort((a, b) => direction * (getPatientLastActivityAt(b) - getPatientLastActivityAt(a)));
     }
   };
 
@@ -1551,7 +1553,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
       {/* MODAL FICHA DE PACIENTE */}
       {selectedPatientDetails && (
-          <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
+          <div className="fixed inset-0 z-[230] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
              <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="p-6 border-b flex justify-between items-center bg-blue-900 text-white">
                     <h2 className="text-2xl font-bold flex items-center gap-3">
@@ -1858,7 +1860,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
       {/* MODAL RESULTADOS */}
       {selectedPatientResults && (
-          <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
+          <div className="fixed inset-0 z-[220] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
              <div className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="p-6 border-b flex justify-between items-center bg-slate-50">
                     <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
@@ -1924,7 +1926,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
       {/* MODAL CONCLUSIÓN */}
       {selectedPatientConclusion && (
-          <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
+          <div className="fixed inset-0 z-[220] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
              <Card className="w-full max-w-3xl max-h-[90vh] flex flex-col">
                 <div className="flex justify-between items-center mb-6 border-b pb-4">
                     <h2 className="text-2xl font-bold text-slate-800"><i className="fas fa-brain text-purple-600 mr-2"></i> Gestión de Conclusión</h2>
@@ -2004,7 +2006,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         </div>
         
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-          <div className="lg:col-span-4 space-y-8">
+          <div className="lg:col-span-5 space-y-8">
             <Card className="border-teal-100 border-2 shadow-xl bg-white/95">
               <h2 className="text-2xl font-bold mb-6 text-blue-900 border-b border-blue-50 pb-4">Perfil Conectado</h2>
               <div className="space-y-6">
@@ -2152,7 +2154,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             </Card>
           </div>
 
-          <div className="lg:col-span-8">
+          <div className="lg:col-span-7">
             <Card className="shadow-xl bg-white/95 border-blue-50">
               <div className="flex items-center justify-between mb-10 border-b border-slate-100 pb-6">
                 <h2 className="text-3xl font-bold text-blue-900">Preparar Nueva Sesión</h2>
@@ -2655,7 +2657,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
       {/* VISTA AMPLIADA DE PACIENTES */}
       {showPatientsExpandedView && (
-          <div className="fixed inset-0 z-[140] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[90] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 overflow-hidden">
               <div className="bg-slate-50 w-full max-w-7xl h-[92vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
                   <div className="p-6 border-b bg-white flex justify-between items-center z-10 shrink-0">
                       <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
@@ -2705,6 +2707,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                               <option value="dateConclusionSent">Conclusión realizada</option>
                               <option value="status">Estado</option>
                           </select>
+                          <button
+                              onClick={() => setPatientsSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
+                              title={patientsSortDirection === 'asc' ? 'Orden ascendente' : 'Orden descendente'}
+                              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors text-slate-600"
+                          >
+                              <i className={`fas ${patientsSortDirection === 'asc' ? 'fa-arrow-up' : 'fa-arrow-down'}`}></i>
+                          </button>
                       </div>
 
                       <button 
@@ -2750,9 +2759,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               </div>
                                           </div>
                                           
-                                          <div className="hidden md:flex flex-col text-xs text-slate-500 w-[140px] shrink-0">
-                                              {p.dateSent && <span>Exp: {formatDate(p.dateSent)}</span>}
-                                              {p.dateAnswered && <span>Cto: {formatDate(p.dateAnswered)}</span>}
+                                          <div className="hidden md:flex flex-col text-xs text-slate-500 w-[180px] shrink-0">
+                                              <span>Registro: {p.dateSent ? formatDate(p.dateSent) : (p.directQuestionnaireUrlCreatedAt ? formatDate(p.directQuestionnaireUrlCreatedAt) : 'Pendiente')}</span>
+                                              <span>Cuestionario: {p.dateAnswered ? formatDate(p.dateAnswered) : 'Pendiente'}</span>
+                                              <span>Dosier: {p.dateConclusionSent ? formatDate(p.dateConclusionSent) : 'Pendiente'}</span>
                                           </div>
 
                                           <div className="w-[120px] shrink-0 flex flex-col items-center gap-1">
