@@ -212,7 +212,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     }
 
                     if (fullPatient.answers) {
-                        setAnswers(fullPatient.answers);
+                        setAnswersSafely(fullPatient.answers);
                         // Si ya tiene respuestas pero no ha terminado, restauramos el índice
                         const answeredCount = Object.keys(fullPatient.answers).length;
                         if (answeredCount > 0 && answeredCount < activeQuestions.length) {
@@ -252,6 +252,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   
   const [transcript, setTranscript] = useState<{ text: string, sender: 'ia' | 'user' }[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const answersRef = useRef<Record<string, string>>({});
+
+  const setAnswersSafely = (nextAnswers: Record<string, string>) => {
+    answersRef.current = nextAnswers || {};
+    setAnswers(nextAnswers || {});
+  };
   const [pinInput, setPinInput] = useState('');
   
   const [clinicalReport, setClinicalReport] = useState<string>('');
@@ -836,7 +842,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     } else {
       setStep('intro');
       setTranscript([]);
-      setAnswers({});
+      setAnswersSafely({});
       setCurrentQuestionIndex(0);
       setVerificationAttempts(0);
       setInputValue('');
@@ -1150,8 +1156,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const getResumeQuestionIndex = () => {
-    const answeredCount = Object.keys(answers || {}).length;
+    const savedAnswers = answersRef.current && Object.keys(answersRef.current).length > 0
+      ? answersRef.current
+      : answers;
+    
+    const answeredQuestionIds = activeQuestions
+      .map(q => q.id)
+      .filter(id => savedAnswers && savedAnswers[id] !== undefined && savedAnswers[id] !== null && savedAnswers[id] !== "");
+    
+    const answeredCount = answeredQuestionIds.length;
+    
     if (answeredCount > 0 && answeredCount < activeQuestions.length) return answeredCount;
+    if (answeredCount >= activeQuestions.length) return activeQuestions.length;
     return currentQuestionIndex || 0;
   };
 
@@ -1166,6 +1182,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
 
     const resumeIndex = getResumeQuestionIndex();
+    if (resumeIndex >= activeQuestions.length) {
+        setStep('finish');
+        return;
+    }
     setCurrentQuestionIndex(resumeIndex);
     loadQuestion(resumeIndex);
   };
@@ -1185,8 +1205,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     if (isInteractionLocked) return; 
     stopAudio();
     const q = activeQuestions[currentQuestionIndex];
-    const newAnswers = { ...answers, [q.id]: key };
-    setAnswers(newAnswers);
+    const currentAnswers = answersRef.current || answers;
+    const newAnswers = { ...currentAnswers, [q.id]: key };
+    setAnswersSafely(newAnswers);
     addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
     
     // Guardado incremental en Firestore
