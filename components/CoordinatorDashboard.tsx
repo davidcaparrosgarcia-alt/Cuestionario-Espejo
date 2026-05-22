@@ -244,6 +244,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [filterStatus, setFilterStatus] = useState('all');
   const [showDeletedMode, setShowDeletedMode] = useState(false);
 
+  // VISTA AMPLIADA DE PACIENTES
+  const [showPatientsExpandedView, setShowPatientsExpandedView] = useState(false);
+  const [patientsSortMode, setPatientsSortMode] = useState<
+    'lastActivity' | 'alphabetical' | 'dateSent' | 'dateAnswered' | 'dateConclusionSent' | 'status'
+  >('lastActivity');
+
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
   const [duplicatePatientRecord, setDuplicatePatientRecord] = useState<PatientData | null>(null);
   const [pendingGenerateData, setPendingGenerateData] = useState<any>(null);
@@ -1504,6 +1510,41 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const deletedCount = registry.filter(p => p.status === 'deleted' || !!p.deletedAt).length;
 
+  const getPatientLastActivityAt = (p: PatientData) =>
+    p.restoredAt ||
+    p.deletedAt ||
+    p.dateConclusionViewed ||
+    p.dateConclusionSent ||
+    p.dateAnswered ||
+    p.directQuestionnaireUrlCreatedAt ||
+    p.dateSent ||
+    0;
+
+  const sortPatients = (items: PatientData[]) => {
+    const list = [...items];
+    switch (patientsSortMode) {
+      case 'alphabetical':
+        return list.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+      case 'dateSent':
+        return list.sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0));
+      case 'dateAnswered':
+        return list.sort((a, b) => (b.dateAnswered || 0) - (a.dateAnswered || 0));
+      case 'dateConclusionSent':
+        return list.sort((a, b) => (b.dateConclusionSent || 0) - (a.dateConclusionSent || 0));
+      case 'status':
+        return list.sort((a, b) => String(a.status || '').localeCompare(String(b.status || '')));
+      case 'lastActivity':
+      default:
+        return list.sort((a, b) => getPatientLastActivityAt(b) - getPatientLastActivityAt(a));
+    }
+  };
+
+  const expandedPatients = sortPatients(filteredRegistry);
+
+  const recentRegistry = [...filteredRegistry]
+    .sort((a, b) => getPatientLastActivityAt(b) - getPatientLastActivityAt(a))
+    .slice(0, 3);
+
   return (
     <div className="min-h-screen overflow-y-auto relative">
       <div className="absolute inset-0 pointer-events-none opacity-20 bg-cover bg-center -z-10" style={{backgroundImage: "url('https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop')"}}></div>
@@ -1511,7 +1552,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       {/* MODAL FICHA DE PACIENTE */}
       {selectedPatientDetails && (
           <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
-             <div className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+             <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="p-6 border-b flex justify-between items-center bg-blue-900 text-white">
                     <h2 className="text-2xl font-bold flex items-center gap-3">
                         <i className="fas fa-user-circle"></i> Ficha del Paciente {isEditingDetails && <span className="text-sm bg-amber-400 text-blue-900 px-2 py-1 rounded ml-2 font-bold">EDICIÓN</span>}
@@ -1993,13 +2034,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <h3 className="font-black text-xs uppercase text-slate-400 tracking-widest">{showDeletedMode ? 'Fichas Borradas' : 'Actividad Reciente'}</h3>
                       <button onClick={() => setIsSearchOpen(!isSearchOpen)} className="w-6 h-6 rounded bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 flex items-center justify-center transition-colors"><i className="fas fa-search text-xs"></i></button>
                   </div>
-                  <span className="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-600 font-bold">{filteredRegistry.length}</span>
+                  <span className="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-600 font-bold">{filteredRegistry.length > 3 ? `3 / ${filteredRegistry.length}` : filteredRegistry.length}</span>
                 </div>
                   <div className="space-y-4">
-                  {filteredRegistry.length === 0 ? (
-                    <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">{showDeletedMode ? 'No hay fichas borradas.' : 'No hay registros'}</p>
+                  {recentRegistry.length === 0 ? (
+                    <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">{showDeletedMode ? 'No hay fichas borradas recientes.' : 'No hay registros recientes'}</p>
                   ) : (
-                    [...filteredRegistry].sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0)).map((p) => {
+                    recentRegistry.map((p) => {
                       const isSoyBienestar = p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
                       const needsReview = isSoyBienestar && !p.therapistReviewedAt;
                       const displayName = p.nombre || (p as any).displayName || p.email || "Paciente sin nombre";
@@ -2083,7 +2124,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                     })
                   )}
                 </div>
-                <div className="mt-6 flex justify-end">
+                <div className="mt-6 flex justify-between items-center gap-3">
+                    <button
+                        onClick={() => setShowPatientsExpandedView(true)}
+                        className="px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-colors border bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100"
+                    >
+                        <i className="fas fa-expand-alt mr-1.5"></i> Ampliar
+                    </button>
                     <button 
                         onClick={() => {
                             const nextMode = !showDeletedMode;
@@ -2603,6 +2650,171 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       </div>
                   </div>
               </Card>
+          </div>
+      )}
+
+      {/* VISTA AMPLIADA DE PACIENTES */}
+      {showPatientsExpandedView && (
+          <div className="fixed inset-0 z-[140] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-50 w-full max-w-7xl h-[92vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
+                  <div className="p-6 border-b bg-white flex justify-between items-center z-10 shrink-0">
+                      <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
+                          <i className="fas fa-users text-blue-600"></i> Gestión de pacientes
+                      </h2>
+                      <button onClick={() => setShowPatientsExpandedView(false)} className="text-slate-400 hover:text-red-500 text-2xl transition-colors">
+                          <i className="fas fa-times"></i>
+                      </button>
+                  </div>
+                  
+                  <div className="p-6 border-b bg-white flex flex-wrap items-center gap-4 shrink-0 z-10">
+                      <div className="relative flex-1 min-w-[250px]">
+                          <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                          <input 
+                              type="text" 
+                              placeholder="Buscar por nombre, email o teléfono..." 
+                              value={searchTerm}
+                              onChange={(e) => setSearchTerm(e.target.value)}
+                              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all text-sm"
+                          />
+                      </div>
+                      <select 
+                          value={filterStatus}
+                          onChange={(e) => setFilterStatus(e.target.value)}
+                          className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 text-sm font-medium text-slate-700"
+                          disabled={showDeletedMode}
+                      >
+                          <option value="all">Todos los estados</option>
+                          <option value="pending">Pendientes</option>
+                          <option value="sent">Enviados</option>
+                          <option value="viewed">Vistos</option>
+                          <option value="completed">Completados</option>
+                          <option value="concluded">Concluidos</option>
+                          <option value="finalized">Finalizados</option>
+                      </select>
+
+                      <div className="flex gap-2 items-center">
+                          <select 
+                              value={patientsSortMode} 
+                              onChange={(e) => setPatientsSortMode(e.target.value as any)}
+                              className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 text-sm font-medium text-slate-700"
+                          >
+                              <option value="lastActivity">Última actividad</option>
+                              <option value="alphabetical">Alfabético</option>
+                              <option value="dateSent">Envío cuestionario</option>
+                              <option value="dateAnswered">Cuestionario completado</option>
+                              <option value="dateConclusionSent">Conclusión realizada</option>
+                              <option value="status">Estado</option>
+                          </select>
+                      </div>
+
+                      <button 
+                          onClick={() => {
+                              const nextMode = !showDeletedMode;
+                              setShowDeletedMode(nextMode);
+                              setFilterStatus('all');
+                          }} 
+                          className={`px-4 py-2 rounded-xl text-sm font-bold uppercase tracking-wider transition-colors border flex items-center gap-2 ${
+                              showDeletedMode 
+                              ? 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200' 
+                              : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-slate-700'
+                          }`}
+                      >
+                          {showDeletedMode ? 'Volver a activos' : (
+                              <><i className="fas fa-trash-alt"></i> Papelera {deletedCount > 0 ? `(${deletedCount})` : ''}</>
+                          )}
+                      </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50">
+                      {expandedPatients.length === 0 ? (
+                          <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+                              <i className="fas fa-folder-open text-4xl mb-4"></i>
+                              <p className="text-lg font-medium">{showDeletedMode ? 'La papelera está vacía' : 'No se encontraron pacientes'}</p>
+                          </div>
+                      ) : (
+                          <div className="space-y-3">
+                              {expandedPatients.map((p) => {
+                                  const isSoyBienestar = p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
+                                  const needsReview = isSoyBienestar && !p.therapistReviewedAt;
+                                  const displayName = p.nombre || (p as any).displayName || p.email || "Paciente sin nombre";
+                                  
+                                  return (
+                                      <div key={p.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all shadow-sm hover:shadow-md ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-200 hover:border-blue-200'}`}>
+                                          <div className="flex-1 min-w-[200px]">
+                                              <button onClick={() => openPatientDetails(p)} className="text-left text-base font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors block w-full">{displayName}</button>
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-xs font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
+                                                {isSoyBienestar && (
+                                                    <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar</span>
+                                                )}
+                                              </div>
+                                          </div>
+                                          
+                                          <div className="hidden md:flex flex-col text-xs text-slate-500 w-[140px] shrink-0">
+                                              {p.dateSent && <span>Exp: {formatDate(p.dateSent)}</span>}
+                                              {p.dateAnswered && <span>Cto: {formatDate(p.dateAnswered)}</span>}
+                                          </div>
+
+                                          <div className="w-[120px] shrink-0 flex flex-col items-center gap-1">
+                                                <div className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded w-full text-center ${
+                                                    p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
+                                                    p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
+                                                    p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
+                                                    p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
+                                                    p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
+                                                    p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
+                                                }`}>
+                                                    {statusLabels[p.status]}
+                                                </div>
+                                                {!(showDeletedMode || (p.status as any) === 'deleted') && (
+                                                    <div className="flex gap-1 w-full mt-1">
+                                                        <button 
+                                                            onClick={() => changeStatus(p.id, 'backward')}
+                                                            disabled={p.status === 'pending'}
+                                                            className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed rounded py-1 transition-colors border border-slate-100"
+                                                        >
+                                                            <i className="fas fa-chevron-left text-[10px]"></i>
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => changeStatus(p.id, 'forward')}
+                                                            disabled={p.status === 'finalized'}
+                                                            className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed rounded py-1 transition-colors border border-slate-100"
+                                                        >
+                                                            <i className="fas fa-chevron-right text-[10px]"></i>
+                                                        </button>
+                                                    </div>
+                                                )}
+                                          </div>
+
+                                          <div className="flex items-center gap-2 shrink-0 border-l pl-4 border-slate-100">
+                                              {(p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized') && !(showDeletedMode || (p.status as any) === 'deleted') && (
+                                                  <>
+                                                    <button onClick={() => openResultsModal(p)} className="px-3 py-2 text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 rounded-lg hover:bg-blue-100 transition-colors" title="Resultados">
+                                                        <i className="fas fa-eye"></i>
+                                                    </button>
+                                                    <button onClick={() => openConclusionModal(p)} className="px-3 py-2 text-xs font-bold bg-purple-50 text-purple-600 border border-purple-100 rounded-lg hover:bg-purple-100 transition-colors" title="Conclusión">
+                                                        <i className="fas fa-brain"></i>
+                                                    </button>
+                                                  </>
+                                              )}
+                                              
+                                              {showDeletedMode || (p.status as any) === 'deleted' ? (
+                                                  <button onClick={() => restoreRecord(p.id)} className="px-3 py-2 text-xs font-bold bg-teal-50 text-teal-600 border border-teal-100 rounded-lg hover:bg-teal-100 transition-colors flex items-center gap-2">
+                                                      <i className="fas fa-undo"></i> Restaurar
+                                                  </button>
+                                              ) : (
+                                                  <button onClick={() => deleteRecord(p.id, p.status)} className="px-3 py-2 text-xs font-bold bg-red-50 text-red-400 border border-red-50 rounded-lg hover:bg-red-100 hover:text-red-500 transition-colors">
+                                                      <i className="fas fa-trash"></i>
+                                                  </button>
+                                              )}
+                                          </div>
+                                      </div>
+                                  );
+                              })}
+                          </div>
+                      )}
+                  </div>
+              </div>
           </div>
       )}
     </div>
