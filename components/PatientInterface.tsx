@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: GlobalConfig = {
   startAudio: {},
   finishText: "Tus respuestas y la valoración del Cuestionario espejo están listas para ser enviadas.",
   finishAudio: {},
-  afterSendText: "Envio realizado {{nombre}}, analizaremos tus respuesta y te responderemos en breve.",
+  afterSendText: "Hemos recibido tus respuestas correctamente, {{nombre}}. El equipo terapéutico revisará tu Cuestionario Espejo y te avisaremos cuando tu dosier personalizado esté disponible para lectura en SoyBienestar.",
   afterSendAudio: {},
   defaultVoiceMode: Voice.FEMALE,
   femaleVoiceVariant: 1,
