@@ -1049,6 +1049,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setCurrentPatientData(freshPatient);
       patientDataRef.current = freshPatient;
       setPinInput("");
+      
+      if (freshPatient.answers) {
+        setAnswersSafely(freshPatient.answers);
+      }
+
+      console.log("[PIN VALIDATION] restored answers", {
+        patientId: freshPatient.id,
+        answerCount: freshPatient.answers ? Object.keys(freshPatient.answers).length : 0
+      });
 
       if (freshPatient.status === "completed") {
         setStep("locked");
@@ -1166,6 +1175,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     
     const answeredCount = answeredQuestionIds.length;
     
+    console.log("[RESUME QUESTION INDEX]", {
+      answerKeys: Object.keys(savedAnswers || {}),
+      answeredCount,
+      activeQuestions: activeQuestions.length,
+      resumeIndex: answeredCount >= activeQuestions.length ? activeQuestions.length : answeredCount
+    });
+
     if (answeredCount > 0 && answeredCount < activeQuestions.length) return answeredCount;
     if (answeredCount >= activeQuestions.length) return activeQuestions.length;
     return currentQuestionIndex || 0;
