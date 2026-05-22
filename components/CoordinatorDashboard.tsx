@@ -890,7 +890,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const openConclusionModal = (p: PatientData) => {
     setSelectedPatientConclusion(p);
-    setEditingConclusion(p.finalConclusion || EXTERNAL_PATIENT_EXAMPLE);
+    setEditingConclusion(p.finalConclusion || "");
     setEditingAudio(p.audioConclusion);
   };
 
@@ -1438,6 +1438,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       triggerToast("Clave de acceso preparada para guardar");
   };
 
+  const openPatientDetails = (p: PatientData) => {
+    setSelectedPatientDetails(p);
+    const isSoyBienestar = p.source === "soybienestar" || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
+    if (isSoyBienestar && !p.therapistReviewedAt) {
+      DataService.updatePatient(p.id, { 
+        therapistReviewedAt: Date.now(), 
+        therapistReviewedBy: profile?.email || 'coordinator' 
+      }).catch(e => console.error("Error setting therapistReviewedAt", e));
+      const updated = registry.map(r => r.id === p.id ? { ...r, therapistReviewedAt: Date.now() } : r);
+      setRegistry(updated);
+    }
+  };
+
   const filteredRegistry = registry.filter(p => {
       // Filtrar según modo borrados
       if (showDeletedMode) {
@@ -1574,6 +1587,28 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     </div>
                                 </div>
                             </div>
+                            
+                            {(selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) && (
+                            <div className="space-y-6">
+                                <div>
+                                    <h3 className="text-lg font-black text-amber-900 uppercase tracking-widest border-b pb-2 mb-4">Origen SoyBienestar</h3>
+                                    <ul className="text-sm text-slate-700 space-y-2">
+                                        <li><strong>Solicitud creada desde SoyBienestar</strong></li>
+                                        {selectedPatientDetails.sourceRequestId && <li><strong>ID Solicitud:</strong> {selectedPatientDetails.sourceRequestId}</li>}
+                                        {selectedPatientDetails.soybienestarUid && <li><strong>UID Usuario:</strong> {selectedPatientDetails.soybienestarUid}</li>}
+                                        <li><strong>Estado actual:</strong> {selectedPatientDetails.status}</li>
+                                        {selectedPatientDetails.questionnaireUrl && <li><strong>Enlace directo:</strong> <a href={selectedPatientDetails.questionnaireUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{selectedPatientDetails.questionnaireUrl}</a></li>}
+                                        {selectedPatientDetails.directQuestionnaireUrlCreatedAt && <li><strong>Enlace generado el:</strong> {formatDate(selectedPatientDetails.directQuestionnaireUrlCreatedAt)}</li>}
+                                    </ul>
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-black text-amber-900 uppercase tracking-widest border-b pb-2 mb-4">Preinforme SoyBienestar</h3>
+                                    <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap p-4 bg-amber-50 rounded-xl border border-amber-200">
+                                        {selectedPatientDetails.preInformeSoyBienestar || (selectedPatientDetails.soybienestarContext ? JSON.stringify(selectedPatientDetails.soybienestarContext, null, 2) : "No hay contexto previo registrado.")}
+                                    </div>
+                                </div>
+                            </div>
+                            )}
 
                             <div>
                                 <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
@@ -1862,7 +1897,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         className="w-full h-[36rem] p-4 rounded-xl border-2 border-slate-200 focus:border-purple-500 outline-none text-base leading-relaxed resize-none bg-white text-slate-700"
                         value={editingConclusion}
                         onChange={(e) => setEditingConclusion(e.target.value)}
-                        placeholder="Escribe aquí la conclusión terapéutica detallada..."
+                        placeholder="Pendiente de conclusión terapéutica. Puedes redactarla manualmente o esperar a la valoración automática si está disponible."
                     />
                 </div>
 
@@ -1939,20 +1974,29 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   {filteredRegistry.length === 0 ? (
                     <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">{showDeletedMode ? 'No hay fichas borradas.' : 'No hay registros'}</p>
                   ) : (
-                    [...filteredRegistry].sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0)).map((p) => (
-                      <div key={p.id} className="group relative flex flex-col p-4 bg-white rounded-2xl border border-slate-100 hover:border-teal-300 transition-all shadow-sm hover:shadow-md gap-3">
+                    [...filteredRegistry].sort((a, b) => (b.dateSent || 0) - (a.dateSent || 0)).map((p) => {
+                      const isSoyBienestar = p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
+                      const needsReview = isSoyBienestar && !p.therapistReviewedAt;
+                      const displayName = p.nombre || (p as any).displayName || p.email || "Paciente sin nombre";
+                      
+                      return (
+                      <div key={p.id} className={`group relative flex flex-col p-4 rounded-2xl border transition-all shadow-sm hover:shadow-md gap-3 ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-100 hover:border-teal-300'}`}>
                         <div className="flex justify-between items-start w-full">
-                            <div className="flex flex-col overflow-hidden">
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <button onClick={() => setSelectedPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors">{p.nombre}</button>
-                                    {p.directAccessCreated && p.source === 'soybienestar' && (
-                                        <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100" title="Generado desde enlace directo automático">SoyBienestar · acceso directo</span>
-                                    )}
-                                </div>
-                                <span className="text-xs text-slate-400 font-bold truncate">{p.email}</span>
+                            <div className="flex flex-col overflow-hidden leading-tight">
+                                <button onClick={() => openPatientDetails(p)} className="text-left text-base font-black text-blue-800 hover:text-blue-900 hover:underline truncate transition-colors">{displayName}</button>
+                                {p.directAccessCreated && p.source === 'soybienestar' && (
+                                    <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar · acceso directo</span>
+                                )}
+                                <span className={`text-xs mt-1 font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
                             </div>
                             
                             <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                    onClick={() => openPatientDetails(p)}
+                                    className="px-2 py-1 mr-1 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-all uppercase border border-slate-200"
+                                >
+                                  Ficha
+                                </button>
                             {showDeletedMode || p.status === 'deleted' ? (
                                 <button 
                                     onClick={() => restoreRecord(p.id)}
@@ -2016,7 +2060,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             </div>
                         )}
                       </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
                 <div className="mt-6 flex justify-end">

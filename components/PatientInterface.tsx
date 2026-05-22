@@ -639,7 +639,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         }
     }
 
-    sendResultsToCoordinator();
     setHasSentResults(true);
     
     if (!isEditorMode && currentPatientData.id) {
@@ -649,17 +648,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     const afterSendMsg = processText(globalConfig.afterSendText);
     addMessage(afterSendMsg, 'ia');
     await playOrSpeak(afterSendMsg, globalConfig.afterSendAudio);
-  };
-
-  const sendResultsToCoordinator = () => {
-    if (!currentPatientData.coordinatorEmail && !isEditorMode) {
-      showToast("No se ha encontrado el email del coordinador.");
-      return;
-    }
-    const email = currentPatientData.coordinatorEmail || 'cuestionarioespejo@gmail.com';
-    const subject = `RESULTADOS: ${currentPatientData.nombre || 'Paciente'} - Cuestionario Espejo`;
-    const body = `INFORME DE SESIÓN - CUESTIONARIO ESPEJO\nPACIENTE: ${currentPatientData.nombre || 'N/A'}\nEDAD: ${currentPatientData.edad || 'N/A'}\n\nVALORACIÓN IA:\n${clinicalReport}\n\nRESPUESTAS:\n${Object.entries(answers).map(([qid, ans]) => `P${qid}: ${ans}`).join('\n')}`;
-    window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   };
 
   const pendingResolvesRef = useRef<(() => void)[]>([]);
@@ -1056,6 +1044,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       patientDataRef.current = freshPatient;
       setPinInput("");
 
+      if (freshPatient.status === "completed") {
+        setStep("locked");
+        return;
+      }
+
       if (freshPatient.status === "concluded" || freshPatient.status === "finalized") {
         setStep("conclusion_view");
         
@@ -1156,6 +1149,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   };
 
+  const getResumeQuestionIndex = () => {
+    const answeredCount = Object.keys(answers || {}).length;
+    if (answeredCount > 0 && answeredCount < activeQuestions.length) return answeredCount;
+    return currentQuestionIndex || 0;
+  };
+
   const proceedToQuestionnaire = async () => {
     stopAudio();
     setStep('questionnaire');
@@ -1166,7 +1165,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         await playOrSpeak(startMsg, globalConfig.startAudio);
     }
 
-    loadQuestion(0);
+    const resumeIndex = getResumeQuestionIndex();
+    setCurrentQuestionIndex(resumeIndex);
+    loadQuestion(resumeIndex);
   };
 
   const loadQuestion = async (index: number) => {
@@ -1558,17 +1559,25 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <div className="flex flex-col items-center gap-6 py-8"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div><p className="text-sm font-black uppercase text-blue-600 animate-pulse tracking-widest">Generando Informe Terapéutico...</p></div>
                 ) : hasSentResults ? (
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
-                        <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.afterSendText)}</p>
+                        <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.afterSendText || "Hemos recibido tus respuestas correctamente. El equipo terapéutico revisará tu Cuestionario Espejo y te avisaremos cuando tu dosier personalizado esté disponible para lectura en SoyBienestar.")}</p>
                         <Button onClick={requestExit} variant="outline" className={`w-full border-blue-600 text-blue-600 hover:bg-blue-50 ${isDarkMode ? 'border-white/20 text-white hover:bg-white/10' : ''}`}>Finalizar</Button>
                     </div>
                 ) : (
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
-                        {clinicalReportGenerationError && (
-                            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-                                <p className="text-sm font-bold text-amber-800">Nota: No se pudo generar la valoración automática de tu sesión, pero tus respuestas se han guardado correctamente.</p>
-                            </div>
-                        )}
                         <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.finishText)}</p>
+                        <Button 
+                            onClick={() => {
+                                stopAudio();
+                                setStep("questionnaire");
+                                const lastIndex = Math.max(0, activeQuestions.length - 1);
+                                setCurrentQuestionIndex(lastIndex);
+                                loadQuestion(lastIndex);
+                            }}
+                            variant="outline"
+                            className={`w-full py-4 text-lg font-bold mb-4 ${isDarkMode ? 'border-slate-600 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-50'}`}
+                        >
+                            Revisar respuestas
+                        </Button>
                         <Button onClick={handleSendResults} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700"><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</Button>
                     </div>
                 )}

@@ -57,6 +57,9 @@ export interface PatientData {
   accessPinMigratedAt?: number;
   directAccessCreated?: boolean;
   directQuestionnaireUrlCreatedAt?: number;
+  questionnaireUrl?: string;
+  therapistReviewedAt?: number;
+  therapistReviewedBy?: string;
   lastSoyBienestarDossierSyncAt?: number;
   lastSoyBienestarDossierSyncStatus?: "ok" | "error" | "skipped";
   lastSoyBienestarStatusSyncAt?: number;
