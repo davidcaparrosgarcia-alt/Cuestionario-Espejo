@@ -98,6 +98,31 @@ const formatDate = (timestamp?: number) => {
     return new Date(timestamp).toLocaleDateString() + ' ' + new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 };
 
+const getSoyBienestarContextText = (p: PatientData) => {
+  if ((p as any).preInformeSoyBienestar) return String((p as any).preInformeSoyBienestar);
+
+  const ctx = (p as any).soybienestarContext;
+  if (!ctx) return "";
+
+  if (typeof ctx === "string") return ctx;
+
+  if (ctx.reportExcerpt) {
+    try {
+      const parsed = typeof ctx.reportExcerpt === "string" ? JSON.parse(ctx.reportExcerpt) : ctx.reportExcerpt;
+      return [
+        parsed?.titulo,
+        parsed?.subtitulo,
+        parsed?.cuerpo,
+        parsed?.cierre
+      ].filter(Boolean).join("\n\n");
+    } catch {
+      return String(ctx.reportExcerpt);
+    }
+  }
+
+  return "";
+};
+
 // --- TEXTOS DE EJEMPLO ACTUALIZADOS ---
 const INTERNAL_CLINICAL_EXAMPLE = `INFORME DE VALORACIÓN INICIAL Y GUÍA TERAPÉUTICA AVANZADA
 
@@ -1581,39 +1606,39 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     </div>
                                     <div className="col-span-2 mt-2">
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones Iniciales</span>
-                                        <p className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-100 italic">
-                                            {selectedPatientDetails.observaciones || "Sin observaciones registradas."}
-                                        </p>
+                                        <div className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-100">
+                                            {(selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) && (
+                                                <div className="mb-3 font-medium text-amber-800">
+                                                    Origen SoyBienestar.<br/>
+                                                    Ficha generada sin los datos aún del cuestionario.<br/>
+                                                    Estado: {selectedPatientDetails.status}.
+                                                </div>
+                                            )}
+                                            <div className="italic">
+                                                {selectedPatientDetails.observaciones || "Sin observaciones registradas."}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                            
-                            {(selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) && (
-                            <div className="space-y-6">
-                                <div>
-                                    <h3 className="text-lg font-black text-amber-900 uppercase tracking-widest border-b pb-2 mb-4">Origen SoyBienestar</h3>
-                                    <ul className="text-sm text-slate-700 space-y-2">
-                                        <li><strong>Solicitud creada desde SoyBienestar</strong></li>
-                                        {selectedPatientDetails.sourceRequestId && <li><strong>ID Solicitud:</strong> {selectedPatientDetails.sourceRequestId}</li>}
-                                        {selectedPatientDetails.soybienestarUid && <li><strong>UID Usuario:</strong> {selectedPatientDetails.soybienestarUid}</li>}
-                                        <li><strong>Estado actual:</strong> {selectedPatientDetails.status}</li>
-                                        {selectedPatientDetails.questionnaireUrl && <li><strong>Enlace directo:</strong> <a href={selectedPatientDetails.questionnaireUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{selectedPatientDetails.questionnaireUrl}</a></li>}
-                                        {selectedPatientDetails.directQuestionnaireUrlCreatedAt && <li><strong>Enlace generado el:</strong> {formatDate(selectedPatientDetails.directQuestionnaireUrlCreatedAt)}</li>}
-                                    </ul>
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-black text-amber-900 uppercase tracking-widest border-b pb-2 mb-4">Preinforme SoyBienestar</h3>
-                                    <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap p-4 bg-amber-50 rounded-xl border border-amber-200">
-                                        {selectedPatientDetails.preInformeSoyBienestar || (selectedPatientDetails.soybienestarContext ? JSON.stringify(selectedPatientDetails.soybienestarContext, null, 2) : "No hay contexto previo registrado.")}
-                                    </div>
-                                </div>
-                            </div>
-                            )}
 
                             <div>
                                 <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
                                 <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-line p-4 bg-blue-50/30 rounded-xl border border-blue-100">
-                                    {selectedPatientDetails.conversationSummary || "Pendiente de valoración."}
+                                    {selectedPatientDetails.conversationSummary ? (
+                                        selectedPatientDetails.conversationSummary
+                                    ) : (selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) ? (
+                                        getSoyBienestarContextText(selectedPatientDetails) ? (
+                                            <>
+                                                <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Los datos de SoyBienestar han llegado correctamente, pero todavía no hay valoración automática disponible. Revisa la configuración de IA o genera/revisa la valoración manualmente.</div>
+                                                {getSoyBienestarContextText(selectedPatientDetails)}
+                                            </>
+                                        ) : (
+                                            <div className="text-amber-700 italic">No han llegado datos suficientes desde SoyBienestar para generar una ficha completa. Revisa si la solicitud incluye contexto clínico o preinforme.</div>
+                                        )
+                                    ) : (
+                                        "Pendiente de valoración."
+                                    )}
                                 </div>
                             </div>
                         </>
@@ -1983,20 +2008,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <div key={p.id} className={`group relative flex flex-col p-4 rounded-2xl border transition-all shadow-sm hover:shadow-md gap-3 ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-100 hover:border-teal-300'}`}>
                         <div className="flex justify-between items-start w-full">
                             <div className="flex flex-col overflow-hidden leading-tight">
-                                <button onClick={() => openPatientDetails(p)} className="text-left text-base font-black text-blue-800 hover:text-blue-900 hover:underline truncate transition-colors">{displayName}</button>
-                                {p.directAccessCreated && p.source === 'soybienestar' && (
-                                    <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar · acceso directo</span>
+                                <button onClick={() => openPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors">{displayName}</button>
+                                {isSoyBienestar && (
+                                    <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar</span>
                                 )}
                                 <span className={`text-xs mt-1 font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
                             </div>
                             
                             <div className="flex items-center gap-1 shrink-0">
-                                <button
-                                    onClick={() => openPatientDetails(p)}
-                                    className="px-2 py-1 mr-1 text-[10px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-all uppercase border border-slate-200"
-                                >
-                                  Ficha
-                                </button>
                             {showDeletedMode || p.status === 'deleted' ? (
                                 <button 
                                     onClick={() => restoreRecord(p.id)}
