@@ -286,6 +286,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [inputValue, setInputValue] = useState('');
   
   const [isInteractionLocked, setIsInteractionLocked] = useState(false);
+  const [isSavingAnswer, setIsSavingAnswer] = useState(false);
   
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
 
@@ -1231,39 +1232,47 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const handleAnswer = async (key: string) => {
-    if (isInteractionLocked) return; 
+    if (isInteractionLocked || isSavingAnswer) return; 
     stopAudio();
     const q = activeQuestions[currentQuestionIndex];
+    if (!q) return;
+
     const currentAnswers = answersRef.current || answers;
     const newAnswers = { ...currentAnswers, [q.id]: key };
     setAnswersSafely(newAnswers);
     addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
     
     // Guardado incremental en Firestore
-    if (currentPatientData.id && !isEditorMode) {
-        console.log("[ANSWER SAVE] saving", {
-            patientId: currentPatientData.id,
-            questionId: q.id,
-            answerKey: key,
-            answerCount: Object.keys(newAnswers).length
-        });
-        
-        DataService.updatePatient(currentPatientData.id, { 
-            answers: newAnswers,
-            lastAnswerSavedAt: Date.now(),
-            lastAnsweredQuestionId: q.id,
-            lastAnsweredQuestionIndex: currentQuestionIndex
-        })
-        .then(() => {
-            console.log("[ANSWER SAVE] success", {
-                patientId: currentPatientData.id,
+    const patientId = currentPatientData.id || patientDataRef.current?.id;
+    if (patientId && !isEditorMode) {
+        setIsSavingAnswer(true);
+        try {
+            console.log("[ANSWER SAVE] saving", {
+                patientId: patientId,
+                questionId: q.id,
+                answerKey: key,
                 answerCount: Object.keys(newAnswers).length
             });
-        })
-        .catch(e => {
+            
+            await DataService.updatePatient(patientId, { 
+                answers: newAnswers,
+                lastAnswerSavedAt: Date.now(),
+                lastAnsweredQuestionId: q.id,
+                lastAnsweredQuestionIndex: currentQuestionIndex
+            });
+
+            console.log("[ANSWER SAVE] success", {
+                patientId: patientId,
+                answerCount: Object.keys(newAnswers).length
+            });
+        } catch (e) {
             console.error("[ANSWER SAVE] failed", e);
             showToast("No se ha podido guardar esta respuesta. Revisa la conexión antes de continuar.");
-        });
+            setIsSavingAnswer(false);
+            return;
+        } finally {
+            setIsSavingAnswer(false);
+        }
     }
 
     const nextIdx = currentQuestionIndex + 1;
@@ -1608,7 +1617,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     {currentQuestionIndex > 0 && (
                     <button 
                         onClick={handleBack} 
-                        disabled={isInteractionLocked}
+                        disabled={isInteractionLocked || isSavingAnswer}
                         className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-30 ${isDarkMode ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                         title="Pregunta anterior"
                     >
@@ -1744,9 +1753,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <div className="animate-in slide-in-from-bottom-4">
                         <div className={`p-1 rounded-2xl border-2 ${isDarkMode ? 'bg-white/5 border-white/20' : 'bg-white border-blue-100'}`}>
                             <select 
-                                className={`w-full p-4 rounded-xl text-lg font-bold bg-transparent outline-none ${isDarkMode ? 'text-white' : 'text-blue-900'}`}
+                                className={`w-full p-4 rounded-xl text-lg font-bold bg-transparent outline-none ${isDarkMode ? 'text-white' : 'text-blue-900'} disabled:opacity-50`}
                                 onChange={(e) => handleAnswer(e.target.value)}
                                 defaultValue=""
+                                disabled={isInteractionLocked || isSavingAnswer}
                             >
                                 <option value="" disabled>Selecciona un valor ({activeQuestions[currentQuestionIndex].scaleRange.min} - {activeQuestions[currentQuestionIndex].scaleRange.max})</option>
                                 {Array.from({length: (activeQuestions[currentQuestionIndex].scaleRange.max - activeQuestions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + activeQuestions[currentQuestionIndex].scaleRange.min).map(val => (
@@ -1762,10 +1772,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                             <button 
                             key={opt.key} 
                             id={`opt-${opt.key}`}
-                            disabled={isInteractionLocked}
+                            disabled={isInteractionLocked || isSavingAnswer}
                             onClick={() => handleAnswer(opt.key)} 
                             className={`w-full text-left p-6 rounded-2xl border-2 transition-all shadow-md active:scale-[0.98] animate-option flex items-start gap-5 backdrop-blur-lg ${
-                                isInteractionLocked ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:border-blue-400'
+                                (isInteractionLocked || isSavingAnswer) ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:border-blue-400'
                             } ${isDarkMode ? 'bg-[#1e293b]/60 border-white/5 hover:bg-white/10' : 'bg-white/80 border-white hover:bg-white'}`}
                             >
                             <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shadow-sm ${isDarkMode ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-600'}`}>{opt.key.toUpperCase()}</span>
