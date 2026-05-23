@@ -1111,6 +1111,21 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             }).catch(e => console.error("Notification error", e));
         }
 
+        const savedAnswers = freshPatient.answers || {};
+        const answeredCount = activeQuestions
+          .map(q => q.id)
+          .filter(id => savedAnswers[id] !== undefined && savedAnswers[id] !== null && savedAnswers[id] !== "")
+          .length;
+
+        const hasPartialProgress =
+          answeredCount > 0 && answeredCount < activeQuestions.length;
+
+        if (hasPartialProgress) {
+            setStep("questionnaire");
+            proceedToQuestionnaire();
+            return;
+        }
+
         const nameQ = processText(globalConfig.nameQuestionText);
         if (nameQ) {
             setStep("verification");
