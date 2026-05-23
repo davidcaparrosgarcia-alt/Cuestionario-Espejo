@@ -197,6 +197,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 console.log("[PATIENT HYDRATION] Result:", fullPatient ? "Found" : "Not Found");
                 
                 if (fullPatient) {
+                    console.log("[PATIENT HYDRATION] answers", {
+                      patientId: fullPatient.id,
+                      status: fullPatient.status,
+                      answerKeys: fullPatient.answers ? Object.keys(fullPatient.answers) : [],
+                      answerCount: fullPatient.answers ? Object.keys(fullPatient.answers).length : 0,
+                      lastAnswerSavedAt: fullPatient.lastAnswerSavedAt || null,
+                      lastAnsweredQuestionId: fullPatient.lastAnsweredQuestionId || null
+                    });
+                    
                     setCurrentPatientData(fullPatient);
                     
                     if (fullPatient.status === 'completed') {
@@ -1175,16 +1184,20 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     
     const answeredCount = answeredQuestionIds.length;
     
+    let resumeIndex = answeredCount >= activeQuestions.length ? activeQuestions.length : answeredCount;
+    if (answeredCount === 0 && typeof currentPatientData.lastAnsweredQuestionIndex === 'number') {
+        resumeIndex = Math.min(currentPatientData.lastAnsweredQuestionIndex + 1, activeQuestions.length);
+    }
+    
     console.log("[RESUME QUESTION INDEX]", {
       answerKeys: Object.keys(savedAnswers || {}),
       answeredCount,
       activeQuestions: activeQuestions.length,
-      resumeIndex: answeredCount >= activeQuestions.length ? activeQuestions.length : answeredCount
+      activeQuestionIds: activeQuestions.map(q => q.id),
+      resumeIndex
     });
 
-    if (answeredCount > 0 && answeredCount < activeQuestions.length) return answeredCount;
-    if (answeredCount >= activeQuestions.length) return activeQuestions.length;
-    return currentQuestionIndex || 0;
+    return resumeIndex;
   };
 
   const proceedToQuestionnaire = async () => {
@@ -1228,8 +1241,29 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     
     // Guardado incremental en Firestore
     if (currentPatientData.id && !isEditorMode) {
-        DataService.updatePatient(currentPatientData.id, { answers: newAnswers })
-            .catch(e => console.error("Error saving incremental progress", e));
+        console.log("[ANSWER SAVE] saving", {
+            patientId: currentPatientData.id,
+            questionId: q.id,
+            answerKey: key,
+            answerCount: Object.keys(newAnswers).length
+        });
+        
+        DataService.updatePatient(currentPatientData.id, { 
+            answers: newAnswers,
+            lastAnswerSavedAt: Date.now(),
+            lastAnsweredQuestionId: q.id,
+            lastAnsweredQuestionIndex: currentQuestionIndex
+        })
+        .then(() => {
+            console.log("[ANSWER SAVE] success", {
+                patientId: currentPatientData.id,
+                answerCount: Object.keys(newAnswers).length
+            });
+        })
+        .catch(e => {
+            console.error("[ANSWER SAVE] failed", e);
+            showToast("No se ha podido guardar esta respuesta. Revisa la conexión antes de continuar.");
+        });
     }
 
     const nextIdx = currentQuestionIndex + 1;

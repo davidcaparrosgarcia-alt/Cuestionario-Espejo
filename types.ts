@@ -36,6 +36,9 @@ export interface PatientData {
   dateConclusionSent?: number;
   dateConclusionViewed?: number;
   audioConclusion?: string; // Base64 del audio
+  lastAnswerSavedAt?: number;
+  lastAnsweredQuestionId?: string;
+  lastAnsweredQuestionIndex?: number;
 
   // Borrado lógico
   deletedAt?: number | null;
