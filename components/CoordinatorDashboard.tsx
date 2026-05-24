@@ -2716,13 +2716,52 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                       reportsGenerated: 0
                                                   };
                                                   
+                                                  const getProviderVisualStatus = (providerKey: string, priority: number) => {
+                                                      if (!aiTestResult) {
+                                                        return priority === 1
+                                                          ? { label: "SIN COMPROBAR", tone: "warning" }
+                                                          : { label: "STANDBY", tone: "neutral" };
+                                                      }
+
+                                                      if (providerKey === "google") {
+                                                        if (aiTestResult.ok) {
+                                                          return { label: "OPERATIVO", tone: "success" };
+                                                        }
+
+                                                        if (aiTestResult.hasKey === false) {
+                                                          return { label: "SIN CLAVE", tone: "error" };
+                                                        }
+
+                                                        return { label: "ERROR", tone: "error" };
+                                                      }
+
+                                                      return { label: "STANDBY", tone: "neutral" };
+                                                  };
+                                                  
+                                                  const visualStatus = getProviderVisualStatus(provider.provider, provider.priority);
+                                                  const displayedModel = (provider.provider === 'google' && aiTestResult?.model) ? aiTestResult.model : provider.model;
+                                                  
+                                                  const getBorderBgClasses = (tone: string) => {
+                                                      if (tone === 'success') return 'border-green-400 bg-green-50';
+                                                      if (tone === 'warning') return 'border-amber-400 bg-amber-50';
+                                                      if (tone === 'error') return 'border-red-400 bg-red-50';
+                                                      return 'border-slate-200 bg-white';
+                                                  };
+                                                  
+                                                  const getBadgeClasses = (tone: string) => {
+                                                      if (tone === 'success') return 'bg-green-200 text-green-800';
+                                                      if (tone === 'warning') return 'bg-amber-200 text-amber-800';
+                                                      if (tone === 'error') return 'bg-red-200 text-red-800';
+                                                      return 'bg-slate-200 text-slate-600';
+                                                  };
+                                                  
                                                   return (
-                                                      <div key={index} className={`p-4 rounded-xl border-2 ${provider.status === 'active' ? 'border-green-400 bg-green-50' : provider.status === 'failed' ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white'}`}>
+                                                      <div key={index} className={`p-4 rounded-xl border-2 ${getBorderBgClasses(visualStatus.tone)}`}>
                                                           <div className="flex justify-between items-start mb-2">
                                                               <div className="flex items-center gap-2">
                                                                   <span className="font-black text-slate-700">Prioridad {provider.priority}</span>
-                                                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${provider.status === 'active' ? 'bg-green-200 text-green-800' : provider.status === 'failed' ? 'bg-red-200 text-red-800' : 'bg-slate-200 text-slate-600'}`}>
-                                                                      {provider.status}
+                                                                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${getBadgeClasses(visualStatus.tone)}`}>
+                                                                      {visualStatus.label}
                                                                   </span>
                                                               </div>
                                                               <div className="text-xs text-slate-500">
@@ -2736,10 +2775,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                               </div>
                                                               <div>
                                                                   <label className="text-[10px] font-bold text-slate-400 uppercase">Modelo</label>
-                                                                  <div className="text-sm font-mono text-slate-600">{provider.model || '-'}</div>
+                                                                  <div className="text-sm font-mono text-slate-600">{displayedModel || '-'}</div>
                                                               </div>
                                                           </div>
-                                                          {provider.status === 'failed' && provider.lastErrorCode && (
+                                                          {visualStatus.tone === 'error' && visualStatus.label === 'ERROR' && aiTestResult && !aiTestResult.ok && provider.provider === 'google' && (
+                                                              <div className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
+                                                                  <strong>Último error:</strong> {aiTestResult.errorName}
+                                                              </div>
+                                                          )}
+                                                          {provider.status === 'failed' && provider.lastErrorCode && visualStatus.tone !== 'error' && (
                                                               <div className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
                                                                   <strong>Último error:</strong> {provider.lastErrorCode}
                                                               </div>
