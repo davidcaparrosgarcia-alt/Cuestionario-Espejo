@@ -619,12 +619,34 @@ app.post("/api/resend-questionnaire-link", async (req, res) => {
        await db.collection("patients").doc(foundPatient.id || foundDocId!).update({ questionnaireUrl: qUrl });
     }
 
+    if (foundPatient.status === "completed" || foundPatient.status === "concluded" || foundPatient.status === "finalized") {
+      return res.json({
+        success: false,
+        reason: "already_completed",
+        message: "Este cuestionario ya consta como completado o concluido."
+      });
+    }
+
+    const resendRequestedAt = Date.now();
+    await db.collection("patients").doc(foundPatient.id || foundDocId!).set({
+      status: "pending",
+      resendRequested: true,
+      resendRequestedAt,
+      resendRequestedBy: "soybienestar",
+      resendRequestedReason: "user_requested_resend_from_soybienestar",
+      questionnaireUrl: qUrl,
+      accessPin: foundPatient.accessPin,
+      lastSoyBienestarResendRequestAt: resendRequestedAt
+    }, { merge: true });
+
     res.json({
        success: true,
+       action: "resend_requested",
        questionnaireUrl: qUrl,
        accessCode: foundPatient.accessPin,
        patientId: foundPatient.id || foundDocId,
-       status: foundPatient.status
+       status: "pending",
+       message: "La solicitud de reenvío ha sido registrada para que el terapeuta envíe el cuestionario por los medios solicitados."
     });
 
   } catch (error) {

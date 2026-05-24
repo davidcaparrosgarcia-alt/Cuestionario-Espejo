@@ -1036,6 +1036,23 @@ export const DataService = {
     delete this._patientByIdCache[patientId];
   },
 
+  async permanentlyDeletePatient(id: string) {
+    if (!db) return;
+    const path = `patients/${id}`;
+    try {
+      FirestoreDebug.log('delete', path);
+      await deleteDoc(doc(db, 'patients', id));
+
+      // limpiar cachés relacionados
+      delete this._patientByIdCache[id];
+      delete this._patientByIdPromises[id];
+      this._patientsCache = {};
+      this._patientsPromises = {};
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  },
+
   async restorePatient(patientId: string, restoredBy: string = "coordinator", restoredStatus: string = "sent") {
     const user = auth.currentUser;
     if (!user) throw new Error("No hay usuario autenticado");

@@ -243,6 +243,25 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [showDeletedMode, setShowDeletedMode] = useState(false);
+  const [selectedDeletedPatientIds, setSelectedDeletedPatientIds] = useState<string[]>([]);
+  
+  const toggleDeletedPatientSelection = (id: string) => {
+    setSelectedDeletedPatientIds(prev =>
+      prev.includes(id)
+        ? prev.filter(item => item !== id)
+        : [...prev, id]
+    );
+  };
+
+  const clearDeletedPatientSelection = () => {
+    setSelectedDeletedPatientIds([]);
+  };
+
+  useEffect(() => {
+    if (!showDeletedMode) {
+      clearDeletedPatientSelection();
+    }
+  }, [showDeletedMode]);
 
   // VISTA AMPLIADA DE PACIENTES
   const [showPatientsExpandedView, setShowPatientsExpandedView] = useState(false);
@@ -594,6 +613,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       const record = registry.find(r => r.id === id);
       if (!record) return;
       
+      setSelectedDeletedPatientIds(prev => prev.filter(item => item !== id));
+
       const previousRegistry = registry;
       const restoredStatus = record.previousStatusBeforeDelete || 'sent';
       const updated = registry.map(r => r.id === id ? { ...r, status: restoredStatus as any, deletedAt: null } : r);
@@ -606,6 +627,44 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           triggerToast("Error al restaurar el registro");
           setRegistry(previousRegistry); // Revert optimistic update
       }
+  };
+
+  const permanentlyDeleteSelectedPatients = async () => {
+    if (!showDeletedMode) return;
+    if (selectedDeletedPatientIds.length === 0) return;
+
+    const selectedRecords = registry.filter(r =>
+      selectedDeletedPatientIds.includes(r.id) && r.status === 'deleted'
+    );
+
+    if (selectedRecords.length === 0) {
+      triggerToast("No hay fichas borradas seleccionadas.");
+      clearDeletedPatientSelection();
+      return;
+    }
+
+    const confirmText = `Vas a eliminar definitivamente ${selectedRecords.length} ficha(s) de paciente.\n\nEsta acción no se puede deshacer.\n\n¿Deseas continuar?`;
+
+    if (!window.confirm(confirmText)) return;
+
+    const secondConfirm = window.confirm("Confirmación final: los datos seleccionados se borrarán definitivamente de la base de datos. ¿Confirmas el borrado permanente?");
+    if (!secondConfirm) return;
+
+    const previousRegistry = registry;
+
+    try {
+      await Promise.all(
+        selectedRecords.map(record => DataService.permanentlyDeletePatient(record.id))
+      );
+
+      setRegistry(prev => prev.filter(r => !selectedRecords.some(deleted => deleted.id === r.id)));
+      clearDeletedPatientSelection();
+      triggerToast(`${selectedRecords.length} ficha(s) eliminada(s) definitivamente.`);
+    } catch (e) {
+      console.error("[PERMANENT DELETE] failed", e);
+      setRegistry(previousRegistry);
+      triggerToast("No se pudieron eliminar definitivamente las fichas seleccionadas. Revisa permisos o consola.");
+    }
   };
 
   const changeStatus = async (id: string, direction: 'forward' | 'backward') => {
@@ -2031,9 +2090,48 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               </div>
 
               <div className="mt-12">
+                {showDeletedMode && selectedDeletedPatientIds.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-xl text-sm font-medium mb-4 flex justify-between items-center">
+                        <span>{selectedDeletedPatientIds.length} ficha(s) seleccionada(s) para borrado definitivo.</span>
+                    </div>
+                )}
                 <div className="flex justify-between items-center mb-6">
                   <div className="flex items-center gap-2">
                       <h3 className="font-black text-xs uppercase text-slate-400 tracking-widest">{showDeletedMode ? 'Fichas Borradas' : 'Actividad Reciente'}</h3>
+                      
+                      {showDeletedMode && (
+                          <div className="flex items-center gap-2 ml-2 mr-2">
+                              <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 cursor-pointer bg-slate-100 px-2 py-1 rounded">
+                                  <input 
+                                      type="checkbox" 
+                                      className="rounded cursor-pointer border-slate-300 text-red-500 focus:ring-red-500"
+                                      checked={recentRegistry.length > 0 && recentRegistry.filter(p => p.status === 'deleted').every(p => selectedDeletedPatientIds.includes(p.id))}
+                                      onChange={(e) => {
+                                          if (e.target.checked) {
+                                              setSelectedDeletedPatientIds(recentRegistry.filter(p => p.status === 'deleted').map(p => p.id));
+                                          } else {
+                                              clearDeletedPatientSelection();
+                                          }
+                                      }}
+                                  />
+                                  <span>Todos</span>
+                              </label>
+                              <button
+                                  onClick={permanentlyDeleteSelectedPatients}
+                                  disabled={selectedDeletedPatientIds.length === 0}
+                                  className={`h-6 px-2 rounded flex items-center justify-center transition-colors gap-1 ${
+                                      selectedDeletedPatientIds.length > 0
+                                          ? 'bg-red-100 text-red-600 hover:bg-red-200'
+                                          : 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                                  }`}
+                                  title="Eliminar seleccionados"
+                              >
+                                  <i className="fas fa-trash-alt text-[10px]"></i>
+                                  {selectedDeletedPatientIds.length > 0 && <span className="text-[10px] font-bold">({selectedDeletedPatientIds.length})</span>}
+                              </button>
+                          </div>
+                      )}
+
                       <button onClick={() => setIsSearchOpen(!isSearchOpen)} className="w-6 h-6 rounded bg-slate-100 hover:bg-blue-100 text-slate-500 hover:text-blue-600 flex items-center justify-center transition-colors"><i className="fas fa-search text-xs"></i></button>
                   </div>
                   <span className="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-600 font-bold">{filteredRegistry.length > 3 ? `3 / ${filteredRegistry.length}` : filteredRegistry.length}</span>
@@ -2051,7 +2149,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <div key={p.id} className={`group relative flex flex-col p-4 rounded-2xl border transition-all shadow-sm hover:shadow-md gap-3 ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-100 hover:border-teal-300'}`}>
                         <div className="flex justify-between items-start w-full">
                             <div className="flex flex-col overflow-hidden leading-tight">
-                                <button onClick={() => openPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors">{displayName}</button>
+                                <div className="flex items-center gap-2">
+                                    {showDeletedMode && (
+                                        <input 
+                                            type="checkbox"
+                                            checked={selectedDeletedPatientIds.includes(p.id)}
+                                            onChange={(e) => { e.stopPropagation(); toggleDeletedPatientSelection(p.id); }}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="rounded cursor-pointer border-slate-300 text-red-500 focus:ring-red-500 w-4 h-4"
+                                            aria-label={`Seleccionar ${displayName} para borrado definitivo`}
+                                        />
+                                    )}
+                                    <button onClick={() => openPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors block w-full">{displayName}</button>
+                                </div>
                                 {isSoyBienestar && (
                                     <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar</span>
                                 )}
@@ -2669,6 +2779,42 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   </div>
                   
                   <div className="p-6 border-b bg-white flex flex-wrap items-center gap-4 shrink-0 z-10">
+                      {showDeletedMode && (
+                          <div className="flex items-center gap-2">
+                              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer p-2 rounded hover:bg-slate-50 transition-colors">
+                                  <input 
+                                      type="checkbox" 
+                                      className="rounded text-red-500 focus:ring-red-400 focus:ring-offset-0 bg-slate-100 border-slate-300 w-4 h-4 cursor-pointer"
+                                      checked={expandedPatients.length > 0 && expandedPatients.filter(p => p.status === 'deleted').every(p => selectedDeletedPatientIds.includes(p.id))}
+                                      onChange={(e) => {
+                                          if (e.target.checked) {
+                                              const visibleDeletedIds = expandedPatients.filter(p => p.status === 'deleted').map(p => p.id);
+                                              setSelectedDeletedPatientIds(visibleDeletedIds);
+                                          } else {
+                                              clearDeletedPatientSelection();
+                                          }
+                                      }}
+                                  />
+                                  <span className="hidden sm:inline font-bold text-slate-500">Todo visible</span>
+                              </label>
+                              <button
+                                  onClick={permanentlyDeleteSelectedPatients}
+                                  disabled={selectedDeletedPatientIds.length === 0}
+                                  className={`px-3 py-2 text-sm font-bold rounded-xl transition-colors flex items-center gap-2 border ${
+                                      selectedDeletedPatientIds.length > 0
+                                          ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                                          : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                                  }`}
+                                  title="Eliminar seleccionados definitivamente"
+                              >
+                                  <i className="fas fa-trash-alt"></i>
+                                  {selectedDeletedPatientIds.length > 0 && (
+                                      <span className="hidden sm:inline">Eliminar ({selectedDeletedPatientIds.length})</span>
+                                  )}
+                              </button>
+                          </div>
+                      )}
+                      
                       <div className="relative flex-1 min-w-[250px]">
                           <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
                           <input 
@@ -2735,6 +2881,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50">
+                      {showDeletedMode && selectedDeletedPatientIds.length > 0 && (
+                          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-xl text-sm font-medium mb-4 flex justify-between items-center">
+                              <span>{selectedDeletedPatientIds.length} ficha(s) seleccionada(s) para borrado definitivo.</span>
+                          </div>
+                      )}
                       {expandedPatients.length === 0 ? (
                           <div className="flex flex-col items-center justify-center py-20 text-slate-400">
                               <i className="fas fa-folder-open text-4xl mb-4"></i>
@@ -2750,7 +2901,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                   return (
                                       <div key={p.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all shadow-sm hover:shadow-md ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-200 hover:border-blue-200'}`}>
                                           <div className="flex-1 min-w-[200px]">
-                                              <button onClick={() => openPatientDetails(p)} className="text-left text-base font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors block w-full">{displayName}</button>
+                                              <div className="flex items-center gap-2">
+                                                  {showDeletedMode && (
+                                                      <input 
+                                                          type="checkbox"
+                                                          checked={selectedDeletedPatientIds.includes(p.id)}
+                                                          onChange={(e) => { e.stopPropagation(); toggleDeletedPatientSelection(p.id); }}
+                                                          onClick={(e) => e.stopPropagation()}
+                                                          className="rounded cursor-pointer border-slate-300 text-red-500 focus:ring-red-500 w-4 h-4 shrink-0"
+                                                          aria-label={`Seleccionar ${displayName} para borrado definitivo`}
+                                                      />
+                                                  )}
+                                                  <button onClick={() => openPatientDetails(p)} className="text-left text-base font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors block w-full">{displayName}</button>
+                                              </div>
                                               <div className="flex items-center gap-2 mt-1">
                                                 <span className={`text-xs font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
                                                 {isSoyBienestar && (
