@@ -74,6 +74,9 @@ export interface PatientData {
     whatsapp?: boolean;
     sms?: boolean;
   };
+  aiGeneratedAt?: number;
+  aiInputAnswerCount?: number;
+  aiInputHadSoyBienestarContext?: boolean;
 }
 
 export interface DualAudio {

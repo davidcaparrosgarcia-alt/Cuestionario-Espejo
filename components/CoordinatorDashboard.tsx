@@ -1551,15 +1551,25 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       triggerToast("Clave de acceso preparada para guardar");
   };
 
-  const openPatientDetails = (p: PatientData) => {
-    setSelectedPatientDetails(p);
-    const isSoyBienestar = p.source === "soybienestar" || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
-    if (isSoyBienestar && !p.therapistReviewedAt) {
-      DataService.updatePatient(p.id, { 
+  const openPatientDetails = async (p: PatientData) => {
+    let freshPatient = p;
+    try {
+      const fromDb = await DataService.getPatientById(p.id);
+      if (fromDb) {
+        freshPatient = { ...p, ...fromDb };
+      }
+    } catch (e) {
+      console.error("[PATIENT DETAILS] Error refreshing patient", e);
+    }
+
+    setSelectedPatientDetails(freshPatient);
+    const isSoyBienestar = freshPatient.source === "soybienestar" || freshPatient.directAccessCreated || freshPatient.soybienestarUid || freshPatient.sourceRequestId;
+    if (isSoyBienestar && !freshPatient.therapistReviewedAt) {
+      DataService.updatePatient(freshPatient.id, { 
         therapistReviewedAt: Date.now(), 
         therapistReviewedBy: profile?.email || 'coordinator' 
       }).catch(e => console.error("Error setting therapistReviewedAt", e));
-      const updated = registry.map(r => r.id === p.id ? { ...r, therapistReviewedAt: Date.now() } : r);
+      const updated = registry.map(r => r.id === freshPatient.id ? { ...r, therapistReviewedAt: Date.now() } : r);
       setRegistry(updated);
     }
   };
@@ -1734,7 +1744,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                             {(selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) && (
                                                 <div className="mb-3 font-medium text-amber-800">
                                                     Origen SoyBienestar.<br/>
-                                                    Ficha generada sin los datos aún del cuestionario.<br/>
+                                                    {(() => {
+                                                        const hasQuestionnaireAnswers = selectedPatientDetails.answers && Object.keys(selectedPatientDetails.answers).length > 0;
+                                                        const isQuestionnaireCompleted = selectedPatientDetails.status === "completed" || selectedPatientDetails.status === "concluded" || selectedPatientDetails.status === "finalized" || !!selectedPatientDetails.dateAnswered;
+                                                        if (!hasQuestionnaireAnswers) return "Ficha generada con los datos iniciales de SoyBienestar, pendiente de respuestas del cuestionario.";
+                                                        if (hasQuestionnaireAnswers && !isQuestionnaireCompleted) return "Ficha generada con datos de SoyBienestar y respuestas parciales del cuestionario.";
+                                                        return "Ficha generada con datos de SoyBienestar y respuestas del Cuestionario Espejo.";
+                                                    })()}<br/>
                                                     Estado: {selectedPatientDetails.status}.
                                                 </div>
                                             )}
@@ -1754,7 +1770,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     ) : (selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) ? (
                                         getSoyBienestarContextText(selectedPatientDetails) ? (
                                             <>
-                                                <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Los datos de SoyBienestar han llegado correctamente, pero todavía no hay valoración automática disponible. Revisa la configuración de IA o genera/revisa la valoración manualmente.</div>
+                                                <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>
                                                 {getSoyBienestarContextText(selectedPatientDetails)}
                                             </>
                                         ) : (

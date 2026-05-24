@@ -607,13 +607,58 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const generateClinicalReport = async () => {
     setIsGeneratingReport(true);
     setClinicalReportGenerationError(null);
+    
+    // NEW LOGIC
+    const patientId = currentPatientData.id || patientDataRef.current?.id;
+    let patientForAI = { ...patientDataRef.current, ...currentPatientData };
+    let answersForAI = answersRef.current && Object.keys(answersRef.current).length > 0
+      ? answersRef.current
+      : answers;
+      
+    if (patientId) {
+      try {
+        const freshPatient = await DataService.getPatientById(patientId);
+        if (freshPatient) {
+          patientForAI = { ...patientForAI, ...freshPatient };
+          if (freshPatient.answers && Object.keys(freshPatient.answers).length > 0) {
+            answersForAI = freshPatient.answers;
+            setAnswersSafely(freshPatient.answers);
+          }
+        }
+      } catch (e) {
+        console.error("[AI REPORT] Error refreshing patient before AI", e);
+      }
+    }
+    
     const context = transcript.map(t => `${t.sender}: ${t.text}`).join('\n');
+    
+    console.log("[AI REPORT INPUT]", {
+      patientId,
+      hasSoyBienestarContext: !!patientForAI.soybienestarContext,
+      hasPreInformeSoyBienestar: !!patientForAI.preInformeSoyBienestar,
+      hasObservaciones: !!patientForAI.observaciones,
+      answerCount: Object.keys(answersForAI || {}).length,
+      transcriptLength: context.length
+    });
+    
+    if (!answersForAI || Object.keys(answersForAI).length === 0) {
+      console.warn("[AI REPORT] No answers available, report generation skipped.");
+      setClinicalReportGenerationError({
+        error: true,
+        message: "No hay respuestas disponibles para generar la valoración."
+      });
+      setIsGeneratingReport(false);
+      return;
+    }
+    // END NEW LOGIC
+    
     const reportData = await gemini.generateFullReport(
-        currentPatientData, 
-        answers, 
+        patientForAI, 
+        answersForAI, 
         context,
         globalConfig.clinicalPrompt,
-        globalConfig.conclusionPrompt
+        globalConfig.conclusionPrompt,
+        globalConfig
     );
     
     if (reportData.error) {
@@ -636,13 +681,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
     // AUTOMATIZACIÓN DE ESTADO: HECHO (completed)
     if (currentPatientData.id) {
+        const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
         try {
             await DataService.updatePatient(currentPatientData.id, { 
                 dateAnswered: now, 
                 status: 'completed',
-                answers: answers,
+                answers: finalAnswers,
                 conversationSummary: clinicalReport,
-                finalConclusion: finalConclusion
+                finalConclusion: finalConclusion,
+                aiGeneratedAt: Date.now(),
+                aiInputAnswerCount: Object.keys(finalAnswers).length,
+                aiInputHadSoyBienestarContext: !!currentPatientData.soybienestarContext
             });
             
             fetch('/api/notify-soybienestar-status', {
