@@ -2,6 +2,27 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { DataService } from "./dataService";
 
+const getGeminiEnv = () => {
+  const metaEnv = (import.meta as any)?.env || {};
+  const processEnv = typeof process !== "undefined" ? (process as any).env || {} : {};
+
+  const apiKey =
+    metaEnv.VITE_GEMINI_API_KEY ||
+    metaEnv.GEMINI_API_KEY ||
+    processEnv.VITE_GEMINI_API_KEY ||
+    processEnv.GEMINI_API_KEY ||
+    "";
+
+  const model =
+    metaEnv.VITE_GEMINI_MODEL ||
+    metaEnv.GEMINI_MODEL ||
+    processEnv.VITE_GEMINI_MODEL ||
+    processEnv.GEMINI_MODEL ||
+    "gemini-2.5-flash";
+
+  return { apiKey, model };
+};
+
 export class GeminiService {
   async summarizeSession(patient: any, answers: any, transcript: string): Promise<string> {
       // Mantener por compatibilidad si se usa en otro lado, aunque lo ideal es usar generateFullReport
@@ -12,13 +33,13 @@ export class GeminiService {
   async generateFullReport(patient: any, answers: any, transcript: string, clinicalPrompt?: string, conclusionPrompt?: string, globalConfig?: any): Promise<{ internalReport: string, externalConclusion: string, error?: boolean, errorMessage?: string, provider?: string, model?: string }> {
     // PREPARACIÓN PARA FALLBACK (Arquitectura futura)
     const activeProvider = "google";
-    const activeModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const { apiKey, model: activeModel } = getGeminiEnv();
 
     try {
       // NOTE: This uses process.env.GEMINI_API_KEY which is typically compiled in by Vite
       // if not configured otherwise. For frontend usage, import.meta.env is usually preferred,
       // but according to the prompt, we must strictly verify it uses process.env.GEMINI_API_KEY.
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       
       const defaultClinicalPrompt = `
         Actúa como un psicoterapeuta experto especializado en reprogramación mental, PNL y Coach Emocional de alto nivel.
@@ -89,7 +110,7 @@ export class GeminiService {
           model: activeModel
       };
     } catch (e: any) {
-      console.error("[GeminiService] Error en generateFullReport:", e.message, { hasKey: !!process.env.GEMINI_API_KEY, activeModel });
+      console.error("[GeminiService] Error en generateFullReport:", e.message, { hasKey: !!apiKey, activeModel });
       return {
           internalReport: "",
           externalConclusion: "",
@@ -100,6 +121,81 @@ export class GeminiService {
       };
     }
   }
+
+  async testConnection(): Promise<{
+    ok: boolean;
+    provider: string;
+    model: string;
+    hasKey: boolean;
+    keySource?: string;
+    errorName?: string;
+    errorMessage?: string;
+    preview?: string;
+  }> {
+    const activeProvider = "google";
+    const { apiKey, model } = getGeminiEnv();
+
+    const metaEnv = (import.meta as any)?.env || {};
+    const processEnv = typeof process !== "undefined" ? (process as any).env || {} : {};
+
+    const keySource =
+      metaEnv.VITE_GEMINI_API_KEY ? "import.meta.env.VITE_GEMINI_API_KEY" :
+      metaEnv.GEMINI_API_KEY ? "import.meta.env.GEMINI_API_KEY" :
+      processEnv.VITE_GEMINI_API_KEY ? "process.env.VITE_GEMINI_API_KEY" :
+      processEnv.GEMINI_API_KEY ? "process.env.GEMINI_API_KEY" :
+      "none";
+
+    if (!apiKey) {
+      return {
+        ok: false,
+        provider: activeProvider,
+        model,
+        hasKey: false,
+        keySource,
+        errorName: "MissingGeminiApiKey",
+        errorMessage: "No hay clave de Gemini disponible en el frontend."
+      };
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model,
+        contents: 'Responde solo con JSON válido: {"ok":true}',
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              ok: { type: Type.BOOLEAN }
+            },
+            required: ["ok"]
+          }
+        }
+      });
+
+      const text = response.text || "";
+      return {
+        ok: true,
+        provider: activeProvider,
+        model,
+        hasKey: true,
+        keySource,
+        preview: text.slice(0, 300)
+      };
+    } catch (e: any) {
+      return {
+        ok: false,
+        provider: activeProvider,
+        model,
+        hasKey: true,
+        keySource,
+        errorName: e?.name || "GeminiError",
+        errorMessage: e?.message || String(e)
+      };
+    }
+  }
 }
+
 
 export const gemini = new GeminiService();

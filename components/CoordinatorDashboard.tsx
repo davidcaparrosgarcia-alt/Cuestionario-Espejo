@@ -4,6 +4,7 @@ import { Card, Button, Input, Logo, Toast } from './UI';
 import { PatientData, CoordinatorProfile, AuthUser } from '../types';
 import { QUESTIONS } from '../constants';
 import { DataService } from '../services/dataService';
+import { gemini } from '../services/gemini';
 import { auth } from '../services/firebase';
 
 interface DashboardProps {
@@ -234,6 +235,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       }
   }, [editingAudio]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<any>(null);
+  const [isTestingAI, setIsTestingAI] = useState(false);
   const [globalConfig, setGlobalConfig] = useState<any>(null);
   const [tempConfig, setTempConfig] = useState<any>(null);
   const [showConfirmAccessCode, setShowConfirmAccessCode] = useState(false);
@@ -255,6 +258,25 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const clearDeletedPatientSelection = () => {
     setSelectedDeletedPatientIds([]);
+  };
+
+  const handleTestAI = async () => {
+    setIsTestingAI(true);
+    setAiTestResult(null);
+    try {
+      const result = await gemini.testConnection();
+      setAiTestResult(result);
+      triggerToast(result.ok ? "IA conectada correctamente." : "La prueba de IA ha fallado. Revisa el detalle.");
+    } catch (e: any) {
+      setAiTestResult({
+        ok: false,
+        errorName: e?.name || "UnexpectedError",
+        errorMessage: e?.message || String(e)
+      });
+      triggerToast("Error inesperado probando IA.");
+    } finally {
+      setIsTestingAI(false);
+    }
   };
 
   useEffect(() => {
@@ -2725,6 +2747,51 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                       </div>
                                                   );
                                               })}
+                                          </div>
+
+                                          <div className="mt-8 pt-6 border-t border-slate-200">
+                                              <div className="flex items-center justify-between mb-4">
+                                                  <div>
+                                                      <h4 className="font-bold text-slate-800">Diagnóstico de Conexión</h4>
+                                                      <p className="text-xs text-slate-500">Prueba la API Key y el Modelo sin datos de pacientes.</p>
+                                                  </div>
+                                                  <button 
+                                                      onClick={handleTestAI} 
+                                                      disabled={isTestingAI}
+                                                      className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold rounded-xl transition-colors disabled:opacity-50 flex items-center gap-2"
+                                                  >
+                                                      {isTestingAI ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-plug"></i>}
+                                                      Probar IA
+                                                  </button>
+                                              </div>
+                                              
+                                              {aiTestResult && (
+                                                  <div className={`p-4 rounded-xl border text-sm ${aiTestResult.ok ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                                                      <div className="flex items-center gap-2 mb-2 font-bold uppercase tracking-wider text-xs">
+                                                        <span className={aiTestResult.ok ? 'text-green-700' : 'text-red-700'}>
+                                                          Estado: {aiTestResult.ok ? 'OK' : 'ERROR'}
+                                                        </span>
+                                                      </div>
+                                                      <div className="grid grid-cols-2 gap-2 text-xs mb-3 text-slate-700">
+                                                          <div><span className="font-bold">Provider:</span> {aiTestResult.provider}</div>
+                                                          <div><span className="font-bold">Model:</span> {aiTestResult.model}</div>
+                                                          <div><span className="font-bold">Has Key:</span> {aiTestResult.hasKey ? 'Sí' : 'No'}</div>
+                                                          <div><span className="font-bold">Key Source:</span> {aiTestResult.keySource}</div>
+                                                      </div>
+                                                      
+                                                      {aiTestResult.ok && aiTestResult.preview && (
+                                                          <div className="text-xs bg-white p-2 rounded border border-green-100 text-slate-600 font-mono">
+                                                              <strong>Preview:</strong> {aiTestResult.preview}
+                                                          </div>
+                                                      )}
+                                                      
+                                                      {!aiTestResult.ok && (
+                                                          <div className="text-xs bg-white p-2 rounded border border-red-100 text-red-600">
+                                                              <strong>{aiTestResult.errorName}:</strong> {aiTestResult.errorMessage}
+                                                          </div>
+                                                      )}
+                                                  </div>
+                                              )}
                                           </div>
                                       </div>
                                   </section>
