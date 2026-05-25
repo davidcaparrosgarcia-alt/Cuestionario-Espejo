@@ -2690,6 +2690,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               value={tempConfig.clinicalPrompt}
                                               onChange={e => setTempConfig({...tempConfig, clinicalPrompt: e.target.value})}
                                           />
+                                          <div className="text-right text-xs text-slate-400">
+                                              Prompt interno: {tempConfig.clinicalPrompt?.length || 0} caracteres
+                                          </div>
                                       </div>
 
                                       <div className="space-y-3">
@@ -2699,6 +2702,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               value={tempConfig.conclusionPrompt}
                                               onChange={e => setTempConfig({...tempConfig, conclusionPrompt: e.target.value})}
                                           />
+                                          <div className="text-right text-xs text-slate-400">
+                                              Prompt conclusión: {tempConfig.conclusionPrompt?.length || 0} caracteres
+                                          </div>
+                                      </div>
+                                      
+                                      <div className="mt-2 text-xs italic text-amber-600">
+                                          Los cambios se aplican al pulsar Guardar Todos los Ajustes y se usarán en los próximos informes generados.
                                       </div>
                                   </section>
 

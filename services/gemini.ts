@@ -66,8 +66,28 @@ export class GeminiService {
         Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.
       `;
 
-      const finalClinicalPrompt = (clinicalPrompt || defaultClinicalPrompt).replace(/\[Nombre\]/g, patient?.nombre || 'Paciente');
-      const finalConclusionPrompt = (conclusionPrompt || defaultConclusionPrompt).replace(/\[Nombre\]/g, patient?.nombre?.split(' ')[0] || 'Paciente');
+      const safeClinicalPrompt =
+        typeof clinicalPrompt === "string" && clinicalPrompt.trim().length > 0
+          ? clinicalPrompt
+          : defaultClinicalPrompt;
+
+      const safeConclusionPrompt =
+        typeof conclusionPrompt === "string" && conclusionPrompt.trim().length > 0
+          ? conclusionPrompt
+          : defaultConclusionPrompt;
+
+      const finalClinicalPrompt = safeClinicalPrompt.replace(/\[Nombre\]/g, patient?.nombre || 'Paciente');
+      const finalConclusionPrompt = safeConclusionPrompt.replace(/\[Nombre\]/g, patient?.nombre?.split(' ')[0] || 'Paciente');
+
+      console.log("[GEMINI PROMPT CONFIG]", {
+        usingCustomClinicalPrompt: !!clinicalPrompt,
+        finalClinicalPromptLength: finalClinicalPrompt.length,
+        finalClinicalPromptPreview: finalClinicalPrompt.slice(0, 160),
+        usingCustomConclusionPrompt: !!conclusionPrompt,
+        finalConclusionPromptLength: finalConclusionPrompt.length,
+        finalConclusionPromptPreview: finalConclusionPrompt.slice(0, 160),
+        model: activeModel
+      });
 
       const prompt = `
         DATOS DEL PACIENTE:

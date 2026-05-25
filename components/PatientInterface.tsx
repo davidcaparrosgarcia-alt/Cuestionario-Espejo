@@ -652,6 +652,15 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
     // END NEW LOGIC
     
+    console.log("[AI PROMPT CONFIG BEFORE GEMINI]", {
+      hasClinicalPrompt: !!globalConfig?.clinicalPrompt,
+      clinicalPromptLength: globalConfig?.clinicalPrompt ? String(globalConfig.clinicalPrompt).length : 0,
+      clinicalPromptPreview: globalConfig?.clinicalPrompt ? String(globalConfig.clinicalPrompt).slice(0, 160) : "",
+      hasConclusionPrompt: !!globalConfig?.conclusionPrompt,
+      conclusionPromptLength: globalConfig?.conclusionPrompt ? String(globalConfig.conclusionPrompt).length : 0,
+      conclusionPromptPreview: globalConfig?.conclusionPrompt ? String(globalConfig.conclusionPrompt).slice(0, 160) : ""
+    });
+
     const reportData = await gemini.generateFullReport(
         patientForAI, 
         answersForAI, 
