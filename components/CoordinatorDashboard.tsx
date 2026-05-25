@@ -124,6 +124,72 @@ const getSoyBienestarContextText = (p: PatientData) => {
   return "";
 };
 
+const formatGeneratedReportForDisplay = (text?: string) => {
+  if (!text) return [];
+
+  const normalized = String(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const lines = normalized.split("\n");
+
+  const blocks: { text: string; isTitle: boolean }[] = [];
+  let currentParagraph: string[] = [];
+
+  const flushParagraph = () => {
+    const paragraph = currentParagraph.join(" ").trim();
+    if (paragraph) {
+      blocks.push({ text: paragraph, isTitle: false });
+    }
+    currentParagraph = [];
+  };
+
+  const looksLikeTitle = (line: string) => {
+    const clean = line.trim();
+    if (!clean) return false;
+
+    // Título probable si:
+    // - está en mayúsculas
+    // - no es demasiado largo
+    // - no termina en punto
+    // - tiene al menos 2 palabras
+    const letters = clean.replace(/[^A-ZÁÉÍÓÚÜÑ]/g, "");
+    const hasLetters = letters.length >= 6;
+    const isMostlyUppercase = clean === clean.toUpperCase();
+    const wordCount = clean.split(/\s+/).length;
+
+    return (
+      hasLetters &&
+      isMostlyUppercase &&
+      wordCount >= 2 &&
+      clean.length <= 90 &&
+      !clean.endsWith(".")
+    );
+  };
+
+  lines.forEach(line => {
+    const clean = line.trim();
+
+    if (!clean) {
+      flushParagraph();
+      return;
+    }
+
+    if (looksLikeTitle(clean)) {
+      flushParagraph();
+      blocks.push({ text: clean, isTitle: true });
+      return;
+    }
+
+    currentParagraph.push(clean);
+  });
+
+  flushParagraph();
+
+  return blocks;
+};
+
 const buildSoyBienestarClinicalSummary = (patient: PatientData) => {
   const ctx: any = (patient as any).soybienestarContext || {};
   const internal = ctx.latestInternalTherapistReport || {};
@@ -1347,7 +1413,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 .label { font-size: 10px; font-weight: bold; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px; display: block; }
                 .value { font-size: 14px; font-weight: bold; color: #0f172a; line-height: 1.4; }
                 .observations-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 10px; font-style: italic; }
-                .clinical-report { background: #f0f7ff; border-left: 5px solid #2563eb; padding: 30px; border-radius: 0 10px 10px 0; white-space: pre-wrap; font-size: 14px; line-height: 1.8; text-align: justify; margin-top: 10px; }
+                .clinical-report { background: #f0f7ff; border-left: 5px solid #2563eb; padding: 30px; border-radius: 0 10px 10px 0; font-size: 14px; line-height: 1.8; text-align: justify; margin-top: 10px; }
                 .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 20px; text-align: center; font-size: 10px; color: #94a3b8; }
                 @media print {
                     .clinical-report { margin-top: 10px; }
@@ -1422,7 +1488,16 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             
             <div class="section">
                 <div class="section-title">Valoración Clínica / Coaching (Uso Interno)</div>
-                <div class="clinical-report">${p.conversationSummary || "Pendiente de valoración técnica."}</div>
+                <div class="clinical-report">
+                    ${p.conversationSummary ? 
+                        formatGeneratedReportForDisplay(p.conversationSummary).map(block => 
+                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 20px; margin-bottom: 10px;">' + block.text + '</h4>' 
+                                          : '<p style="margin-bottom: 12px; white-space: pre-line;">' + block.text + '</p>'
+                        ).join('')
+                    : (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId || (p as any).soybienestarContext || (p as any).preInformeSoyBienestar) ? 
+                        '<div style="margin-bottom: 15px; color: #b45309; font-style: italic; padding-bottom: 8px; border-bottom: 1px solid #fcd34d;">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>\n<div style="white-space: pre-line;">' + buildSoyBienestarClinicalSummary(p) + '</div>'
+                    : "Pendiente de valoración técnica."}
+                </div>
             </div>
             
             <div class="footer">Este documento es privado y contiene información sensible. Uso exclusivo profesional.</div>
@@ -1815,16 +1890,28 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
                             <div>
                                 <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
-                                <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed whitespace-pre-line p-4 bg-blue-50/30 rounded-xl border border-blue-100">
+                                <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed p-4 bg-blue-50/30 rounded-xl border border-blue-100">
                                     {selectedPatientDetails.conversationSummary ? (
-                                        selectedPatientDetails.conversationSummary
+                                        <div className="space-y-4">
+                                          {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary).map((block, index) => (
+                                            block.isTitle ? (
+                                              <h4 key={index} className="text-sm font-black uppercase tracking-widest text-blue-900 border-b border-blue-200 pb-1 mt-4">
+                                                {block.text}
+                                              </h4>
+                                            ) : (
+                                              <p key={index} className="text-sm leading-relaxed text-slate-700 whitespace-pre-line">
+                                                {block.text}
+                                              </p>
+                                            )
+                                          ))}
+                                        </div>
                                     ) : (selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) ? (
                                         <>
                                             <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>
-                                            {buildSoyBienestarClinicalSummary(selectedPatientDetails)}
+                                            <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
                                         </>
                                     ) : (
-                                        "Pendiente de valoración."
+                                        <div className="whitespace-pre-line">Pendiente de valoración.</div>
                                     )}
                                 </div>
                             </div>

@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: GlobalConfig = {
   startAudio: {},
   finishText: "Tus respuestas y la valoración del Cuestionario espejo están listas para ser enviadas.",
   finishAudio: {},
-  afterSendText: "Hemos recibido tus respuestas correctamente, {{nombre}}. El equipo terapéutico revisará tu Cuestionario Espejo y te avisaremos cuando tu dosier personalizado esté disponible para lectura en SoyBienestar.",
+  afterSendText: "Hemos recibido tus respuestas correctamente, {{nombre}}. Te notificaremos cuando tengas el dosier disponible. Nos vemos pronto.",
   afterSendAudio: {},
   defaultVoiceMode: Voice.FEMALE,
   femaleVoiceVariant: 1,
@@ -920,6 +920,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
   };
 
+  const finishCompletedSession = () => {
+    stopAudio();
+    setShowExitConfirm(false);
+    window.location.href = "/";
+  };
+
   const handleBack = () => {
     stopAudio();
     if (currentQuestionIndex > 0) {
@@ -1709,11 +1715,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 <div className="mb-10"><div className="w-24 h-24 bg-green-100 text-green-600 rounded-full flex items-center justify-center text-4xl mx-auto mb-6 animate-in zoom-in duration-500 shadow-xl"><i className="fas fa-check"></i></div><h2 className={`text-3xl font-bold mb-3 font-friendly ${isDarkMode ? 'text-blue-200' : 'text-blue-800'}`}>¡Gracias {currentPatientData.nombre?.split(' ')[0]}!</h2></div>
                 
                 {isGeneratingReport ? (
-                    <div className="flex flex-col items-center gap-6 py-8"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div><p className="text-sm font-black uppercase text-blue-600 animate-pulse tracking-widest">Generando Informe Terapéutico...</p></div>
+                    <div className="flex flex-col items-center gap-6 py-8"><div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div><p className="text-sm font-black uppercase text-blue-600 animate-pulse tracking-widest">Preparando tus respuestas para enviar...</p></div>
                 ) : hasSentResults ? (
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
-                        <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.afterSendText || "Hemos recibido tus respuestas correctamente. El equipo terapéutico revisará tu Cuestionario Espejo y te avisaremos cuando tu dosier personalizado esté disponible para lectura en SoyBienestar.")}</p>
-                        <Button onClick={requestExit} variant="outline" className={`w-full border-blue-600 text-blue-600 hover:bg-blue-50 ${isDarkMode ? 'border-white/20 text-white hover:bg-white/10' : ''}`}>Finalizar</Button>
+                        <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.afterSendText || "Hemos recibido tus respuestas correctamente, {{nombre}}. Te notificaremos cuando tengas el dosier disponible. Nos vemos pronto.")}</p>
+                        <Button onClick={finishCompletedSession} variant="outline" className={`w-full border-blue-600 text-blue-600 hover:bg-blue-50 ${isDarkMode ? 'border-white/20 text-white hover:bg-white/10' : ''}`}>Finalizar</Button>
                     </div>
                 ) : (
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
