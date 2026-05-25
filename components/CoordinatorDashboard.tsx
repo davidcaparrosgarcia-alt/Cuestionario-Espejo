@@ -124,6 +124,57 @@ const getSoyBienestarContextText = (p: PatientData) => {
   return "";
 };
 
+const buildSoyBienestarClinicalSummary = (patient: PatientData) => {
+  const ctx: any = (patient as any).soybienestarContext || {};
+  const internal = ctx.latestInternalTherapistReport || {};
+  const visible = ctx.latestVisibleOrientationReport || {};
+  const feedback = ctx.reportFeedback || {};
+
+  const estadoExpresado = Array.isArray(internal.estado_emocional_predominante?.expresado_por_usuario)
+    ? internal.estado_emocional_predominante.expresado_por_usuario.join("; ")
+    : "";
+
+  const estadoInferido = Array.isArray(internal.estado_emocional_predominante?.inferido_por_conversacion)
+    ? internal.estado_emocional_predominante.inferido_por_conversacion.join("; ")
+    : "";
+
+  const impacto = internal.impacto_funcional || {};
+
+  const observaciones = [
+    impacto.sueno ? `Sueño: ${impacto.sueno}` : "",
+    impacto.energia ? `Energía: ${impacto.energia}` : "",
+    impacto.concentracion ? `Concentración: ${impacto.concentracion}` : "",
+    impacto.relaciones ? `Relaciones: ${impacto.relaciones}` : "",
+    impacto.alimentacion ? `Alimentación: ${impacto.alimentacion}` : "",
+    impacto.evitacion ? `Evitación: ${impacto.evitacion}` : "",
+    internal.contexto_y_posibles_desencadenantes ? `Contexto y posibles desencadenantes: ${internal.contexto_y_posibles_desencadenantes}` : "",
+    ctx.latestReportFeedbackComment || feedback.comment ? `Comentario de validación del usuario: ${ctx.latestReportFeedbackComment || feedback.comment}` : ""
+  ].filter(Boolean);
+
+  return [
+    "VALORACIÓN PRELIMINAR DEL ESTADO EMOCIONAL",
+    internal.motivo_principal || ctx.latestClinicalConclusion || visible.lo_que_parece_pesar_mas || "Pendiente de ampliar con el Cuestionario Espejo.",
+    "",
+    "DINÁMICA INICIAL OBSERVADA",
+    [
+      estadoExpresado ? `El usuario expresa: ${estadoExpresado}.` : "",
+      estadoInferido ? `En la conversación inicial se infiere: ${estadoInferido}.` : "",
+      internal.hipotesis_de_trabajo_no_diagnostica || ctx.globalUserSummary || ""
+    ].filter(Boolean).join(" "),
+    "",
+    "OBSERVACIONES CLAVE",
+    observaciones.length > 0
+      ? observaciones.map((item, i) => `${i + 1}. ${item}`).join("\n")
+      : "1. No constan todavía observaciones clínicas suficientes más allá de la primera consulta.",
+    "",
+    "ESTRATEGIA INICIAL RECOMENDADA",
+    internal.recomendacion_prudente_siguiente_paso || visible.siguiente_paso || "Completar el Cuestionario Espejo para obtener una lectura más profunda y personalizada.",
+    "",
+    "PRÓXIMO PASO",
+    "Esta valoración es preliminar. La ficha completa deberá integrarse con las respuestas del Cuestionario Espejo una vez el paciente lo finalice."
+  ].join("\n");
+};
+
 // --- TEXTOS DE EJEMPLO ACTUALIZADOS ---
 const INTERNAL_CLINICAL_EXAMPLE = `INFORME DE VALORACIÓN INICIAL Y GUÍA TERAPÉUTICA AVANZADA
 
@@ -1768,14 +1819,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     {selectedPatientDetails.conversationSummary ? (
                                         selectedPatientDetails.conversationSummary
                                     ) : (selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) ? (
-                                        getSoyBienestarContextText(selectedPatientDetails) ? (
-                                            <>
-                                                <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>
-                                                {getSoyBienestarContextText(selectedPatientDetails)}
-                                            </>
-                                        ) : (
-                                            <div className="text-amber-700 italic">No han llegado datos suficientes desde SoyBienestar para generar una ficha completa. Revisa si la solicitud incluye contexto clínico o preinforme.</div>
-                                        )
+                                        <>
+                                            <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>
+                                            {buildSoyBienestarClinicalSummary(selectedPatientDetails)}
+                                        </>
                                     ) : (
                                         "Pendiente de valoración."
                                     )}

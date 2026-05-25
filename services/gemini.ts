@@ -23,6 +23,35 @@ const getGeminiEnv = () => {
   return { apiKey, model };
 };
 
+const buildCleanSoyBienestarContextForAI = (patient: any) => {
+  const ctx = patient?.soybienestarContext || {};
+  const internal = ctx.latestInternalTherapistReport || {};
+  const visible = ctx.latestVisibleOrientationReport || {};
+  const feedback = ctx.reportFeedback || {};
+
+  return {
+    motivo_principal: internal.motivo_principal || ctx.latestClinicalConclusion || ctx.consultationConclusion || "",
+    estado_emocional: internal.estado_emocional_predominante || null,
+    duracion_y_evolucion: internal.duracion_y_evolucion || "",
+    impacto_funcional: internal.impacto_funcional || null,
+    contexto_desencadenantes: internal.contexto_y_posibles_desencadenantes || "",
+    hipotesis_no_diagnostica: internal.hipotesis_de_trabajo_no_diagnostica || "",
+    resumen_derivacion: internal.resumen_para_derivacion || ctx.globalUserSummary || "",
+    informacion_faltante: internal.informacion_faltante_relevante || [],
+    recursos_sugeridos: internal.recursos_iniciales_sugeridos || visible.recursos_iniciales_liberados || "",
+    feedback_usuario: {
+      agree: ctx.latestReportFeedbackAgrees,
+      label: ctx.latestReportFeedbackLabel,
+      comment: ctx.latestReportFeedbackComment || feedback.comment || ""
+    },
+    orientacion_visible: {
+      lo_que_parece_pesar_mas: visible.lo_que_parece_pesar_mas || "",
+      impacto_en_tu_dia_a_dia: visible.impacto_en_tu_dia_a_dia || "",
+      siguiente_paso: visible.siguiente_paso || ""
+    }
+  };
+};
+
 export class GeminiService {
   async summarizeSession(patient: any, answers: any, transcript: string): Promise<string> {
       // Mantener por compatibilidad si se usa en otro lado, aunque lo ideal es usar generateFullReport
@@ -90,10 +119,18 @@ export class GeminiService {
       });
 
       const prompt = `
+        REGLA DE INTEGRACIÓN DE DATOS:
+        Si hay contexto de SoyBienestar y respuestas del Cuestionario Espejo, integra ambas fuentes.
+        SoyBienestar es la historia inicial y el Cuestionario Espejo es la ampliación estructurada.
+        No bases toda la valoración en SoyBienestar si existen respuestas del cuestionario.
+        Menciona patrones concretos observados en las respuestas.
+        No incluyas JSON, claves técnicas ni nombres de campos internos.
+        No inventes datos no presentes.
+
         DATOS DEL PACIENTE:
         Nombre: ${patient?.nombre || 'Desconocido'}
         Edad: ${patient?.edad || 'Desconocida'}
-        ${patient?.soybienestarContext ? `Contexto previo (SoyBienestar): ${JSON.stringify(patient.soybienestarContext)}` : ''}
+        ${patient?.soybienestarContext ? `Contexto clínico previo de SoyBienestar:\n${JSON.stringify(buildCleanSoyBienestarContextForAI(patient), null, 2)}` : ''}
         Respuestas al cuestionario: ${JSON.stringify(answers)}
         Transcripción de la interacción: ${transcript}
         
