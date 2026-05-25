@@ -950,6 +950,12 @@ async function notifySoyBienestarFromPatient(db: any, id: string, data: any, eve
     return { status: "skipped", reason: "missing_config" };
   }
 
+  const accessCodeForSoyBienestar =
+    data.accessPin ||
+    data.proposedAccessCode ||
+    data.personalAccessCode ||
+    null;
+
   const payload: any = {
     event,
     soybienestarUid: data.soybienestarUid || null,
@@ -959,6 +965,8 @@ async function notifySoyBienestarFromPatient(db: any, id: string, data: any, eve
     telefono: data.telefono || null,
     status: overrideStatus || data.status || null,
     occurredAt: Date.now(),
+    accessCode: accessCodeForSoyBienestar,
+    accessPin: accessCodeForSoyBienestar,
     accessPinProvidedBySoyBienestar: !!data.proposedAccessCode
   };
 
@@ -1112,6 +1120,12 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
     return res.json({ success: true, note: "Webhook not configured" });
   }
 
+  const accessCodeForSoyBienestar =
+    patient.accessPin ||
+    patient.proposedAccessCode ||
+    patient.personalAccessCode ||
+    null;
+
   const payload = {
     event: "dossier_available",
     soybienestarUid: patient.soybienestarUid || null,
@@ -1119,6 +1133,8 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
     linkedQuestionnairePatientId: patient.id,
     email: patient.email,
     telefono: patient.telefono || null,
+    accessCode: accessCodeForSoyBienestar,
+    accessPin: accessCodeForSoyBienestar,
     accessPinProvidedBySoyBienestar: !!patient.proposedAccessCode,
     status: patient.status,
     occurredAt: Date.now(),
@@ -1192,6 +1208,12 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
       return res.json({ success: false, note: "Webhook not configured" });
     }
 
+    const accessCodeForSoyBienestar =
+      patient.accessPin ||
+      patient.proposedAccessCode ||
+      patient.personalAccessCode ||
+      null;
+
     const payload: any = {
       event,
       soybienestarUid: patient.soybienestarUid || null,
@@ -1201,6 +1223,8 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
       telefono: patient.telefono || null,
       status: patient.status,
       occurredAt: Date.now(),
+      accessCode: accessCodeForSoyBienestar,
+      accessPin: accessCodeForSoyBienestar,
       accessPinProvidedBySoyBienestar: !!patient.proposedAccessCode
     };
 
