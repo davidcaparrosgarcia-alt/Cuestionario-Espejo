@@ -148,19 +148,22 @@ const escapeRegExp = (value: string) =>
 const formatGeneratedReportForDisplay = (text?: string) => {
   if (!text) return [];
 
+  const sortedReportTitles = [...REPORT_TITLES].sort((a, b) => b.length - a.length);
+  const sortedReportSubtitles = [...REPORT_SUBTITLES].sort((a, b) => b.length - a.length);
+
   let normalized = String(text || "")
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  for (const title of REPORT_TITLES) {
-    const re = new RegExp(`\\s*${escapeRegExp(title)}\\.?\\s*`, "gi");
+  for (const title of sortedReportTitles) {
+    const re = new RegExp(`\\s*${escapeRegExp(title)}\\s*[\\.:：]?\\s*`, "gi");
     normalized = normalized.replace(re, `\n\n${title}\n\n`);
   }
 
-  for (const title of REPORT_SUBTITLES) {
-    const re = new RegExp(`\\s*${escapeRegExp(title)}\\.?\\s*`, "gi");
+  for (const title of sortedReportSubtitles) {
+    const re = new RegExp(`\\s*${escapeRegExp(title)}\\s*[\\.:：]?\\s*`, "gi");
     normalized = normalized.replace(re, `\n\n${title}\n`);
   }
 
@@ -175,17 +178,17 @@ const formatGeneratedReportForDisplay = (text?: string) => {
 
   for (const block of rawBlocks) {
     const blockUpper = block.toUpperCase();
-    if (REPORT_TITLES.includes(blockUpper)) {
+    if (sortedReportTitles.includes(blockUpper)) {
       blocks.push({ text: block, isTitle: true });
       continue;
     }
-    if (REPORT_SUBTITLES.includes(blockUpper)) {
+    if (sortedReportSubtitles.includes(blockUpper)) {
       blocks.push({ text: block, isTitle: false, isSubTitle: true });
       continue;
     }
 
     let matchedSubtitle = false;
-    for (const sub of REPORT_SUBTITLES) {
+    for (const sub of sortedReportSubtitles) {
       if (blockUpper.startsWith(sub + "\n")) {
         blocks.push({ text: block.substring(0, sub.length).trim(), isTitle: false, isSubTitle: true });
         const remaining = block.substring(sub.length).trim();
@@ -201,6 +204,14 @@ const formatGeneratedReportForDisplay = (text?: string) => {
 
   return blocks;
 };
+
+const escapeHtml = (value: string) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 
 const buildSoyBienestarClinicalSummary = (patient: PatientData) => {
   const ctx: any = (patient as any).soybienestarContext || {};
@@ -1503,9 +1514,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 <div class="clinical-report">
                     ${p.conversationSummary ? 
                         formatGeneratedReportForDisplay(p.conversationSummary).map(block => 
-                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px;">' + block.text + '</h4>' 
-                                          : block.isSubTitle ? '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px;">' + block.text + '</h5>'
-                                          : '<p style="margin-bottom: 12px; white-space: pre-line;">' + block.text + '</p>'
+                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px;">' + escapeHtml(block.text) + '</h4>' 
+                                          : block.isSubTitle ? '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px;">' + escapeHtml(block.text) + '</h5>'
+                                          : '<p style="margin-bottom: 12px; white-space: pre-line;">' + escapeHtml(block.text) + '</p>'
                         ).join('')
                     : (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId || (p as any).soybienestarContext || (p as any).preInformeSoyBienestar) ? 
                         '<div style="margin-bottom: 15px; color: #b45309; font-style: italic; padding-bottom: 8px; border-bottom: 1px solid #fcd34d;">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>\n<div style="white-space: pre-line;">' + buildSoyBienestarClinicalSummary(p) + '</div>'
