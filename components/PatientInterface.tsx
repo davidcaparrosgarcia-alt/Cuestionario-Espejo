@@ -5,6 +5,7 @@ import { QUESTIONS as INITIAL_QUESTIONS } from '../constants';
 import { gemini } from '../services/gemini';
 import { DataService } from '../services/dataService'; // Importamos el servicio
 import { PatientData, Voice, Question, GlobalConfig, DualAudio } from '../types';
+import { normalizeGeneratedClinicalReport } from '../utils/reportFormatting';
 import { pipeline, env } from '@huggingface/transformers';
 
 // Configuración de Transformers.js para STT local
@@ -677,8 +678,14 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         });
     }
     
-    setClinicalReport(reportData.internalReport || "");
-    setFinalConclusion(reportData.externalConclusion || "");
+    const normalizedInternalReport = normalizeGeneratedClinicalReport(
+      reportData.internalReport || "",
+      globalConfig.clinicalPrompt
+    );
+    const normalizedExternalConclusion = reportData.externalConclusion || "";
+
+    setClinicalReport(normalizedInternalReport);
+    setFinalConclusion(normalizedExternalConclusion);
     setIsGeneratingReport(false);
   };
 
@@ -692,11 +699,16 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     if (currentPatientData.id) {
         const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
         try {
+            const finalClinicalReport = normalizeGeneratedClinicalReport(
+              clinicalReport,
+              globalConfig.clinicalPrompt
+            );
+
             await DataService.updatePatient(currentPatientData.id, { 
                 dateAnswered: now, 
                 status: 'completed',
                 answers: finalAnswers,
-                conversationSummary: clinicalReport,
+                conversationSummary: finalClinicalReport,
                 finalConclusion: finalConclusion,
                 aiGeneratedAt: Date.now(),
                 aiInputAnswerCount: Object.keys(finalAnswers).length,

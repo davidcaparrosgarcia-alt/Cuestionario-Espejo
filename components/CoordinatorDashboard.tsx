@@ -94,6 +94,8 @@ const openSmsComposer = (phone: string, body: string, popupWindow: Window | null
     }
 };
 
+import { ReportBlock, formatGeneratedReportForDisplay, normalizeGeneratedClinicalReport, escapeHtml } from '../utils/reportFormatting';
+
 const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Pendiente';
     return new Date(timestamp).toLocaleDateString() + ' ' + new Date(timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
@@ -123,95 +125,6 @@ const getSoyBienestarContextText = (p: PatientData) => {
 
   return "";
 };
-
-const REPORT_TITLES = [
-  "VALORACIÓN DEL ESTADO EMOCIONAL PROFUNDO",
-  "DINÁMICA DE PENSAMIENTO Y PATRONES SUBCONSCIENTES",
-  "ESTRATEGIA TERAPÉUTICA PERSONALIZADA",
-  "ESTRATEGIA TERAPÉUTICA PERSONALIZADA (ASIGNACIÓN DE TRATAMIENTOS)",
-  "PRONÓSTICO DE EVOLUCIÓN"
-];
-
-const REPORT_SUBTITLES = [
-  "PROGRAMA RECOMENDADO",
-  "TRATAMIENTO PRINCIPAL",
-  "TRATAMIENTOS COMPLEMENTARIOS",
-  "RECURSOS WEB Y AUTOGUIADOS DE APOYO",
-  "RECURSOS WEB/AUTOGUIADOS DE APOYO",
-  "EJERCICIOS ENTRE SESIONES",
-  "ASPECTOS A OBSERVAR POR EL TERAPEUTA"
-];
-
-const escapeRegExp = (value: string) =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const formatGeneratedReportForDisplay = (text?: string) => {
-  if (!text) return [];
-
-  const sortedReportTitles = [...REPORT_TITLES].sort((a, b) => b.length - a.length);
-  const sortedReportSubtitles = [...REPORT_SUBTITLES].sort((a, b) => b.length - a.length);
-
-  let normalized = String(text || "")
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  for (const title of sortedReportTitles) {
-    const re = new RegExp(`\\s*${escapeRegExp(title)}\\s*[\\.:：]?\\s*`, "gi");
-    normalized = normalized.replace(re, `\n\n${title}\n\n`);
-  }
-
-  for (const title of sortedReportSubtitles) {
-    const re = new RegExp(`\\s*${escapeRegExp(title)}\\s*[\\.:：]?\\s*`, "gi");
-    normalized = normalized.replace(re, `\n\n${title}\n`);
-  }
-
-  normalized = normalized.replace(/\n{3,}/g, "\n\n").trim();
-
-  const rawBlocks = normalized
-    .split(/\n{2,}/)
-    .map(b => b.trim())
-    .filter(Boolean);
-
-  const blocks: { text: string; isTitle: boolean; isSubTitle?: boolean }[] = [];
-
-  for (const block of rawBlocks) {
-    const blockUpper = block.toUpperCase();
-    if (sortedReportTitles.includes(blockUpper)) {
-      blocks.push({ text: block, isTitle: true });
-      continue;
-    }
-    if (sortedReportSubtitles.includes(blockUpper)) {
-      blocks.push({ text: block, isTitle: false, isSubTitle: true });
-      continue;
-    }
-
-    let matchedSubtitle = false;
-    for (const sub of sortedReportSubtitles) {
-      if (blockUpper.startsWith(sub + "\n")) {
-        blocks.push({ text: block.substring(0, sub.length).trim(), isTitle: false, isSubTitle: true });
-        const remaining = block.substring(sub.length).trim();
-        if (remaining) blocks.push({ text: remaining, isTitle: false });
-        matchedSubtitle = true;
-        break;
-      }
-    }
-    if (matchedSubtitle) continue;
-
-    blocks.push({ text: block, isTitle: false });
-  }
-
-  return blocks;
-};
-
-const escapeHtml = (value: string) =>
-  String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 
 const buildSoyBienestarClinicalSummary = (patient: PatientData) => {
   const ctx: any = (patient as any).soybienestarContext || {};
@@ -1225,7 +1138,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const handleEditDetails = () => {
       if (selectedPatientDetails) {
-          setTempPatientDetails(selectedPatientDetails);
+          const detailsToEdit = { ...selectedPatientDetails };
+          if (detailsToEdit.conversationSummary) {
+              detailsToEdit.conversationSummary = normalizeGeneratedClinicalReport(detailsToEdit.conversationSummary, globalConfig?.clinicalPrompt);
+          }
+          setTempPatientDetails(detailsToEdit);
           setIsEditingDetails(true);
       }
   };
@@ -1513,7 +1430,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 <div class="section-title">Valoración Clínica / Coaching (Uso Interno)</div>
                 <div class="clinical-report">
                     ${p.conversationSummary ? 
-                        formatGeneratedReportForDisplay(p.conversationSummary).map(block => 
+                        formatGeneratedReportForDisplay(p.conversationSummary, globalConfig?.clinicalPrompt).map(block => 
                             block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px;">' + escapeHtml(block.text) + '</h4>' 
                                           : block.isSubTitle ? '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px;">' + escapeHtml(block.text) + '</h5>'
                                           : '<p style="margin-bottom: 12px; white-space: pre-line;">' + escapeHtml(block.text) + '</p>'
@@ -1917,7 +1834,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed p-4 bg-blue-50/30 rounded-xl border border-blue-100">
                                     {selectedPatientDetails.conversationSummary ? (
                                         <div className="space-y-4">
-                                          {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary).map((block, index) => (
+                                          {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary, globalConfig?.clinicalPrompt).map((block, index) => (
                                             block.isTitle ? (
                                               <h4 key={index} className="text-sm font-black uppercase tracking-widest text-blue-900 border-b border-blue-200 pb-1 mt-4">
                                                 {block.text}
