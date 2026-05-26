@@ -191,10 +191,21 @@ const App: React.FC = () => {
               }
           }
       } else if (hash === '#/coordinator') {
-        if (auth.currentUser) {
+        const isGranted = sessionStorage.getItem('radar_access_granted') === 'true';
+        
+        console.log("[ROUTE GUARD]", {
+          hash,
+          hasAuthUser: !!auth.currentUser,
+          isGranted
+        });
+
+        if (auth.currentUser && isGranted) {
           setView('COORDINATOR');
         } else {
+          setCoordinator(null);
+          setCoordinatorData(null);
           setView('LANDING');
+          setAuthStep('ACCESS_CODE');
           // Si intenta ir a coordinador sin login, lo mandamos al inicio (Access code o Email)
           window.location.hash = '';
         }

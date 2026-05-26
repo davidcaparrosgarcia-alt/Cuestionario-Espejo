@@ -923,7 +923,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const finishCompletedSession = () => {
     stopAudio();
     setShowExitConfirm(false);
-    window.location.href = "/";
+
+    try {
+      window.close();
+    } catch (e) {
+      console.warn("[FINISH SESSION] window.close blocked", e);
+    }
+
+    window.setTimeout(() => {
+      if (!window.closed) {
+        window.location.replace("https://soybienestar.es/report");
+      }
+    }, 300);
   };
 
   const handleBack = () => {
