@@ -925,6 +925,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setShowExitConfirm(false);
 
     try {
+      window.open("", "_self");
       window.close();
     } catch (e) {
       console.warn("[FINISH SESSION] window.close blocked", e);

@@ -124,68 +124,80 @@ const getSoyBienestarContextText = (p: PatientData) => {
   return "";
 };
 
+const REPORT_TITLES = [
+  "VALORACIÓN DEL ESTADO EMOCIONAL PROFUNDO",
+  "DINÁMICA DE PENSAMIENTO Y PATRONES SUBCONSCIENTES",
+  "ESTRATEGIA TERAPÉUTICA PERSONALIZADA",
+  "ESTRATEGIA TERAPÉUTICA PERSONALIZADA (ASIGNACIÓN DE TRATAMIENTOS)",
+  "PRONÓSTICO DE EVOLUCIÓN"
+];
+
+const REPORT_SUBTITLES = [
+  "PROGRAMA RECOMENDADO",
+  "TRATAMIENTO PRINCIPAL",
+  "TRATAMIENTOS COMPLEMENTARIOS",
+  "RECURSOS WEB Y AUTOGUIADOS DE APOYO",
+  "RECURSOS WEB/AUTOGUIADOS DE APOYO",
+  "EJERCICIOS ENTRE SESIONES",
+  "ASPECTOS A OBSERVAR POR EL TERAPEUTA"
+];
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const formatGeneratedReportForDisplay = (text?: string) => {
   if (!text) return [];
 
-  const normalized = String(text)
+  let normalized = String(text || "")
     .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  const lines = normalized.split("\n");
+  for (const title of REPORT_TITLES) {
+    const re = new RegExp(`\\s*${escapeRegExp(title)}\\.?\\s*`, "gi");
+    normalized = normalized.replace(re, `\n\n${title}\n\n`);
+  }
 
-  const blocks: { text: string; isTitle: boolean }[] = [];
-  let currentParagraph: string[] = [];
+  for (const title of REPORT_SUBTITLES) {
+    const re = new RegExp(`\\s*${escapeRegExp(title)}\\.?\\s*`, "gi");
+    normalized = normalized.replace(re, `\n\n${title}\n`);
+  }
 
-  const flushParagraph = () => {
-    const paragraph = currentParagraph.join(" ").trim();
-    if (paragraph) {
-      blocks.push({ text: paragraph, isTitle: false });
+  normalized = normalized.replace(/\n{3,}/g, "\n\n").trim();
+
+  const rawBlocks = normalized
+    .split(/\n{2,}/)
+    .map(b => b.trim())
+    .filter(Boolean);
+
+  const blocks: { text: string; isTitle: boolean; isSubTitle?: boolean }[] = [];
+
+  for (const block of rawBlocks) {
+    const blockUpper = block.toUpperCase();
+    if (REPORT_TITLES.includes(blockUpper)) {
+      blocks.push({ text: block, isTitle: true });
+      continue;
     }
-    currentParagraph = [];
-  };
-
-  const looksLikeTitle = (line: string) => {
-    const clean = line.trim();
-    if (!clean) return false;
-
-    // Título probable si:
-    // - está en mayúsculas
-    // - no es demasiado largo
-    // - no termina en punto
-    // - tiene al menos 2 palabras
-    const letters = clean.replace(/[^A-ZÁÉÍÓÚÜÑ]/g, "");
-    const hasLetters = letters.length >= 6;
-    const isMostlyUppercase = clean === clean.toUpperCase();
-    const wordCount = clean.split(/\s+/).length;
-
-    return (
-      hasLetters &&
-      isMostlyUppercase &&
-      wordCount >= 2 &&
-      clean.length <= 90 &&
-      !clean.endsWith(".")
-    );
-  };
-
-  lines.forEach(line => {
-    const clean = line.trim();
-
-    if (!clean) {
-      flushParagraph();
-      return;
+    if (REPORT_SUBTITLES.includes(blockUpper)) {
+      blocks.push({ text: block, isTitle: false, isSubTitle: true });
+      continue;
     }
 
-    if (looksLikeTitle(clean)) {
-      flushParagraph();
-      blocks.push({ text: clean, isTitle: true });
-      return;
+    let matchedSubtitle = false;
+    for (const sub of REPORT_SUBTITLES) {
+      if (blockUpper.startsWith(sub + "\n")) {
+        blocks.push({ text: block.substring(0, sub.length).trim(), isTitle: false, isSubTitle: true });
+        const remaining = block.substring(sub.length).trim();
+        if (remaining) blocks.push({ text: remaining, isTitle: false });
+        matchedSubtitle = true;
+        break;
+      }
     }
+    if (matchedSubtitle) continue;
 
-    currentParagraph.push(clean);
-  });
-
-  flushParagraph();
+    blocks.push({ text: block, isTitle: false });
+  }
 
   return blocks;
 };
@@ -1491,7 +1503,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 <div class="clinical-report">
                     ${p.conversationSummary ? 
                         formatGeneratedReportForDisplay(p.conversationSummary).map(block => 
-                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 20px; margin-bottom: 10px;">' + block.text + '</h4>' 
+                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px;">' + block.text + '</h4>' 
+                                          : block.isSubTitle ? '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px;">' + block.text + '</h5>'
                                           : '<p style="margin-bottom: 12px; white-space: pre-line;">' + block.text + '</p>'
                         ).join('')
                     : (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId || (p as any).soybienestarContext || (p as any).preInformeSoyBienestar) ? 
@@ -1898,6 +1911,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               <h4 key={index} className="text-sm font-black uppercase tracking-widest text-blue-900 border-b border-blue-200 pb-1 mt-4">
                                                 {block.text}
                                               </h4>
+                                            ) : block.isSubTitle ? (
+                                              <h5 key={index} className="text-xs font-black uppercase tracking-widest text-amber-700 mt-3 mb-1">
+                                                {block.text}
+                                              </h5>
                                             ) : (
                                               <p key={index} className="text-sm leading-relaxed text-slate-700 whitespace-pre-line">
                                                 {block.text}
