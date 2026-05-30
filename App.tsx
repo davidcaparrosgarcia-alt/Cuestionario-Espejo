@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CoordinatorDashboard } from './components/CoordinatorDashboard';
 import { PatientInterface } from './components/PatientInterface';
 import { ConclusionPatientView } from './components/ConclusionPatientView';
@@ -64,6 +64,9 @@ const App: React.FC = () => {
   
   const [coordinatorData, setCoordinatorData] = useState<AuthUser | null>(null);
 
+  const [accessGrantedThisLoad, setAccessGrantedThisLoad] = useState(false);
+  const accessGrantedThisLoadRef = useRef(false);
+
   useEffect(() => {
     const fetchConfig = async () => {
         try {
@@ -78,16 +81,11 @@ const App: React.FC = () => {
     fetchConfig();
 
     // Verificar si ya metió el código de acceso previamente en esta sesión
-    const accessGranted = sessionStorage.getItem('radar_access_granted') === 'true';
-    if (accessGranted) {
-        setAuthStep('SOCIAL_LOGIN');
-    } else {
-        setAuthStep('ACCESS_CODE');
-    }
+    setAuthStep('ACCESS_CODE');
 
     // Escuchar cambios en el estado de autenticación de Firebase
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      const isGranted = sessionStorage.getItem('radar_access_granted') === 'true';
+      const isGranted = accessGrantedThisLoadRef.current;
       const hash = window.location.hash;
       const isPatientSession = hash.startsWith('#/session') || hash.startsWith('#/conclusion');
       
@@ -191,7 +189,7 @@ const App: React.FC = () => {
               }
           }
       } else if (hash === '#/coordinator') {
-        const isGranted = sessionStorage.getItem('radar_access_granted') === 'true';
+        const isGranted = accessGrantedThisLoadRef.current;
 
         if (auth.currentUser && isGranted) {
           setView('COORDINATOR');
@@ -226,7 +224,8 @@ const App: React.FC = () => {
           return;
       }
       if (accessCodeInput === globalAccessCode) {
-          sessionStorage.setItem('radar_access_granted', 'true');
+          setAccessGrantedThisLoad(true);
+          accessGrantedThisLoadRef.current = true;
           setAuthStep('SOCIAL_LOGIN');
           showToast("Código aceptado");
           
@@ -319,7 +318,8 @@ const App: React.FC = () => {
       await signOut(auth);
       setCoordinator(null);
       setView('LANDING');
-      sessionStorage.removeItem('radar_access_granted'); 
+      setAccessGrantedThisLoad(false);
+      accessGrantedThisLoadRef.current = false;
       setAuthStep('ACCESS_CODE');
       setAccessCodeInput('');
       window.location.hash = '';

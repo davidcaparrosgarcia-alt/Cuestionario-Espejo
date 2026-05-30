@@ -126,6 +126,21 @@ const getSoyBienestarContextText = (p: PatientData) => {
   return "";
 };
 
+const isSoyBienestarPatient = (p: PatientData) =>
+  p.source === 'soybienestar' ||
+  (p as any).directAccessCreated ||
+  !!p.soybienestarUid ||
+  !!p.sourceRequestId ||
+  !!(p as any).soybienestarContext ||
+  !!(p as any).preInformeSoyBienestar;
+
+const getInitialObservationsForDisplay = (p: PatientData) => {
+  if (isSoyBienestarPatient(p)) {
+    return `<div style="color: #b45309; font-style: italic;">Origen SoyBienestar.<br/>Ficha generada con los datos iniciales de SoyBienestar, pendiente de respuestas del cuestionario.<br/>Estado: ${p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized' ? 'Completado' : 'Pendiente'}</div>`;
+  }
+  return escapeHtml(p.observaciones || "Sin observaciones.");
+};
+
 const buildSoyBienestarClinicalSummary = (patient: PatientData) => {
   const ctx: any = (patient as any).soybienestarContext || {};
   const internal = ctx.latestInternalTherapistReport || {};
@@ -1351,10 +1366,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 .patient-data-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
                 .patient-data-table td { vertical-align: top; padding-right: 20px; padding-bottom: 20px; }
                 .label { font-size: 10px; font-weight: bold; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px; display: block; }
-                .value { font-size: 14px; font-weight: bold; color: #0f172a; line-height: 1.4; }
+                .value { font-size: 14px; font-weight: bold; color: #0f172a; line-height: 1.4; word-break: break-word; }
                 .observations-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 10px; font-style: italic; }
                 .clinical-report { background: #f0f7ff; border-left: 5px solid #2563eb; padding: 30px; border-radius: 0 10px 10px 0; font-size: 14px; line-height: 1.8; text-align: justify; margin-top: 10px; }
                 .footer { margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 20px; text-align: center; font-size: 10px; color: #94a3b8; }
+                h4, h5 { page-break-after: avoid; break-after: avoid; }
+                p { orphans: 4; widows: 4; }
+                .print-section-block { page-break-inside: avoid; break-inside: avoid; }
                 @media print {
                     .clinical-report { margin-top: 10px; }
                     .section { margin-bottom: 20px; }
@@ -1385,19 +1403,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             <span class="label">Edad y Sexo</span>
                             <span class="value">${p.edad} años / ${p.sexo}</span>
                         </td>
-                        <td style="width: 33%;">
+                        <td style="width: 34%;">
                             <span class="label">Teléfono</span>
                             <span class="value">${p.telefono || 'N/A'}</span>
                         </td>
                     </tr>
                     <tr>
-                        <td>
+                        <td colspan="2">
                             <span class="label">Email</span>
                             <span class="value">${p.email}</span>
-                        </td>
-                        <td>
-                             <span class="label">PIN ACCESO CONCLUSIÓN</span>
-                             <span class="value" style="color: #2563eb;">${p.accessPin ? p.accessPin.toUpperCase() : 'N/A'}</span>
                         </td>
                         <td>
                             <span class="label">Estado Actual</span>
@@ -1414,8 +1428,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             <span class="value">${formatDate(p.dateAnswered)}</span>
                         </td>
                         <td>
-                            <span class="label">ID Registro</span>
-                            <span class="value" style="font-size: 10px; font-family: monospace;">${p.id.substring(0, 12)}...</span>
+                             <span class="label">PIN ACCESO CONCLUSIÓN</span>
+                             <span class="value" style="color: #2563eb;">${p.accessPin ? p.accessPin.toUpperCase() : 'N/A'}</span>
                         </td>
                     </tr>
                 </table>
@@ -1423,20 +1437,42 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
             <div class="section">
                 <div class="section-title">Observaciones Iniciales</div>
-                <div class="observations-box">${p.observaciones || "Sin observaciones."}</div>
+                <div class="observations-box">${getInitialObservationsForDisplay(p)}</div>
             </div>
             
             <div class="section">
                 <div class="section-title">Valoración Clínica / Coaching (Uso Interno)</div>
                 <div class="clinical-report">
                     ${p.conversationSummary ? 
-                        formatGeneratedReportForDisplay(p.conversationSummary, globalConfig?.clinicalPrompt).map(block => 
-                            block.isTitle ? '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px;">' + escapeHtml(block.text) + '</h4>' 
-                                          : block.isSubTitle ? '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px;">' + escapeHtml(block.text) + '</h5>'
-                                          : '<p style="margin-bottom: 12px; white-space: pre-line;">' + escapeHtml(block.text) + '</p>'
-                        ).join('')
+                        (() => {
+                            const blocks = formatGeneratedReportForDisplay(p.conversationSummary, globalConfig?.clinicalPrompt);
+                            let outHtml = '';
+                            let i = 0;
+                            while (i < blocks.length) {
+                                const block = blocks[i];
+                                if (block.isTitle || block.isSubTitle) {
+                                    let groupHtml = '';
+                                    if (block.isTitle) {
+                                        groupHtml += '<h4 style="font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e3a8a; border-bottom: 1px solid #1e3a8a; padding-bottom: 4px; margin-top: 22px; margin-bottom: 12px; page-break-after: avoid; break-after: avoid;">' + escapeHtml(block.text) + '</h4>';
+                                    } else {
+                                        groupHtml += '<h5 style="font-size: 12px; font-weight: 800; text-transform: uppercase; color: #92400e; margin-top: 16px; margin-bottom: 6px; page-break-after: avoid; break-after: avoid;">' + escapeHtml(block.text) + '</h5>';
+                                    }
+                                    
+                                    if (i + 1 < blocks.length && !blocks[i+1].isTitle && !blocks[i+1].isSubTitle) {
+                                        i++;
+                                        groupHtml += '<p style="margin-bottom: 12px; white-space: pre-line; orphans: 4; widows: 4;">' + escapeHtml(blocks[i].text) + '</p>';
+                                    }
+                                    
+                                    outHtml += '<div class="print-section-block" style="page-break-inside: avoid; break-inside: avoid;">' + groupHtml + '</div>';
+                                } else {
+                                    outHtml += '<p style="margin-bottom: 12px; white-space: pre-line; orphans: 4; widows: 4;">' + escapeHtml(block.text) + '</p>';
+                                }
+                                i++;
+                            }
+                            return outHtml;
+                        })()
                     : (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId || (p as any).soybienestarContext || (p as any).preInformeSoyBienestar) ? 
-                        '<div style="margin-bottom: 15px; color: #b45309; font-style: italic; padding-bottom: 8px; border-bottom: 1px solid #fcd34d;">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>\n<div style="white-space: pre-line;">' + buildSoyBienestarClinicalSummary(p) + '</div>'
+                        '<div style="white-space: pre-line;">' + escapeHtml(buildSoyBienestarClinicalSummary(p)) + '</div>'
                     : "Pendiente de valoración técnica."}
                 </div>
             </div>
@@ -1768,9 +1804,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <textarea className="w-full p-3 border rounded-lg bg-slate-50 h-24" value={tempPatientDetails.observaciones} onChange={e => setTempPatientDetails({...tempPatientDetails, observaciones: e.target.value})} />
                              </div>
 
-                             <div className="space-y-1">
+                             <div className="space-y-2">
                                 <label className="text-xs font-bold text-slate-500 uppercase">Valoración Clínica / Coaching (Uso Interno)</label>
-                                <textarea className="w-full p-3 border rounded-lg bg-slate-50 h-64 font-medium leading-relaxed" value={tempPatientDetails.conversationSummary} onChange={e => setTempPatientDetails({...tempPatientDetails, conversationSummary: e.target.value})} />
+                                <textarea className="w-full p-4 border-2 border-slate-200 outline-none focus:border-blue-500 rounded-xl bg-slate-50 h-[65vh] min-h-[500px] text-base font-medium leading-relaxed resize-y text-slate-800" value={tempPatientDetails.conversationSummary} onChange={e => setTempPatientDetails({...tempPatientDetails, conversationSummary: e.target.value})} />
                              </div>
                          </div>
                     ) : (
@@ -1808,8 +1844,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     <div className="col-span-2 mt-2">
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones Iniciales</span>
                                         <div className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-100">
-                                            {(selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) && (
-                                                <div className="mb-3 font-medium text-amber-800">
+                                            {isSoyBienestarPatient(selectedPatientDetails) ? (
+                                                <div className="font-medium text-amber-800 italic">
                                                     Origen SoyBienestar.<br/>
                                                     {(() => {
                                                         const hasQuestionnaireAnswers = selectedPatientDetails.answers && Object.keys(selectedPatientDetails.answers).length > 0;
@@ -1818,12 +1854,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                         if (hasQuestionnaireAnswers && !isQuestionnaireCompleted) return "Ficha generada con datos de SoyBienestar y respuestas parciales del cuestionario.";
                                                         return "Ficha generada con datos de SoyBienestar y respuestas del Cuestionario Espejo.";
                                                     })()}<br/>
-                                                    Estado: {selectedPatientDetails.status}.
+                                                    Estado: {selectedPatientDetails.status === 'completed' || selectedPatientDetails.status === 'concluded' || selectedPatientDetails.status === 'finalized' ? 'Completado' : 'Pendiente'}
+                                                </div>
+                                            ) : (
+                                                <div className="italic">
+                                                    {selectedPatientDetails.observaciones || "Sin observaciones registradas."}
                                                 </div>
                                             )}
-                                            <div className="italic">
-                                                {selectedPatientDetails.observaciones || "Sin observaciones registradas."}
-                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1850,11 +1887,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                             )
                                           ))}
                                         </div>
-                                    ) : (selectedPatientDetails.source === 'soybienestar' || selectedPatientDetails.directAccessCreated || selectedPatientDetails.soybienestarUid || selectedPatientDetails.sourceRequestId || selectedPatientDetails.soybienestarContext || selectedPatientDetails.preInformeSoyBienestar) ? (
-                                        <>
-                                            <div className="mb-4 text-amber-700 italic border-b border-amber-200 pb-2">Valoración preliminar basada en los datos recibidos desde SoyBienestar. La valoración completa se generará cuando el cuestionario esté completado y la IA disponga de las respuestas.</div>
-                                            <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
-                                        </>
+                                    ) : isSoyBienestarPatient(selectedPatientDetails) ? (
+                                        <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
                                     ) : (
                                         <div className="whitespace-pre-line">Pendiente de valoración.</div>
                                     )}
