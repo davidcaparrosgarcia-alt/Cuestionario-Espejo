@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 
@@ -15,7 +15,16 @@ try {
   // Inicialización segura: solo si hay configuración válida
   if (firebaseConfig.apiKey && firebaseConfig.projectId) {
     app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-    db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+    
+    try {
+      db = initializeFirestore(app, {
+        experimentalForceLongPolling: true
+      }, (firebaseConfig as any).firestoreDatabaseId);
+    } catch (e) {
+      // Si ya estaba inicializado, obtenemos la instancia
+      db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+    }
+    
     storage = getStorage(app);
     auth = getAuth(app);
     console.log("Firebase inicializado correctamente");

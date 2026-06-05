@@ -464,7 +464,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     import('../firebase-applet-config.json').then(config => {
       console.log("[CLIENT FIRESTORE CONFIG]", {
         projectId: config.projectId,
-        firestoreDatabaseId: config.firestoreDatabaseId,
+        firestoreDatabaseId: (config as any).firestoreDatabaseId,
         authDomain: config.authDomain
       });
     });
