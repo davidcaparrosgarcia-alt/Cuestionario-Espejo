@@ -1113,6 +1113,11 @@ app.post("/api/send-questionnaire-email", requireCoordinatorAuth, async (req: an
       return res.status(400).json({ error: "Faltan campos obligatorios (patientId, to, subject, body)" });
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(to)) {
+      return res.status(400).json({ error: "Email inválido" });
+    }
+
     const patientRef = db.collection("patients").doc(patientId);
     const patientDoc = await patientRef.get();
 
@@ -1120,7 +1125,23 @@ app.post("/api/send-questionnaire-email", requireCoordinatorAuth, async (req: an
       return res.status(404).json({ error: "Paciente no encontrado" });
     }
 
-    const htmlBody = body.replace(/\n/g, "<br>");
+    const patientData = patientDoc.data();
+    const coordinatorEmail = (req.user?.email || "").toLowerCase();
+    
+    if (patientData?.coordinatorEmail && patientData.coordinatorEmail.toLowerCase() !== coordinatorEmail) {
+      return res.status(403).json({ error: "No tienes permiso para modificar este paciente" });
+    }
+
+    function escapeEmailHtml(value: string) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    const htmlBody = escapeEmailHtml(body).replace(/\n/g, "<br>");
     const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo - SoyBienestar" <soybienestar.es@gmail.com>';
 
     await transporter.sendMail({

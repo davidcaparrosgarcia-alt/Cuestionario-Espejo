@@ -286,6 +286,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [emailModalData, setEmailModalData] = useState({ patientId: '', to: '', subject: '', body: '' });
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailModalError, setEmailModalError] = useState('');
+  const [pendingRequestIdForEmail, setPendingRequestIdForEmail] = useState<string | null>(null);
 
   // Estados para filtros de fecha
   const [dateStart, setDateStart] = useState('');
@@ -884,6 +885,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     let previousAccessPin: string | undefined;
     let accessPinMigratedAt: number | undefined;
 
+    const emailWillBeSentInternally = sendMethods.email;
+
     if (isNewRecord) {
         accessPin = validProposed || generateAccessCode(4);
         dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
@@ -938,6 +941,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                    .replace(/\[Link\]/g, url)
                    .replace(/\[PIN\]/g, accessPin.toUpperCase());
 
+        const newStatus = emailWillBeSentInternally ? 'pending' : 'sent';
+        const newDateSent = emailWillBeSentInternally ? undefined : now;
+
         if (isNewRecord) {
             // If we are replacing, delete the old record first (soft delete)
             if (forceAction === 'replace' && existingRecord) {
@@ -951,20 +957,23 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               telefono: fullPhone,
               id: dbPatientId, 
               coordinatorEmail: profile.email,
-              status: 'sent', 
-              dateSent: now,
+              status: newStatus, 
               accessPin: accessPin,
               proposedAccessCode: proposedAccessCode || undefined,
               accessCodeFormat: "v2_4_alphanumeric" as const
             };
+            if (newDateSent) {
+                newRecord.dateSent = newDateSent;
+            }
             
             setRegistry(prev => [...prev, newRecord]);
             await DataService.savePatient(newRecord);
         } else {
-            const updatedRecord = { 
+            const updatedRecordStatus = emailWillBeSentInternally ? existingRecord!.status : 'sent';
+            
+            const updatedRecord: any = { 
                 ...existingRecord!, 
-                dateSent: now, 
-                status: 'sent' as const,
+                status: updatedRecordStatus,
                 email: patient.email,
                 telefono: fullPhone,
                 edad: patient.edad,
@@ -979,10 +988,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 soybienestarContext: patient.soybienestarContext || existingRecord!.soybienestarContext,
                 preferredChannels: patient.preferredChannels || existingRecord!.preferredChannels
             };
+
+            if (newDateSent) {
+                updatedRecord.dateSent = newDateSent;
+            }
+
             setRegistry(prev => prev.map(r => r.id === dbPatientId ? updatedRecord : r));
-            await DataService.updatePatient(dbPatientId, { 
-                dateSent: now, 
-                status: 'sent',
+            
+            const dbPayload: any = { 
+                status: updatedRecordStatus,
                 email: patient.email,
                 telefono: fullPhone,
                 edad: patient.edad,
@@ -995,7 +1009,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 soybienestarUid: patient.soybienestarUid || existingRecord!.soybienestarUid,
                 soybienestarContext: patient.soybienestarContext || existingRecord!.soybienestarContext,
                 preferredChannels: patient.preferredChannels || existingRecord!.preferredChannels
-            });
+            };
+
+            if (newDateSent) {
+                dbPayload.dateSent = newDateSent;
+            }
+
+            await DataService.updatePatient(dbPatientId, dbPayload);
         }
 
         let subject = isResend ? "Actualización Importante: Cuestionario Espejo" : "Tu enlace para el Cuestionario Espejo";
@@ -1010,6 +1030,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 body
             });
             setShowEmailModal(true);
+            
+            if (selectedPendingRequestId) {
+                setPendingRequestIdForEmail(selectedPendingRequestId);
+            }
         }
 
         if (sendMethods.whatsapp && fullPhone) {
@@ -1024,7 +1048,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             navigator.clipboard.writeText(body).catch(() => {});
         }
 
-        if (selectedPendingRequestId) {
+        if (!sendMethods.email && selectedPendingRequestId) {
             setPendingRequests(prev => prev.filter(r => r.id !== selectedPendingRequestId));
             try {
                 const user = auth.currentUser;
@@ -1096,6 +1120,23 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               return p;
           }));
           
+          if (pendingRequestIdForEmail) {
+              setPendingRequests(prev => prev.filter(r => r.id !== pendingRequestIdForEmail));
+              try {
+                  const user = auth.currentUser;
+                  if (user) {
+                      const token = await user.getIdToken();
+                      fetch(`/api/patient-requests/${pendingRequestIdForEmail}`, { 
+                          method: 'DELETE',
+                          headers: { 'Authorization': `Bearer ${token}` }
+                      }).catch(e => console.error("Error erasing pending request", e));
+                  }
+              } catch (delErr) {
+                  console.error("Error al marcar como procesada la petición tras email", delErr);
+              }
+              setPendingRequestIdForEmail(null);
+          }
+
           setShowEmailModal(false);
           triggerToast("Correo enviado correctamente");
           
