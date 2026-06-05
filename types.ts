@@ -40,6 +40,12 @@ export interface PatientData {
   lastAnsweredQuestionId?: string;
   lastAnsweredQuestionIndex?: number;
 
+  lastQuestionnaireEmailSentAt?: number;
+  lastQuestionnaireEmailSentTo?: string;
+  lastQuestionnaireEmailSubject?: string;
+  lastQuestionnaireEmailStatus?: string;
+  lastQuestionnaireEmailSentBy?: string;
+
   // Borrado lógico
   deletedAt?: number | null;
   deletedBy?: string | null;

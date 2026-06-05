@@ -279,6 +279,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastGeneratedPin, setLastGeneratedPin] = useState<string | null>(null);
+  const [lastGeneratedPatientId, setLastGeneratedPatientId] = useState<string | null>(null);
+
+  // Estados para Modal de Envío de Email
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailModalData, setEmailModalData] = useState({ patientId: '', to: '', subject: '', body: '' });
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailModalError, setEmailModalError] = useState('');
 
   // Estados para filtros de fecha
   const [dateStart, setDateStart] = useState('');
@@ -823,14 +830,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
     
     const pendingWindows: {
-      email?: Window | null;
       whatsapp?: Window | null;
       sms?: Window | null;
     } = {};
-
-    if (sendMethods.email) {
-      pendingWindows.email = window.open('', '_blank');
-    }
 
     if (sendMethods.whatsapp && fullPhone) {
       pendingWindows.whatsapp = window.open('', '_blank');
@@ -922,6 +924,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
     
     setLastGeneratedPin(accessPin);
+    setLastGeneratedPatientId(dbPatientId);
 
     try {
         const baseUrl = window.location.origin + window.location.pathname;
@@ -1000,7 +1003,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         const smsBody = `Hola ${finalName.split(' ')[0]}, enlace: ${url} . CLAVE DE ACCESO: ${accessPin.toUpperCase()} (Guárdala).`;
 
         if (sendMethods.email) {
-            openEmailComposer(patient.email || '', subject, body, pendingWindows.email);
+            setEmailModalData({
+                patientId: dbPatientId,
+                to: patient.email || '',
+                subject,
+                body
+            });
+            setShowEmailModal(true);
         }
 
         if (sendMethods.whatsapp && fullPhone) {
@@ -1040,6 +1049,62 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         setIsGenerating(false);
         setShowDuplicateModal(false);
     }
+  };
+
+  const handleSendEmailInternal = async () => {
+      setIsSendingEmail(true);
+      setEmailModalError('');
+      
+      try {
+          const user = auth.currentUser;
+          if (!user) throw new Error("No autenticado");
+          
+          const token = await user.getIdToken();
+          
+          const res = await fetch("/api/send-questionnaire-email", {
+              method: 'POST',
+              headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}` 
+              },
+              body: JSON.stringify({
+                  patientId: emailModalData.patientId,
+                  to: emailModalData.to,
+                  subject: emailModalData.subject,
+                  body: emailModalData.body
+              })
+          });
+          
+          const data = await res.json();
+          if (!res.ok) {
+              throw new Error(data.error || "Error al enviar el email");
+          }
+          
+          // Actualizar el local registry
+          setRegistry(prev => prev.map(p => {
+              if (p.id === emailModalData.patientId) {
+                  return {
+                      ...p,
+                      status: 'sent',
+                      dateSent: data.updatedFields?.dateSent || Date.now(),
+                      lastQuestionnaireEmailSentAt: data.updatedFields?.lastQuestionnaireEmailSentAt || Date.now(),
+                      lastQuestionnaireEmailSentTo: emailModalData.to,
+                      lastQuestionnaireEmailSubject: emailModalData.subject,
+                      lastQuestionnaireEmailStatus: 'sent'
+                  };
+              }
+              return p;
+          }));
+          
+          setShowEmailModal(false);
+          triggerToast("Correo enviado correctamente");
+          
+      } catch (err: any) {
+          console.error("Error sending email:", err);
+          setEmailModalError(err.message || "Ocurrió un error al enviar el correo.");
+      } finally {
+          setIsSendingEmail(false);
+      }
   };
 
   const handleResendFromDetails = () => {
@@ -1921,6 +1986,69 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           </div>
       )}
 
+      {/* EMAIL MODAL */}
+      {showEmailModal && (
+          <div className="fixed inset-0 z-[200] bg-slate-900/40 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+              <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg border border-slate-200 overflow-hidden flex flex-col">
+                  <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                          <i className="fas fa-envelope text-blue-500"></i> Enviar Enlace por Email
+                      </h3>
+                      <button onClick={() => setShowEmailModal(false)} className="text-slate-400 hover:text-slate-600">
+                          <i className="fas fa-times"></i>
+                      </button>
+                  </div>
+                  
+                  <div className="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
+                      {emailModalError && (
+                          <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
+                              <i className="fas fa-exclamation-triangle mr-2"></i> {emailModalError}
+                          </div>
+                      )}
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Para</label>
+                          <input 
+                              type="email" 
+                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-colors"
+                              value={emailModalData.to}
+                              onChange={(e) => setEmailModalData({...emailModalData, to: e.target.value})}
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Asunto</label>
+                          <input 
+                              type="text" 
+                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-colors font-medium text-slate-700"
+                              value={emailModalData.subject}
+                              onChange={(e) => setEmailModalData({...emailModalData, subject: e.target.value})}
+                          />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Mensaje</label>
+                          <textarea 
+                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 transition-colors h-48 resize-y whitespace-pre-wrap text-sm text-slate-700"
+                              value={emailModalData.body}
+                              onChange={(e) => setEmailModalData({...emailModalData, body: e.target.value})}
+                          />
+                      </div>
+                  </div>
+                  
+                  <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
+                      <Button variant="outline" className="flex-1" onClick={() => setShowEmailModal(false)} disabled={isSendingEmail}>
+                          Cancelar
+                      </Button>
+                      <Button className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-70 disabled:cursor-not-allowed" onClick={handleSendEmailInternal} disabled={isSendingEmail}>
+                          {isSendingEmail ? (
+                              <><i className="fas fa-spinner fa-spin mr-2"></i> Enviando...</>
+                          ) : (
+                              <><i className="fas fa-paper-plane mr-2"></i> Enviar correo</>
+                          )}
+                      </Button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* DUPLICATE MODAL */}
       {showDuplicateModal && duplicatePatientRecord && (
           <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
@@ -2583,12 +2711,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <button 
                                     onClick={() => {
                                         const subject = "Tu enlace para el Cuestionario Espejo";
-                                        const body = `Hola ${patient.nombre.split(' ')[0]},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin?.toUpperCase()}`;
-                                        openEmailComposer(patient.email || '', subject, body, null);
+                                        const body = `Hola ${patient.nombre?.split(' ')[0] || ''},\n\nAquí tienes tu enlace directo:\n${linkGenerated}\n\nPIN: ${lastGeneratedPin?.toUpperCase()}`;
+                                        setEmailModalData({
+                                            patientId: lastGeneratedPatientId || '',
+                                            to: patient.email || '',
+                                            subject,
+                                            body
+                                        });
+                                        setShowEmailModal(true);
                                     }}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all"
                                 >
-                                    <i className="fas fa-envelope text-red-400"></i> Gmail
+                                    <i className="fas fa-envelope text-red-400"></i> Email
                                 </button>
                             )}
                             {sendMethods.whatsapp && (

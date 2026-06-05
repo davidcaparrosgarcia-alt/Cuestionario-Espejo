@@ -1105,6 +1105,51 @@ app.post("/api/patients/:id/restore", requireCoordinatorAuth, async (req, res) =
   }
 });
 
+app.post("/api/send-questionnaire-email", requireCoordinatorAuth, async (req: any, res) => {
+  try {
+    const { patientId, to, subject, body } = req.body;
+
+    if (!patientId || !to || !subject || !body) {
+      return res.status(400).json({ error: "Faltan campos obligatorios (patientId, to, subject, body)" });
+    }
+
+    const patientRef = db.collection("patients").doc(patientId);
+    const patientDoc = await patientRef.get();
+
+    if (!patientDoc.exists) {
+      return res.status(404).json({ error: "Paciente no encontrado" });
+    }
+
+    const htmlBody = body.replace(/\n/g, "<br>");
+    const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo - SoyBienestar" <soybienestar.es@gmail.com>';
+
+    await transporter.sendMail({
+      from: fromAddress,
+      to,
+      subject,
+      text: body,
+      html: htmlBody,
+    });
+
+    const updatePayload = {
+      lastQuestionnaireEmailSentAt: Date.now(),
+      lastQuestionnaireEmailSentTo: to,
+      lastQuestionnaireEmailSubject: subject,
+      lastQuestionnaireEmailStatus: "sent",
+      lastQuestionnaireEmailSentBy: req.user?.email || req.user?.uid || "coordinator",
+      status: "sent",
+      dateSent: Date.now()
+    };
+
+    await patientRef.update(updatePayload);
+
+    res.json({ success: true, updatedFields: updatePayload });
+  } catch (error: any) {
+    console.error("Error enviando email del cuestionario:", error);
+    res.status(500).json({ success: false, error: error.message || "Error al enviar el email" });
+  }
+});
+
 // Legacy endpoint. Prefer /api/notify-soybienestar-status
 app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
   const patient = req.body.patient;
