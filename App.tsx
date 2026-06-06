@@ -26,6 +26,7 @@ const MASTER_USER = {
 };
 
 const DEFAULT_ACCESS_CODE = '66099';
+const ACCESS_VERIFIED_SESSION_KEY = 'ce_access_verified_this_tab';
 
 // Decodificador seguro para leer el Base64 generado en CoordinatorDashboard (con soporte UTF-8)
 const safeAtob = (str: string) => {
@@ -56,16 +57,22 @@ const App: React.FC = () => {
   const [conclusionPatientId, setConclusionPatientId] = useState<string | null>(null);
   const [globalAccessCode, setGlobalAccessCode] = useState(DEFAULT_ACCESS_CODE);
 
+  const initialAccessGranted =
+    typeof window !== 'undefined' &&
+    window.sessionStorage.getItem(ACCESS_VERIFIED_SESSION_KEY) === 'true';
+
+  const [accessGrantedThisLoad, setAccessGrantedThisLoad] = useState(initialAccessGranted);
+  const accessGrantedThisLoadRef = useRef(initialAccessGranted);
+
   // Nuevo estado ACCESS_CODE al inicio
-  const [authStep, setAuthStep] = useState<'ACCESS_CODE' | 'SOCIAL_LOGIN'>('ACCESS_CODE');
+  const [authStep, setAuthStep] = useState<'ACCESS_CODE' | 'SOCIAL_LOGIN'>(
+    initialAccessGranted ? 'SOCIAL_LOGIN' : 'ACCESS_CODE'
+  );
   
   const [accessCodeInput, setAccessCodeInput] = useState('');
   const [toast, setToast] = useState({ show: false, msg: '' });
   
   const [coordinatorData, setCoordinatorData] = useState<AuthUser | null>(null);
-
-  const [accessGrantedThisLoad, setAccessGrantedThisLoad] = useState(false);
-  const accessGrantedThisLoadRef = useRef(false);
 
   useEffect(() => {
     const fetchConfig = async () => {
@@ -81,7 +88,7 @@ const App: React.FC = () => {
     fetchConfig();
 
     // Verificar si ya metió el código de acceso previamente en esta sesión
-    setAuthStep('ACCESS_CODE');
+    setAuthStep(initialAccessGranted ? 'SOCIAL_LOGIN' : 'ACCESS_CODE');
 
     // Escuchar cambios en el estado de autenticación de Firebase
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -226,7 +233,9 @@ const App: React.FC = () => {
       if (accessCodeInput === globalAccessCode) {
           setAccessGrantedThisLoad(true);
           accessGrantedThisLoadRef.current = true;
+          window.sessionStorage.setItem(ACCESS_VERIFIED_SESSION_KEY, 'true');
           setAuthStep('SOCIAL_LOGIN');
+          setAccessCodeInput('');
           showToast("Código aceptado");
           
           // Si ya está logueado en Firebase, forzamos la carga de datos
@@ -263,6 +272,9 @@ const App: React.FC = () => {
       } else {
           showToast("Código de acceso incorrecto");
           setAccessCodeInput('');
+          window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
+          setAccessGrantedThisLoad(false);
+          accessGrantedThisLoadRef.current = false;
       }
   };
 
@@ -318,6 +330,7 @@ const App: React.FC = () => {
       await signOut(auth);
       setCoordinator(null);
       setView('LANDING');
+      window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
       setAccessGrantedThisLoad(false);
       accessGrantedThisLoadRef.current = false;
       setAuthStep('ACCESS_CODE');
@@ -359,7 +372,10 @@ const App: React.FC = () => {
                         className="text-center tracking-[0.5em] text-lg"
                         value={accessCodeInput} 
                         onChange={e => setAccessCodeInput(e.target.value.replace(/\D/g, ''))} 
-                        onKeyPress={e => e.key === 'Enter' && handleAccessCodeSubmit()}
+                        onKeyDown={e => e.key === 'Enter' && handleAccessCodeSubmit()}
+                        autoComplete="new-password"
+                        name="ce-access-code-manual"
+                        inputMode="numeric"
                     />
                     <Button className="w-full mt-4 py-4 text-lg" onClick={handleAccessCodeSubmit}>Verificar</Button>
                 </Card>
