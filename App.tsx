@@ -27,6 +27,23 @@ const MASTER_USER = {
 
 const DEFAULT_ACCESS_CODE = '66099';
 const ACCESS_VERIFIED_SESSION_KEY = 'ce_access_verified_this_tab';
+const ACCESS_RELOAD_MARKER_KEY = 'ce_access_reload_marker';
+
+const getNavigationType = () => {
+  if (typeof window === 'undefined') return 'navigate';
+  const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  return nav?.type || 'navigate';
+};
+
+const shouldRestoreAccessAfterReload = () => {
+  if (typeof window === 'undefined') return false;
+
+  const navigationType = getNavigationType();
+  const hadVerifiedAccess = window.sessionStorage.getItem(ACCESS_VERIFIED_SESSION_KEY) === 'true';
+  const hadReloadMarker = window.sessionStorage.getItem(ACCESS_RELOAD_MARKER_KEY) === 'true';
+
+  return navigationType === 'reload' && hadVerifiedAccess && hadReloadMarker;
+};
 
 // Decodificador seguro para leer el Base64 generado en CoordinatorDashboard (con soporte UTF-8)
 const safeAtob = (str: string) => {
@@ -57,12 +74,16 @@ const App: React.FC = () => {
   const [conclusionPatientId, setConclusionPatientId] = useState<string | null>(null);
   const [globalAccessCode, setGlobalAccessCode] = useState(DEFAULT_ACCESS_CODE);
 
-  const initialAccessGranted =
-    typeof window !== 'undefined' &&
-    window.sessionStorage.getItem(ACCESS_VERIFIED_SESSION_KEY) === 'true';
+  const initialAccessGranted = shouldRestoreAccessAfterReload();
+
+  if (typeof window !== 'undefined' && !initialAccessGranted) {
+    window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
+    window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
+  }
 
   const [accessGrantedThisLoad, setAccessGrantedThisLoad] = useState(initialAccessGranted);
   const accessGrantedThisLoadRef = useRef(initialAccessGranted);
+  const accessCodeInputNameRef = useRef(`ce-manual-${Math.random().toString(36).slice(2)}`);
 
   // Nuevo estado ACCESS_CODE al inicio
   const [authStep, setAuthStep] = useState<'ACCESS_CODE' | 'SOCIAL_LOGIN'>(
@@ -217,6 +238,20 @@ const App: React.FC = () => {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  useEffect(() => {
+    const markPotentialReload = () => {
+      if (accessGrantedThisLoadRef.current) {
+        window.sessionStorage.setItem(ACCESS_RELOAD_MARKER_KEY, 'true');
+      }
+    };
+
+    window.addEventListener('beforeunload', markPotentialReload);
+
+    return () => {
+      window.removeEventListener('beforeunload', markPotentialReload);
+    };
+  }, []);
+
   const showToast = (msg: string) => {
     setToast({ show: true, msg });
   };
@@ -234,6 +269,7 @@ const App: React.FC = () => {
           setAccessGrantedThisLoad(true);
           accessGrantedThisLoadRef.current = true;
           window.sessionStorage.setItem(ACCESS_VERIFIED_SESSION_KEY, 'true');
+          window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
           setAuthStep('SOCIAL_LOGIN');
           setAccessCodeInput('');
           showToast("Código aceptado");
@@ -273,6 +309,7 @@ const App: React.FC = () => {
           showToast("Código de acceso incorrecto");
           setAccessCodeInput('');
           window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
+          window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
           setAccessGrantedThisLoad(false);
           accessGrantedThisLoadRef.current = false;
       }
@@ -331,6 +368,7 @@ const App: React.FC = () => {
       setCoordinator(null);
       setView('LANDING');
       window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
+      window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
       setAccessGrantedThisLoad(false);
       accessGrantedThisLoadRef.current = false;
       setAuthStep('ACCESS_CODE');
@@ -374,8 +412,9 @@ const App: React.FC = () => {
                         onChange={e => setAccessCodeInput(e.target.value.replace(/\D/g, ''))} 
                         onKeyDown={e => e.key === 'Enter' && handleAccessCodeSubmit()}
                         autoComplete="new-password"
-                        name="ce-access-code-manual"
+                        name={accessCodeInputNameRef.current}
                         inputMode="numeric"
+                        onFocus={() => setAccessCodeInput('')}
                     />
                     <Button className="w-full mt-4 py-4 text-lg" onClick={handleAccessCodeSubmit}>Verificar</Button>
                 </Card>

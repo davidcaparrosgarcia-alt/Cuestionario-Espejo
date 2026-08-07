@@ -4,6 +4,7 @@ import admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import fs from "fs";
 import path from "path";
+import { GoogleGenAI, Type } from "@google/genai";
 
 // Initialize Firebase Admin
 let firebaseConfig: any = {};
@@ -450,9 +451,75 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
 
     const now = Date.now();
     const validProposed = proposedAccessCode && /^[a-z0-9]{4}$/.test(proposedAccessCode) ? proposedAccessCode : null;
-    const accessPin = validProposed || generateAccessCode(4);
-    const dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
-    
+
+    // --- BÚSQUEDA DE PACIENTE EXISTENTE ---
+    let existingPatientDoc: FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData> | FirebaseFirestore.DocumentSnapshot<FirebaseFirestore.DocumentData> | null = null;
+    let existingPatientData: any = null;
+
+    // 1. PRIMERA BÚSQUEDA: soybienestarUid
+    if (soybienestarUid) {
+      const snap = await db.collection("patients")
+        .where("soybienestarUid", "==", soybienestarUid)
+        .get();
+      const docs = snap.docs.filter(d => d.data().status !== "deleted");
+      if (docs.length > 0) {
+        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+        if (docs.length > 1) {
+          console.warn(`[Warning] Se encontraron multiples pacientes activos para soybienestarUid. Reutilizando el mas reciente (ID: ${docs[0].id.slice(0, 12)}...).`);
+        }
+        existingPatientDoc = docs[0];
+        existingPatientData = docs[0].data();
+      }
+    }
+
+    // 2. SEGUNDA BÚSQUEDA: sourceRequestId / requestId / req.body.id
+    const targetRequestId = requestId || req.body.id || req.body.sourceRequestId;
+    if (!existingPatientDoc && targetRequestId) {
+      const snap = await db.collection("patients")
+        .where("sourceRequestId", "==", targetRequestId)
+        .get();
+      const docs = snap.docs.filter(d => d.data().status !== "deleted");
+      if (docs.length > 0) {
+        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+        existingPatientDoc = docs[0];
+        existingPatientData = docs[0].data();
+      }
+    }
+
+    // 3. TERCERA BÚSQUEDA: email (solo si esta vinculado a SoyBienestar)
+    if (!existingPatientDoc && email) {
+      const snap = await db.collection("patients")
+        .where("email", "==", email)
+        .get();
+      const docs = snap.docs.filter(d => {
+        const data = d.data();
+        if (data.status === "deleted") return false;
+        const isSoybienestarLinked = data.source === "soybienestar" ||
+          data.directAccessCreated === true ||
+          Boolean(data.soybienestarUid) ||
+          Boolean(data.sourceRequestId);
+        return isSoybienestarLinked;
+      });
+      if (docs.length > 0) {
+        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+        existingPatientDoc = docs[0];
+        existingPatientData = docs[0].data();
+      }
+    }
+
+    let dbPatientId: string;
+    let accessPin: string;
+    let isNewPatient = false;
+
+    if (existingPatientDoc && existingPatientData) {
+      dbPatientId = existingPatientDoc.id;
+      accessPin = existingPatientData.accessPin || validProposed || generateAccessCode(4);
+    } else {
+      isNewPatient = true;
+      accessPin = validProposed || generateAccessCode(4);
+      dbPatientId = `patient_${now}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+
     const payload = {
       id: dbPatientId,
       timestamp: now
@@ -465,29 +532,50 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
     }
     const questionnaireUrl = `${baseUrl}#/session?p=${encodeURIComponent(sessionToken)}`;
 
-    const patientData = {
-      id: dbPatientId,
-      coordinatorEmail: resolvedCoordinatorEmail,
-      nombre: nombre || "Usuario SoyBienestar",
-      email: email || null,
-      telefono: telefono || null,
-      edad: edad || null,
-      sexo: sexo || null,
-      observaciones: "Generado directamente por SoyBienestar",
-      status: "sent", // Equivalent enough for them to start answering
-      dateSent: now,
-      accessPin,
-      proposedAccessCode: validProposed,
-      source: "soybienestar",
-      sourceRequestId: requestId || null,
-      soybienestarUid: soybienestarUid || null,
-      soybienestarContext: soybienestarContext || null,
-      preferredChannels: preferredChannels || null,
-      directAccessCreated: true,
-      directQuestionnaireUrlCreatedAt: now,
-      questionnaireUrl: questionnaireUrl,
-      accessCodeFormat: "v2_4_alphanumeric" as const,
-      preInformeSoyBienestar: soybienestarContext || req.body.source === 'soybienestar' ? `=== PRE-INFORME SOYBIENESTAR ===
+    // Comprobar peticion pendiente en patientRequests
+    let wasConvertedFromPending = false;
+    if (targetRequestId) {
+      try {
+        const reqRef = db.collection("patientRequests").doc(targetRequestId);
+        const reqDoc = await reqRef.get();
+        if (reqDoc.exists && reqDoc.data()?.status === "pending") {
+          await reqRef.set({
+            status: "processed",
+            processedAt: now,
+            linkedPatientId: dbPatientId,
+            processingReason: "converted_to_direct"
+          }, { merge: true });
+          wasConvertedFromPending = true;
+        }
+      } catch (err) {
+        console.error("Error al procesar peticion pendiente de paciente:", err);
+      }
+    }
+
+    if (isNewPatient) {
+      const patientData = {
+        id: dbPatientId,
+        coordinatorEmail: resolvedCoordinatorEmail,
+        nombre: nombre || "Usuario SoyBienestar",
+        email: email || null,
+        telefono: telefono || null,
+        edad: edad || null,
+        sexo: sexo || null,
+        observaciones: "Generado directamente por SoyBienestar",
+        status: "sent",
+        dateSent: now,
+        accessPin,
+        proposedAccessCode: validProposed,
+        source: "soybienestar",
+        sourceRequestId: targetRequestId || null,
+        soybienestarUid: soybienestarUid || null,
+        soybienestarContext: soybienestarContext || null,
+        preferredChannels: preferredChannels || null,
+        directAccessCreated: true,
+        directQuestionnaireUrlCreatedAt: now,
+        questionnaireUrl: questionnaireUrl,
+        accessCodeFormat: "v2_4_alphanumeric" as const,
+        preInformeSoyBienestar: soybienestarContext || req.body.source === 'soybienestar' ? `=== PRE-INFORME SOYBIENESTAR ===
 Nombre: ${nombre || 'No especificado'}
 Email: ${email || 'No especificado'}
 Edad: ${edad || 'No especificada'}
@@ -497,16 +585,79 @@ Estado: Pendiente de completar cuestionario
 
 Contexto disponible:
 ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay datos de contexto adicionales.'}` : null
-    };
+      };
 
-    // Sanitize undefined
-    Object.keys(patientData).forEach(key => {
-       if ((patientData as any)[key] === undefined) {
-         delete (patientData as any)[key];
-       }
-    });
+      Object.keys(patientData).forEach(key => {
+         if ((patientData as any)[key] === undefined) {
+           delete (patientData as any)[key];
+         }
+      });
 
-    await db.collection("patients").doc(dbPatientId).set(patientData);
+      await db.collection("patients").doc(dbPatientId).set(patientData);
+    } else {
+      // Paciente existente: actualizar metadatos sin sobreescribir respuestas, status, dateAnswered, etc.
+      const updatePayload: any = {
+        source: "soybienestar",
+        directAccessCreated: true,
+        questionnaireUrl,
+        accessCodeFormat: "v2_4_alphanumeric"
+      };
+
+      if (soybienestarUid) updatePayload.soybienestarUid = soybienestarUid;
+      if (targetRequestId) updatePayload.sourceRequestId = targetRequestId;
+      if (soybienestarContext) updatePayload.soybienestarContext = soybienestarContext;
+      if (preferredChannels) updatePayload.preferredChannels = preferredChannels;
+      if (nombre) updatePayload.nombre = nombre;
+      if (email) updatePayload.email = email;
+      if (telefono) updatePayload.telefono = telefono;
+      if (edad) updatePayload.edad = edad;
+      if (sexo) updatePayload.sexo = sexo;
+      if (accessPin) updatePayload.accessPin = accessPin;
+      if (validProposed) updatePayload.proposedAccessCode = validProposed;
+      if (!existingPatientData.directQuestionnaireUrlCreatedAt) {
+        updatePayload.directQuestionnaireUrlCreatedAt = now;
+      }
+
+      await db.collection("patients").doc(dbPatientId).set(updatePayload, { merge: true });
+    }
+
+    // --- AVISO INTERNO POR EMAIL ---
+    const notificationAlreadySent = Boolean(existingPatientData?.directAccessNotificationSentAt);
+    const shouldSendNotification = isNewPatient || wasConvertedFromPending || !notificationAlreadySent;
+
+    if (shouldSendNotification) {
+      try {
+        const recipients = await getNotificationRecipients({ notificationEmail: resolvedCoordinatorEmail });
+        if (recipients.length > 0) {
+          const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo - SoyBienestar" <soybienestar.es@gmail.com>';
+          const dateStr = new Date(now).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+          const emailSubject = "Cuestionario Espejo - Acceso directo desde SoyBienestar";
+          const emailText = `Un usuario de SoyBienestar ha accedido directamente al Cuestionario Espejo.
+
+Paciente: ${nombre || existingPatientData?.nombre || 'No especificado'}
+Email: ${email || existingPatientData?.email || 'No especificado'}
+Teléfono: ${telefono || existingPatientData?.telefono || 'No especificado'}
+Edad: ${edad || existingPatientData?.edad || 'No especificada'}
+Sexo: ${sexo || existingPatientData?.sexo || 'No especificado'}
+Origen: SoyBienestar - acceso directo
+Estado: Cuestionario preparado para iniciar/continuar
+Fecha: ${dateStr}`;
+
+          await transporter.sendMail({
+            from: fromAddress,
+            to: recipients.join(', '),
+            subject: emailSubject,
+            text: emailText
+          });
+
+          await db.collection("patients").doc(dbPatientId).set({
+            directAccessNotificationSentAt: now
+          }, { merge: true });
+        }
+      } catch (emailError) {
+        console.error("Error al enviar aviso interno de acceso directo:", emailError);
+      }
+    }
 
     res.json({
       success: true,
@@ -519,6 +670,259 @@ ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay d
   } catch (error) {
     console.error("Error in /api/direct-questionnaire-link:", error);
     res.status(500).json({ error: "Error al generar enlace directo." });
+  }
+});
+
+const buildCleanSoyBienestarContextForAI = (patientData: any) => {
+  const ctx = patientData?.soybienestarContext || {};
+  const internal = ctx.latestInternalTherapistReport || {};
+  const visible = ctx.latestVisibleOrientationReport || {};
+  const feedback = ctx.reportFeedback || {};
+
+  return {
+    motivo_principal: internal.motivo_principal || ctx.latestClinicalConclusion || ctx.consultationConclusion || "",
+    estado_emocional: internal.estado_emocional_predominante || null,
+    duracion_y_evolucion: internal.duracion_y_evolucion || "",
+    impacto_funcional: internal.impacto_funcional || null,
+    contexto_desencadenantes: internal.contexto_y_posibles_desencadenantes || "",
+    hipotesis_no_diagnostica: internal.hipotesis_de_trabajo_no_diagnostica || "",
+    resumen_derivacion: internal.resumen_para_derivacion || ctx.globalUserSummary || "",
+    informacion_faltante: internal.informacion_faltante_relevante || [],
+    recursos_sugeridos: internal.recursos_iniciales_sugeridos || visible.recursos_iniciales_liberados || "",
+    feedback_usuario: {
+      agree: ctx.latestReportFeedbackAgrees,
+      label: ctx.latestReportFeedbackLabel,
+      comment: ctx.latestReportFeedbackComment || feedback.comment || ""
+    },
+    orientacion_visible: {
+      lo_que_parece_pesar_mas: visible.lo_que_parece_pesar_mas || "",
+      impacto_en_tu_dia_a_dia: visible.impacto_en_tu_dia_a_dia || "",
+      siguiente_paso: visible.siguiente_paso || ""
+    }
+  };
+};
+
+app.post("/api/generate-patient-report", async (req, res) => {
+  try {
+    const { patientId, accessPin } = req.body;
+
+    if (!patientId || typeof patientId !== "string" || !patientId.trim()) {
+      return res.status(400).json({ success: false, error: "Identificador de paciente requerido." });
+    }
+
+    const patientRef = db.collection("patients").doc(patientId.trim());
+    const patientDoc = await patientRef.get();
+
+    if (!patientDoc.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado." });
+    }
+
+    const patientData = patientDoc.data() || {};
+
+    if (patientData.status === "deleted") {
+      return res.status(403).json({ success: false, error: "Paciente eliminado." });
+    }
+
+    // Normalizar y comprobar accessPin
+    const normalizedReceivedPin = normalizeAccessCode(accessPin || "");
+    const storedPinCandidate = patientData.accessPin || patientData.proposedAccessCode || patientData.personalAccessCode || "";
+    const normalizedStoredPin = normalizeAccessCode(storedPinCandidate);
+
+    if (!normalizedReceivedPin || !normalizedStoredPin || normalizedReceivedPin !== normalizedStoredPin) {
+      console.warn(`[SECURITY] Fallo de validación de PIN para paciente ${patientId.slice(0, 10)}...`);
+      return res.status(401).json({ success: false, error: "Clave de acceso no válida." });
+    }
+
+    // Verificar respuestas
+    const answers = patientData.answers || {};
+    const answerCount = Object.keys(answers).length;
+    if (answerCount === 0) {
+      return res.status(400).json({ success: false, error: "No hay respuestas disponibles para generar la valoración." });
+    }
+
+    // Comprobar clave Gemini
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("[GEMINI BACKEND] Falta GEMINI_API_KEY en variables de entorno de servidor.");
+      return res.status(500).json({ success: false, error: "Configuración de servidor incompleta: falta GEMINI_API_KEY." });
+    }
+
+    const activeModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
+    // Recuperar prompts configurables desde config/global_config
+    let clinicalPrompt = "";
+    let conclusionPrompt = "";
+
+    try {
+      const configDoc = await db.collection("config").doc("global_config").get();
+      if (configDoc.exists) {
+        const configData = configDoc.data() || {};
+        if (typeof configData.clinicalPrompt === "string" && configData.clinicalPrompt.trim().length > 0) {
+          clinicalPrompt = configData.clinicalPrompt.trim();
+        }
+        if (typeof configData.conclusionPrompt === "string" && configData.conclusionPrompt.trim().length > 0) {
+          conclusionPrompt = configData.conclusionPrompt.trim();
+        }
+      }
+    } catch (cfgErr) {
+      console.error("[GEMINI BACKEND] Error al leer config/global_config:", cfgErr);
+    }
+
+    const defaultClinicalPrompt = `Actúa como un psicoterapeuta experto especializado en reprogramación mental, PNL y Coach Emocional de alto nivel.
+Debes analizar los resultados de una sesión del "Cuestionario Espejo".
+
+NUESTRO ARSENAL TERAPÉUTICO (Úsalo para recomendar tratamientos específicos):
+1. REPROGRAMACIÓN SUBCONSCIENTE: Uso de PNL e Hipnosis (presentada como "reestructuración del subconsciente") para destraumatizar y cambiar patrones en 2-3 semanas.
+2. MEDITACIÓN NEUROPLÁSTICA: Técnica "Satanama" (mantra + movimiento dedos) para abrir nuevos caminos neuronales y meditaciones canalizadas personalizadas.
+3. GESTIÓN ENERGÉTICA (PRANAYAMA): Respiración en cuadrado para el estrés cotidiano y Respiración Holotrópica (Breathwork) para liberar traumas profundos (DMT natural).
+4. TRABAJO DE PROFUNDIDAD: Terapia del Niño Interior y sanación de patrones Transgeneracionales (padres/abuelos).
+5. HÁBITOS DE AUTOCONSCIENCIA: Ejercicio del espejo (conexión emocional) y auditoría de pensamientos (convertir negativos en positivos).
+
+Debes generar un INFORME TÉCNICO (Uso interno para el especialista):
+Redacta en párrafos claros, fluidos y profesionales. Títulos en MAYÚSCULAS. NO uses asteriscos ni guiones de markdown.
+Estructura:
+VALORACIÓN DEL ESTADO EMOCIONAL PROFUNDO
+DINÁMICA DE PENSAMIENTO Y PATRONES SUBCONSCIENTES
+ESTRATEGIA TERAPÉUTICA PERSONALIZADA (ASIGNACIÓN DE TRATAMIENTOS)
+PRONÓSTICO DE EVOLUCIÓN`;
+
+    const defaultConclusionPrompt = `Genera una CONCLUSIÓN PARA EL PACIENTE (Uso externo):
+Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.`;
+
+    const rawClinicalPrompt = clinicalPrompt || defaultClinicalPrompt;
+    const rawConclusionPrompt = conclusionPrompt || defaultConclusionPrompt;
+
+    const patientName = patientData.nombre || 'Paciente';
+    const patientFirstName = patientName.split(' ')[0] || 'Paciente';
+
+    const finalClinicalPrompt = rawClinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
+    const finalConclusionPrompt = rawConclusionPrompt.replace(/\[Nombre\]/g, patientFirstName).replace(/\{\{nombre\}\}/gi, patientFirstName);
+
+    const prompt = `
+REGLA DE INTEGRACIÓN DE DATOS:
+Si hay contexto de SoyBienestar y respuestas del Cuestionario Espejo, integra ambas fuentes.
+SoyBienestar es la historia inicial y el Cuestionario Espejo es la ampliación estructurada.
+No bases toda la valoración en SoyBienestar si existen respuestas del cuestionario.
+Menciona patrones concretos observados en las respuestas.
+No incluyas JSON, claves técnicas ni nombres de campos internos.
+No inventes datos no presentes.
+
+DATOS DEL PACIENTE:
+Nombre: ${patientName}
+Edad: ${patientData.edad || 'Desconocida'}
+Sexo: ${patientData.sexo || 'Desconocido'}
+${patientData.soybienestarContext ? `Contexto clínico previo de SoyBienestar:\n${JSON.stringify(buildCleanSoyBienestarContextForAI(patientData), null, 2)}` : ''}
+${patientData.preInformeSoyBienestar ? `Pre-informe de origen:\n${patientData.preInformeSoyBienestar}` : ''}
+Respuestas al cuestionario: ${JSON.stringify(answers)}
+
+INSTRUCCIONES PARA EL INFORME TÉCNICO:
+${finalClinicalPrompt}
+
+INSTRUCCIONES PARA LA CONCLUSIÓN DEL PACIENTE:
+${finalConclusionPrompt}
+`;
+
+    console.log("[GEMINI BACKEND CALL]", {
+      patientId: patientId.slice(0, 12),
+      model: activeModel,
+      hasCustomClinicalPrompt: !!clinicalPrompt,
+      hasCustomConclusionPrompt: !!conclusionPrompt,
+      answerCount
+    });
+
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: activeModel,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            internalReport: { type: Type.STRING, description: "El informe técnico para uso interno" },
+            externalConclusion: { type: Type.STRING, description: "La conclusión empática para el paciente" }
+          },
+          required: ["internalReport", "externalConclusion"]
+        }
+      }
+    });
+
+    const text = response.text || "{}";
+    let data: any = {};
+    try {
+      data = JSON.parse(text);
+    } catch (pErr) {
+      console.error("[GEMINI BACKEND] Error parseando respuesta JSON de Gemini:", pErr, text);
+    }
+
+    const internalReport = typeof data.internalReport === "string" ? data.internalReport.trim() : "";
+    const externalConclusion = typeof data.externalConclusion === "string" ? data.externalConclusion.trim() : "";
+
+    if (!internalReport || !externalConclusion) {
+      console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o inválidos:", data);
+      return res.status(500).json({
+        success: false,
+        error: "Error en la generación con IA: la respuesta no contiene la estructura requerida."
+      });
+    }
+
+    const now = Date.now();
+    // Guardado en Firestore Admin
+    await patientRef.set({
+      conversationSummary: internalReport,
+      finalConclusion: externalConclusion,
+      aiGeneratedAt: now,
+      aiInputAnswerCount: answerCount,
+      aiInputHadSoyBienestarContext: !!patientData.soybienestarContext,
+      aiModel: activeModel,
+      aiProvider: "google"
+    }, { merge: true });
+
+    console.log(`[GEMINI BACKEND] Informe guardado con éxito para el paciente ${patientId.slice(0, 12)}...`);
+
+    // Enviar correo de aviso interno si no se ha enviado aún
+    if (!patientData.completionNotificationSentAt) {
+      try {
+        const recipients = await getNotificationRecipients({ notificationEmail: patientData.coordinatorEmail });
+        if (recipients.length > 0 && process.env.SMTP_USER && process.env.SMTP_PASS) {
+          const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo" <soybienestar.es@gmail.com>';
+          const dateStr = new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+          await transporter.sendMail({
+            from: fromAddress,
+            to: recipients.join(', '),
+            subject: "Cuestionario Espejo completado - pendiente de revisión",
+            text: `Un usuario ha completado el Cuestionario Espejo.
+
+Paciente: ${patientData.nombre || 'No especificado'}
+Email: ${patientData.email || 'No especificado'}
+Origen: ${patientData.source || 'SoyBienestar'}
+Estado: Cuestionario completado. Valoración automática generada y pendiente de revisión/dosier.
+Fecha: ${dateStr}`
+          });
+
+          await patientRef.set({
+            completionNotificationSentAt: now
+          }, { merge: true });
+
+          console.log("[SMTP NOTICE] Correo interno de cuestionario completado enviado a", recipients.length, "destinatarios.");
+        }
+      } catch (smtpErr) {
+        console.error("Error al enviar notificación SMTP de cuestionario completado (no bloqueante):", smtpErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      internalReport,
+      externalConclusion
+    });
+
+  } catch (error: any) {
+    console.error("Error in POST /api/generate-patient-report:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Error interno al generar el informe con Gemini."
+    });
   }
 });
 

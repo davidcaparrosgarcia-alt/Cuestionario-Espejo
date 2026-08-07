@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Card, Button, Logo, ProgressBar, Toast } from './UI';
 import { QUESTIONS as INITIAL_QUESTIONS } from '../constants';
-import { gemini } from '../services/gemini';
 import { DataService } from '../services/dataService'; // Importamos el servicio
 import { PatientData, Voice, Question, GlobalConfig, DualAudio } from '../types';
 import { normalizeGeneratedClinicalReport } from '../utils/reportFormatting';
@@ -274,6 +273,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [finalConclusion, setFinalConclusion] = useState<string>('');
   const [clinicalReportGenerationError, setClinicalReportGenerationError] = useState<{error: boolean, message: string} | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [isSendingResults, setIsSendingResults] = useState(false);
   const [hasSentResults, setHasSentResults] = useState(false);
   const sequenceIdRef = useRef<number>(0);
 
@@ -609,128 +609,172 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setIsGeneratingReport(true);
     setClinicalReportGenerationError(null);
     
-    // NEW LOGIC
     const patientId = currentPatientData.id || patientDataRef.current?.id;
-    let patientForAI = { ...patientDataRef.current, ...currentPatientData };
-    let answersForAI = answersRef.current && Object.keys(answersRef.current).length > 0
-      ? answersRef.current
-      : answers;
-      
-    if (patientId) {
-      try {
-        const freshPatient = await DataService.getPatientById(patientId);
-        if (freshPatient) {
-          patientForAI = { ...patientForAI, ...freshPatient };
-          if (freshPatient.answers && Object.keys(freshPatient.answers).length > 0) {
-            answersForAI = freshPatient.answers;
-            setAnswersSafely(freshPatient.answers);
-          }
-        }
-      } catch (e) {
-        console.error("[AI REPORT] Error refreshing patient before AI", e);
-      }
-    }
+    const accessPin = currentPatientData.accessPin || patientDataRef.current?.accessPin || pinInput;
     
-    const context = transcript.map(t => `${t.sender}: ${t.text}`).join('\n');
-    
-    console.log("[AI REPORT INPUT]", {
-      patientId,
-      hasSoyBienestarContext: !!patientForAI.soybienestarContext,
-      hasPreInformeSoyBienestar: !!patientForAI.preInformeSoyBienestar,
-      hasObservaciones: !!patientForAI.observaciones,
-      answerCount: Object.keys(answersForAI || {}).length,
-      transcriptLength: context.length
-    });
-    
-    if (!answersForAI || Object.keys(answersForAI).length === 0) {
-      console.warn("[AI REPORT] No answers available, report generation skipped.");
+    if (!patientId) {
       setClinicalReportGenerationError({
         error: true,
-        message: "No hay respuestas disponibles para generar la valoración."
+        message: "No se encontró el identificador del paciente."
       });
       setIsGeneratingReport(false);
       return;
     }
-    // END NEW LOGIC
-    
-    console.log("[AI PROMPT CONFIG BEFORE GEMINI]", {
-      hasClinicalPrompt: !!globalConfig?.clinicalPrompt,
-      clinicalPromptLength: globalConfig?.clinicalPrompt ? String(globalConfig.clinicalPrompt).length : 0,
-      clinicalPromptPreview: globalConfig?.clinicalPrompt ? String(globalConfig.clinicalPrompt).slice(0, 160) : "",
-      hasConclusionPrompt: !!globalConfig?.conclusionPrompt,
-      conclusionPromptLength: globalConfig?.conclusionPrompt ? String(globalConfig.conclusionPrompt).length : 0,
-      conclusionPromptPreview: globalConfig?.conclusionPrompt ? String(globalConfig.conclusionPrompt).slice(0, 160) : ""
-    });
 
-    const reportData = await gemini.generateFullReport(
-        patientForAI, 
-        answersForAI, 
-        context,
-        globalConfig.clinicalPrompt,
-        globalConfig.conclusionPrompt,
-        globalConfig
-    );
-    
-    if (reportData.error) {
-        setClinicalReportGenerationError({
-            error: true,
-            message: reportData.errorMessage || "Unknown error"
-        });
+    try {
+      const response = await fetch('/api/generate-patient-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, accessPin })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success || !data.internalReport || !data.externalConclusion) {
+        throw new Error(data.error || "No se pudo generar la valoración automática.");
+      }
+
+      const normalizedInternalReport = normalizeGeneratedClinicalReport(
+        data.internalReport,
+        globalConfig.clinicalPrompt
+      );
+      const normalizedExternalConclusion = data.externalConclusion;
+
+      setClinicalReport(normalizedInternalReport);
+      setFinalConclusion(normalizedExternalConclusion);
+
+      // Actualizar datos del paciente localmente
+      const updated = {
+        ...currentPatientData,
+        conversationSummary: normalizedInternalReport,
+        finalConclusion: normalizedExternalConclusion
+      };
+      setCurrentPatientData(updated);
+      patientDataRef.current = updated;
+
+    } catch (err: any) {
+      console.error("[REPORT GENERATION ERROR]", err);
+      setClinicalReportGenerationError({
+        error: true,
+        message: err.message || "Error al generar la valoración del paciente."
+      });
+    } finally {
+      setIsGeneratingReport(false);
     }
-    
-    const normalizedInternalReport = normalizeGeneratedClinicalReport(
-      reportData.internalReport || "",
-      globalConfig.clinicalPrompt
-    );
-    const normalizedExternalConclusion = reportData.externalConclusion || "";
-
-    setClinicalReport(normalizedInternalReport);
-    setFinalConclusion(normalizedExternalConclusion);
-    setIsGeneratingReport(false);
   };
 
   const handleSendResults = async () => {
-    // Actualizar fecha de respuesta
-    const now = Date.now();
-    const updatedData = { ...currentPatientData, dateAnswered: now, status: 'completed' as const };
-    setCurrentPatientData(updatedData);
+    stopAudio();
+    setIsSendingResults(true);
 
-    // AUTOMATIZACIÓN DE ESTADO: HECHO (completed)
-    if (currentPatientData.id) {
-        const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
-        try {
-            const finalClinicalReport = normalizeGeneratedClinicalReport(
-              clinicalReport,
-              globalConfig.clinicalPrompt
-            );
+    const patientId = currentPatientData.id || patientDataRef.current?.id;
+    const accessPin = currentPatientData.accessPin || patientDataRef.current?.accessPin || pinInput;
 
-            await DataService.updatePatient(currentPatientData.id, { 
-                dateAnswered: now, 
-                status: 'completed',
-                answers: finalAnswers,
-                conversationSummary: finalClinicalReport,
-                finalConclusion: finalConclusion,
-                aiGeneratedAt: Date.now(),
-                aiInputAnswerCount: Object.keys(finalAnswers).length,
-                aiInputHadSoyBienestarContext: !!currentPatientData.soybienestarContext
-            });
-            
-            fetch('/api/notify-soybienestar-status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ patientId: currentPatientData.id, event: 'questionnaire_completed' })
-            }).catch(e => console.error("Notification error", e));
-        } catch(e) {
-            console.error("Error saving results to Firebase", e);
+    if (!patientId) {
+      showToast("Error: No se encontró el identificador del paciente.");
+      setIsSendingResults(false);
+      return;
+    }
+
+    // 1. Guardar las respuestas finales del cuestionario en Firestore
+    const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
+    try {
+      await DataService.updatePatient(patientId, {
+        answers: finalAnswers,
+        lastAnswerSavedAt: Date.now()
+      });
+    } catch (e) {
+      console.error("[SEND RESULTS] Error guardando respuestas finales:", e);
+    }
+
+    // 2. Si no hay informe/conclusión previa, solicitar generación al backend
+    let internalReport = clinicalReport;
+    let externalConclusion = finalConclusion;
+
+    if (!internalReport || !externalConclusion) {
+      setIsGeneratingReport(true);
+      setClinicalReportGenerationError(null);
+      try {
+        const response = await fetch('/api/generate-patient-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patientId, accessPin })
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.success || !data.internalReport || !data.externalConclusion) {
+          throw new Error(data.error || "Error al generar la valoración con IA.");
         }
+
+        internalReport = normalizeGeneratedClinicalReport(
+          data.internalReport,
+          globalConfig.clinicalPrompt
+        );
+        externalConclusion = data.externalConclusion;
+        setClinicalReport(internalReport);
+        setFinalConclusion(externalConclusion);
+      } catch (err: any) {
+        console.error("[SEND RESULTS] Error en generación backend:", err);
+        setClinicalReportGenerationError({
+          error: true,
+          message: err.message || "Error al generar la valoración."
+        });
+        setIsGeneratingReport(false);
+        setIsSendingResults(false);
+        return; // Detener aquí. No marcar como completed si falló la IA.
+      } finally {
+        setIsGeneratingReport(false);
+      }
     }
 
-    setHasSentResults(true);
-    
-    if (!isEditorMode && currentPatientData.id) {
-        localStorage.setItem(`radar_completed_${currentPatientData.id}`, 'true');
+    // 3. Confirmar que existen internalReport y externalConclusion
+    if (!internalReport || !externalConclusion) {
+      showToast("No se pudo completar el proceso: la valoración está incompleta.");
+      setIsSendingResults(false);
+      return;
     }
-    
+
+    // 4. Guardar/confirmar status: completed solo cuando todo fue correcto
+    const now = Date.now();
+    try {
+      await DataService.updatePatient(patientId, {
+        dateAnswered: now,
+        status: 'completed',
+        answers: finalAnswers,
+        conversationSummary: internalReport,
+        finalConclusion: externalConclusion,
+        aiGeneratedAt: now,
+        aiInputAnswerCount: Object.keys(finalAnswers).length,
+        aiInputHadSoyBienestarContext: !!currentPatientData.soybienestarContext
+      });
+
+      const updatedData = { ...currentPatientData, dateAnswered: now, status: 'completed' as const };
+      setCurrentPatientData(updatedData);
+      patientDataRef.current = updatedData;
+    } catch (e) {
+      console.error("[SEND RESULTS] Error guardando estado completed:", e);
+    }
+
+    // 5. Notificar a SoyBienestar: questionnaire_completed y ESPERAR a que termine
+    try {
+      const syncRes = await fetch('/api/notify-soybienestar-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
+      });
+      console.log("[SoyBienestar Sync Status]", syncRes.status);
+    } catch (e) {
+      console.error("[SoyBienestar Sync Error]", e);
+    }
+
+    // 6. Actualizar estado local y mostrar mensaje final
+    setHasSentResults(true);
+    setIsSendingResults(false);
+
+    if (!isEditorMode && patientId) {
+      localStorage.setItem(`radar_completed_${patientId}`, 'true');
+    }
+
     const afterSendMsg = processText(globalConfig.afterSendText);
     addMessage(afterSendMsg, 'ia');
     await playOrSpeak(afterSendMsg, globalConfig.afterSendAudio);
@@ -937,17 +981,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setShowExitConfirm(false);
 
     try {
-      window.open("", "_self");
-      window.close();
+      window.location.replace("https://soybienestar.es");
     } catch (e) {
-      console.warn("[FINISH SESSION] window.close blocked", e);
+      console.warn("[FINISH SESSION] Redirect error", e);
+      window.location.href = "https://soybienestar.es";
     }
-
-    window.setTimeout(() => {
-      if (!window.closed) {
-        window.location.replace("https://soybienestar.es/report");
-      }
-    }, 300);
   };
 
   const handleBack = () => {
@@ -1761,7 +1799,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         >
                             Revisar respuestas
                         </Button>
-                        <Button onClick={handleSendResults} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700"><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</Button>
+                        <Button onClick={handleSendResults} disabled={isSendingResults} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700">
+                          {isSendingResults ? <><i className="fas fa-spinner fa-spin mr-3"></i> Enviando...</> : <><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</>}
+                        </Button>
                     </div>
                 )}
                 

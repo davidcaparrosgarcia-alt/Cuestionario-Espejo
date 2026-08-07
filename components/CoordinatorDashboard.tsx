@@ -259,6 +259,65 @@ PRONÓSTICO DE EVOLUCIÓN`;
 const DEFAULT_CONCLUSION_PROMPT = `Genera una CONCLUSIÓN PARA EL PACIENTE (Uso externo):
 Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.`;
 
+function buildManualConclusionScaffold(text: string): string {
+  if (!text || !text.trim()) return "";
+
+  const lines = text.split(/\r?\n/);
+  const structuralHeaders: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 1. Markdown headers
+    const isMarkdownHeader = /^#{1,6}\s+.+/.test(trimmed);
+
+    // 2. ALL CAPS lines (at least 2 uppercase letters, no lowercase letters)
+    const hasLetters = /[A-ZÁÉÍÓÚÑ]/.test(trimmed);
+    const hasNoLowercase = !/[a-záéíóúñ]/.test(trimmed);
+    const isAllCapsHeader = hasLetters && hasNoLowercase && trimmed.length <= 100;
+
+    // 3. Short titles ending with ":"
+    const isTitleWithColon = trimmed.endsWith(":") && trimmed.length <= 80 && !trimmed.includes("\n");
+
+    if (isMarkdownHeader || isAllCapsHeader || isTitleWithColon) {
+      structuralHeaders.push(trimmed);
+    }
+  }
+
+  if (structuralHeaders.length === 0) {
+    return "";
+  }
+
+  return structuralHeaders.join("\n\n\n") + "\n\n\n";
+}
+
+function isConclusionOnlyHeadersOrEmpty(text: string): boolean {
+  if (!text || !text.trim()) return true;
+
+  const lines = text.split(/\r?\n/);
+  const nonHeaderLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const isMarkdownHeader = /^#{1,6}\s+.+/.test(trimmed);
+
+    const hasLetters = /[A-ZÁÉÍÓÚÑ]/.test(trimmed);
+    const hasNoLowercase = !/[a-záéíóúñ]/.test(trimmed);
+    const isAllCapsHeader = hasLetters && hasNoLowercase && trimmed.length <= 100;
+
+    const isTitleWithColon = trimmed.endsWith(":") && trimmed.length <= 80;
+
+    if (!isMarkdownHeader && !isAllCapsHeader && !isTitleWithColon) {
+      nonHeaderLines.push(trimmed);
+    }
+  }
+
+  return nonHeaderLines.join("").trim().length === 0;
+}
+
 export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullProfile, onProfileUpdate, onLogout, onEnterEditMode }) => {
   const [patient, setPatient] = useState<Partial<PatientData>>({
     nombre: '', edad: '', sexo: '', observaciones: '', telefono: '', email: ''
@@ -1231,8 +1290,27 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
   };
 
+  const handleDraftFromScratch = () => {
+    const confirmMessage = "Se eliminará el contenido redactado, pero se conservará la estructura de la conclusión como guía. El cambio no se guardará hasta que pulses Guardar. ¿Deseas continuar?";
+    if (!window.confirm(confirmMessage)) return;
+
+    const scaffold = buildManualConclusionScaffold(editingConclusion);
+    if (!scaffold.trim()) {
+      setEditingConclusion("");
+      triggerToast("No se detectaron títulos estructurales. El editor se ha dejado en blanco.");
+    } else {
+      setEditingConclusion(scaffold);
+    }
+  };
+
   const handleSaveConclusion = async () => {
     if (!selectedPatientConclusion) return;
+
+    if (isConclusionOnlyHeadersOrEmpty(editingConclusion)) {
+      triggerToast("Añade el contenido de la conclusión antes de guardarla.");
+      return;
+    }
+
     const now = Date.now();
     const updatedPatient: PatientData = { 
         ...selectedPatientConclusion, 
@@ -2250,14 +2328,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                 
                 <div className="p-8 overflow-y-auto space-y-8">
                     <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <p className="text-xs uppercase text-slate-400 font-bold tracking-widest">Paciente</p>
                                 <p className="text-xl font-bold text-slate-800">{selectedPatientResults.nombre}</p>
                             </div>
                              <div>
                                 <p className="text-xs uppercase text-slate-400 font-bold tracking-widest">Email</p>
-                                <p className="text-base font-medium text-slate-800">{selectedPatientResults.email}</p>
+                                <p className="text-base font-medium text-slate-800 break-words">{selectedPatientResults.email}</p>
                             </div>
                              <div>
                                 <p className="text-xs uppercase text-slate-400 font-bold tracking-widest">Edad / Sexo</p>
@@ -2339,7 +2417,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         </button>
                     </div>
 
-                    <label className="block text-xs font-black uppercase text-slate-500 mb-2 tracking-widest">Texto de la Conclusión</label>
+                    <div className="flex justify-between items-center mb-2">
+                        <label className="block text-xs font-black uppercase text-slate-500 tracking-widest">Texto de la Conclusión</label>
+                        <button
+                            type="button"
+                            onClick={handleDraftFromScratch}
+                            className="text-xs font-bold text-slate-500 hover:text-purple-700 flex items-center gap-1.5 bg-slate-100 hover:bg-purple-50 px-3 py-1.5 rounded-lg border border-slate-200 transition-colors"
+                            title="Redactar desde cero conservando la estructura"
+                        >
+                            <i className="fas fa-eraser text-slate-400"></i>
+                            <span>Redactar desde cero</span>
+                        </button>
+                    </div>
                     <textarea 
                         className="w-full h-[36rem] p-4 rounded-xl border-2 border-slate-200 focus:border-purple-500 outline-none text-base leading-relaxed resize-none bg-white text-slate-700"
                         value={editingConclusion}
