@@ -733,6 +733,23 @@ app.post("/api/generate-patient-report", async (req, res) => {
       return res.status(401).json({ success: false, error: "Clave de acceso no válida." });
     }
 
+    // IDEMPOTENCIA: Si ya se generó previamente el informe y la conclusión, los reutilizamos sin consumir Gemini de nuevo
+    if (
+      typeof patientData.conversationSummary === "string" &&
+      patientData.conversationSummary.trim().length > 0 &&
+      typeof patientData.finalConclusion === "string" &&
+      patientData.finalConclusion.trim().length > 0 &&
+      patientData.aiGeneratedAt
+    ) {
+      console.log(`[GEMINI BACKEND] Reutilizando informe existente para paciente ${patientId.slice(0, 12)}...`);
+      return res.json({
+        success: true,
+        internalReport: patientData.conversationSummary,
+        externalConclusion: patientData.finalConclusion,
+        reusedExistingReport: true
+      });
+    }
+
     // Verificar respuestas
     const answers = patientData.answers || {};
     const answerCount = Object.keys(answers).length;
@@ -768,42 +785,25 @@ app.post("/api/generate-patient-report", async (req, res) => {
       console.error("[GEMINI BACKEND] Error al leer config/global_config:", cfgErr);
     }
 
-    const defaultClinicalPrompt = `Actúa como un psicoterapeuta experto especializado en reprogramación mental, PNL y Coach Emocional de alto nivel.
-Debes analizar los resultados de una sesión del "Cuestionario Espejo".
-
-NUESTRO ARSENAL TERAPÉUTICO (Úsalo para recomendar tratamientos específicos):
-1. REPROGRAMACIÓN SUBCONSCIENTE: Uso de PNL e Hipnosis (presentada como "reestructuración del subconsciente") para destraumatizar y cambiar patrones en 2-3 semanas.
-2. MEDITACIÓN NEUROPLÁSTICA: Técnica "Satanama" (mantra + movimiento dedos) para abrir nuevos caminos neuronales y meditaciones canalizadas personalizadas.
-3. GESTIÓN ENERGÉTICA (PRANAYAMA): Respiración en cuadrado para el estrés cotidiano y Respiración Holotrópica (Breathwork) para liberar traumas profundos (DMT natural).
-4. TRABAJO DE PROFUNDIDAD: Terapia del Niño Interior y sanación de patrones Transgeneracionales (padres/abuelos).
-5. HÁBITOS DE AUTOCONSCIENCIA: Ejercicio del espejo (conexión emocional) y auditoría de pensamientos (convertir negativos en positivos).
-
-Debes generar un INFORME TÉCNICO (Uso interno para el especialista):
-Redacta en párrafos claros, fluidos y profesionales. Títulos en MAYÚSCULAS. NO uses asteriscos ni guiones de markdown.
-Estructura:
-VALORACIÓN DEL ESTADO EMOCIONAL PROFUNDO
-DINÁMICA DE PENSAMIENTO Y PATRONES SUBCONSCIENTES
-ESTRATEGIA TERAPÉUTICA PERSONALIZADA (ASIGNACIÓN DE TRATAMIENTOS)
-PRONÓSTICO DE EVOLUCIÓN`;
-
-    const defaultConclusionPrompt = `Genera una CONCLUSIÓN PARA EL PACIENTE (Uso externo):
-Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.`;
-
-    const rawClinicalPrompt = clinicalPrompt || defaultClinicalPrompt;
-    const rawConclusionPrompt = conclusionPrompt || defaultConclusionPrompt;
+    if (!clinicalPrompt || !conclusionPrompt) {
+      console.error("[GEMINI BACKEND] Error: Prompts de generación no configurados en config/global_config");
+      return res.status(400).json({
+        success: false,
+        error: "Los prompts de generación de valoración no están configurados en los Ajustes."
+      });
+    }
 
     const patientName = patientData.nombre || 'Paciente';
     const patientFirstName = patientName.split(' ')[0] || 'Paciente';
 
-    const finalClinicalPrompt = rawClinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
-    const finalConclusionPrompt = rawConclusionPrompt.replace(/\[Nombre\]/g, patientFirstName).replace(/\{\{nombre\}\}/gi, patientFirstName);
+    const finalClinicalPrompt = clinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
+    const finalConclusionPrompt = conclusionPrompt.replace(/\[Nombre\]/g, patientFirstName).replace(/\{\{nombre\}\}/gi, patientFirstName);
 
     const prompt = `
 REGLA DE INTEGRACIÓN DE DATOS:
 Si hay contexto de SoyBienestar y respuestas del Cuestionario Espejo, integra ambas fuentes.
 SoyBienestar es la historia inicial y el Cuestionario Espejo es la ampliación estructurada.
 No bases toda la valoración en SoyBienestar si existen respuestas del cuestionario.
-Menciona patrones concretos observados en las respuestas.
 No incluyas JSON, claves técnicas ni nombres de campos internos.
 No inventes datos no presentes.
 
@@ -825,8 +825,6 @@ ${finalConclusionPrompt}
     console.log("[GEMINI BACKEND CALL]", {
       patientId: patientId.slice(0, 12),
       model: activeModel,
-      hasCustomClinicalPrompt: !!clinicalPrompt,
-      hasCustomConclusionPrompt: !!conclusionPrompt,
       answerCount
     });
 
@@ -851,15 +849,15 @@ ${finalConclusionPrompt}
     let data: any = {};
     try {
       data = JSON.parse(text);
-    } catch (pErr) {
-      console.error("[GEMINI BACKEND] Error parseando respuesta JSON de Gemini:", pErr, text);
+    } catch (pErr: any) {
+      console.error("[GEMINI BACKEND] Error parseando respuesta JSON de Gemini:", pErr?.message || pErr);
     }
 
     const internalReport = typeof data.internalReport === "string" ? data.internalReport.trim() : "";
     const externalConclusion = typeof data.externalConclusion === "string" ? data.externalConclusion.trim() : "";
 
     if (!internalReport || !externalConclusion) {
-      console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o inválidos:", data);
+      console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o estructura inválida.");
       return res.status(500).json({
         success: false,
         error: "Error en la generación con IA: la respuesta no contiene la estructura requerida."
@@ -880,37 +878,6 @@ ${finalConclusionPrompt}
 
     console.log(`[GEMINI BACKEND] Informe guardado con éxito para el paciente ${patientId.slice(0, 12)}...`);
 
-    // Enviar correo de aviso interno si no se ha enviado aún
-    if (!patientData.completionNotificationSentAt) {
-      try {
-        const recipients = await getNotificationRecipients({ notificationEmail: patientData.coordinatorEmail });
-        if (recipients.length > 0 && process.env.SMTP_USER && process.env.SMTP_PASS) {
-          const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo" <soybienestar.es@gmail.com>';
-          const dateStr = new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
-          await transporter.sendMail({
-            from: fromAddress,
-            to: recipients.join(', '),
-            subject: "Cuestionario Espejo completado - pendiente de revisión",
-            text: `Un usuario ha completado el Cuestionario Espejo.
-
-Paciente: ${patientData.nombre || 'No especificado'}
-Email: ${patientData.email || 'No especificado'}
-Origen: ${patientData.source || 'SoyBienestar'}
-Estado: Cuestionario completado. Valoración automática generada y pendiente de revisión/dosier.
-Fecha: ${dateStr}`
-          });
-
-          await patientRef.set({
-            completionNotificationSentAt: now
-          }, { merge: true });
-
-          console.log("[SMTP NOTICE] Correo interno de cuestionario completado enviado a", recipients.length, "destinatarios.");
-        }
-      } catch (smtpErr) {
-        console.error("Error al enviar notificación SMTP de cuestionario completado (no bloqueante):", smtpErr);
-      }
-    }
-
     return res.json({
       success: true,
       internalReport,
@@ -918,10 +885,94 @@ Fecha: ${dateStr}`
     });
 
   } catch (error: any) {
-    console.error("Error in POST /api/generate-patient-report:", error);
+    console.error("Error in POST /api/generate-patient-report:", error?.message || error);
     return res.status(500).json({
       success: false,
       error: error.message || "Error interno al generar el informe con Gemini."
+    });
+  }
+});
+
+app.post("/api/notify-questionnaire-completed", async (req, res) => {
+  try {
+    const { patientId, accessPin } = req.body;
+
+    if (!patientId || typeof patientId !== "string" || !patientId.trim()) {
+      return res.status(400).json({ success: false, error: "Identificador de paciente requerido." });
+    }
+
+    const patientRef = db.collection("patients").doc(patientId.trim());
+    const patientDoc = await patientRef.get();
+
+    if (!patientDoc.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado." });
+    }
+
+    const patientData = patientDoc.data() || {};
+
+    if (patientData.status === "deleted") {
+      return res.status(403).json({ success: false, error: "Paciente eliminado." });
+    }
+
+    // Normalizar y comprobar accessPin
+    const normalizedReceivedPin = normalizeAccessCode(accessPin || "");
+    const storedPinCandidate = patientData.accessPin || patientData.proposedAccessCode || patientData.personalAccessCode || "";
+    const normalizedStoredPin = normalizeAccessCode(storedPinCandidate);
+
+    if (!normalizedReceivedPin || !normalizedStoredPin || normalizedReceivedPin !== normalizedStoredPin) {
+      return res.status(401).json({ success: false, error: "Clave de acceso no válida." });
+    }
+
+    // Comprobar condiciones en servidor
+    const isCompleted = patientData.status === "completed";
+    const hasSummary = typeof patientData.conversationSummary === "string" && patientData.conversationSummary.trim().length > 0;
+    const hasConclusion = typeof patientData.finalConclusion === "string" && patientData.finalConclusion.trim().length > 0;
+
+    if (!isCompleted || !hasSummary || !hasConclusion) {
+      return res.status(400).json({
+        success: false,
+        error: "El cuestionario aún no está marcado como completado o falta la valoración."
+      });
+    }
+
+    if (patientData.completionNotificationSentAt) {
+      return res.json({ success: true, notificationSent: false, message: "Notificación ya enviada previamente." });
+    }
+
+    const now = Date.now();
+    const recipients = await getNotificationRecipients({ notificationEmail: patientData.coordinatorEmail });
+
+    if (recipients.length > 0 && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      const fromAddress = process.env.SMTP_FROM || '"Cuestionario Espejo" <soybienestar.es@gmail.com>';
+      const dateStr = new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+      await transporter.sendMail({
+        from: fromAddress,
+        to: recipients.join(', '),
+        subject: "Cuestionario Espejo completado - pendiente de revisión",
+        text: `Un usuario ha completado el Cuestionario Espejo.
+
+Paciente: ${patientData.nombre || 'No especificado'}
+Email: ${patientData.email || 'No especificado'}
+Origen: ${patientData.source || 'SoyBienestar'}
+Estado: Cuestionario completado. Valoración automática generada y pendiente de revisión/dosier.
+Fecha: ${dateStr}`
+      });
+
+      await patientRef.set({
+        completionNotificationSentAt: now
+      }, { merge: true });
+
+      console.log(`[SMTP NOTICE] Correo interno de cuestionario completado enviado para paciente ${patientId.slice(0, 12)}...`);
+      return res.json({ success: true, notificationSent: true });
+    }
+
+    return res.json({ success: true, notificationSent: false, message: "Servicio SMTP no configurado o sin destinatarios." });
+
+  } catch (error: any) {
+    console.error("Error in POST /api/notify-questionnaire-completed:", error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Error interno al enviar la notificación."
     });
   }
 });

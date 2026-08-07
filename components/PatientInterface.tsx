@@ -47,6 +47,28 @@ const DEFAULT_CONFIG: GlobalConfig = {
   backgrounds: []
 };
 
+export function resolveInitialVoiceFromSex(sexo?: string | null, fallbackVoice: Voice = Voice.FEMALE): Voice {
+  if (!sexo || typeof sexo !== 'string') return fallbackVoice;
+  const normalized = sexo.trim().toLowerCase();
+
+  if (['mujer', 'femenino', 'female', 'f'].includes(normalized) || normalized.includes('mujer')) {
+    return Voice.FEMALE;
+  }
+  if (['hombre', 'masculino', 'male', 'm'].includes(normalized) || normalized.includes('hombre')) {
+    return Voice.MALE;
+  }
+  if ([
+    'prefiero_no_definirme',
+    'prefiero no definirme',
+    'no_definido',
+    'no definido'
+  ].includes(normalized) || normalized.includes('prefiero_no_definirme') || normalized.includes('prefiero no definirme')) {
+    return Voice.NONE;
+  }
+
+  return fallbackVoice;
+}
+
 const FALLBACK_TEXTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // Transparent pixel fallback
 
 const BACKGROUNDS = {
@@ -258,6 +280,16 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   
   const [voice, setVoice] = useState<Voice>(globalConfig.defaultVoiceMode);
+  const voiceRef = useRef<Voice>(globalConfig.defaultVoiceMode);
+  const hasVoiceBeenSetByUserRef = useRef<boolean>(false);
+
+  const updateVoice = (newVoice: Voice, isUserAction = false) => {
+    if (isUserAction) {
+      hasVoiceBeenSetByUserRef.current = true;
+    }
+    voiceRef.current = newVoice;
+    setVoice(newVoice);
+  };
   
   const [transcript, setTranscript] = useState<{ text: string, sender: 'ia' | 'user' }[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -560,8 +592,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   useEffect(() => {
-    setVoice(globalConfig.defaultVoiceMode);
+    if (!hasVoiceBeenSetByUserRef.current) {
+      updateVoice(globalConfig.defaultVoiceMode, false);
+    }
   }, [globalConfig.defaultVoiceMode]);
+
+  useEffect(() => {
+    if (!isEditorMode && !hasVoiceBeenSetByUserRef.current && currentPatientData.sexo) {
+      const resolvedVoice = resolveInitialVoiceFromSex(currentPatientData.sexo, globalConfig.defaultVoiceMode);
+      updateVoice(resolvedVoice, false);
+    }
+  }, [currentPatientData.sexo, globalConfig.defaultVoiceMode, isEditorMode]);
 
   useEffect(() => {
     const loadVoices = () => { window.speechSynthesis.getVoices(); };
@@ -664,6 +705,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const handleSendResults = async () => {
+    if (isGeneratingReport || isSendingResults) {
+      return;
+    }
+
     stopAudio();
     setIsSendingResults(true);
 
@@ -753,9 +798,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       patientDataRef.current = updatedData;
     } catch (e) {
       console.error("[SEND RESULTS] Error guardando estado completed:", e);
+      showToast("Error al guardar la finalización. Inténtalo de nuevo.");
+      setIsSendingResults(false);
+      return; // Detener todo si no se pudo guardar status: completed
     }
 
-    // 5. Notificar a SoyBienestar: questionnaire_completed y ESPERAR a que termine
+    // 5. Notificar a SoyBienestar: questionnaire_completed
     try {
       const syncRes = await fetch('/api/notify-soybienestar-status', {
         method: 'POST',
@@ -767,7 +815,19 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       console.error("[SoyBienestar Sync Error]", e);
     }
 
-    // 6. Actualizar estado local y mostrar mensaje final
+    // 6. Notificación interna SMTP de cuestionario completado
+    try {
+      const notifyRes = await fetch('/api/notify-questionnaire-completed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, accessPin })
+      });
+      console.log("[Internal SMTP Notification Status]", notifyRes.status);
+    } catch (e) {
+      console.error("[Internal SMTP Notification Error]", e);
+    }
+
+    // 7. Actualizar estado local y mostrar mensaje final
     setHasSentResults(true);
     setIsSendingResults(false);
 
@@ -827,7 +887,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const playOrSpeak = async (text: string, audioData?: DualAudio): Promise<void> => {
     stopAudio(); // Cancelar cualquier audio previo inmediatamente
 
-    if (voice === Voice.NONE || !text || text.trim() === '') {
+    const activeVoice = voiceRef.current;
+
+    if (activeVoice === Voice.NONE || !text || text.trim() === '') {
         return new Promise(resolve => setTimeout(resolve, 1500));
     }
 
@@ -841,7 +903,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
       speechTimeoutRef.current = setTimeout(() => {
           let customUrl;
-          if (voice === Voice.MALE) {
+          if (activeVoice === Voice.MALE) {
               customUrl = globalConfig.maleVoiceVariant === 2 ? (audioData?.male2 || audioData?.male) : audioData?.male;
           } else {
               customUrl = globalConfig.femaleVoiceVariant === 2 ? (audioData?.female2 || audioData?.female) : audioData?.female;
@@ -871,12 +933,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                   speakNative(text, () => {
                       pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
                       resolve();
-                  });
+                  }, activeVoice);
                 };
                 audio.play().catch(() => speakNative(text, () => {
                     pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
                     resolve();
-                }));
+                }, activeVoice));
             };
             playResolved();
             return;
@@ -885,12 +947,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
           speakNative(text, () => {
               pendingResolvesRef.current = pendingResolvesRef.current.filter(r => r !== resolve);
               resolve();
-          });
+          }, activeVoice);
       }, AUDIO_START_DELAY);
     });
   };
 
-  const speakNative = (text: string, onEnd: () => void) => {
+  const speakNative = (text: string, onEnd: () => void, activeVoice = voiceRef.current) => {
     // Asegurarse de que no hay nada sonando
     window.speechSynthesis.cancel();
 
@@ -928,7 +990,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         utterance.voice = targetVoice;
         
         if (!isMobile) {
-             if (voice === Voice.FEMALE) {
+             if (activeVoice === Voice.FEMALE) {
                  utterance.pitch = 1.6; 
                  utterance.rate = 0.9;
              } else {
@@ -936,7 +998,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                  utterance.rate = 0.9; 
              }
         } else {
-             if (voice === Voice.FEMALE) {
+             if (activeVoice === Voice.FEMALE) {
                  utterance.pitch = isAndroid ? 1.0 : 1.0; 
                  utterance.rate = isAndroid ? 1.0 : 0.9;
              } else {
@@ -1185,6 +1247,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setCurrentPatientData(freshPatient);
       patientDataRef.current = freshPatient;
       setPinInput("");
+      
+      if (!isEditorMode && !hasVoiceBeenSetByUserRef.current && freshPatient.sexo) {
+        const resolvedVoice = resolveInitialVoiceFromSex(freshPatient.sexo, globalConfig.defaultVoiceMode);
+        updateVoice(resolvedVoice, false);
+      }
       
       if (freshPatient.answers) {
         setAnswersSafely(freshPatient.answers);
@@ -1697,13 +1764,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
           <div className="flex flex-wrap items-center gap-3 justify-end ml-auto"> 
              <button onClick={() => setIsDarkMode(!isDarkMode)} className={`w-10 h-10 rounded-full flex items-center justify-center transition-all border backdrop-blur-md shrink-0 ${isDarkMode ? 'bg-white/10 border-white/20 text-yellow-300 hover:bg-white/20' : 'bg-white border-white/40 text-indigo-900 hover:bg-indigo-50 shadow-sm'}`} title="Modo Día/Noche"><i className={`fas ${isDarkMode ? 'fa-sun' : 'fa-moon'} text-lg`}></i></button>
              <div className={`flex rounded-2xl p-1 border ${isDarkMode ? 'bg-black/20 border-white/10' : 'bg-blue-50/50 border-blue-100'}`}>
-                <button onClick={() => setVoice(Voice.FEMALE)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.FEMALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                <button onClick={() => updateVoice(Voice.FEMALE, true)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.FEMALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
                     Mujer
                 </button>
-                <button onClick={() => setVoice(Voice.MALE)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.MALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                <button onClick={() => updateVoice(Voice.MALE, true)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.MALE ? 'bg-blue-600 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
                     Hombre
                 </button>
-                <button onClick={() => { setVoice(Voice.NONE); stopAudio(); }} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.NONE ? 'bg-blue-900 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                <button onClick={() => { updateVoice(Voice.NONE, true); stopAudio(); }} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition-all ${voice === Voice.NONE ? 'bg-blue-900 text-white shadow-lg' : isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
                     Silencio
                 </button>
              </div>
@@ -1799,8 +1866,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                         >
                             Revisar respuestas
                         </Button>
-                        <Button onClick={handleSendResults} disabled={isSendingResults} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700">
-                          {isSendingResults ? <><i className="fas fa-spinner fa-spin mr-3"></i> Enviando...</> : <><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</>}
+                        <Button onClick={handleSendResults} disabled={isSendingResults || isGeneratingReport} className="w-full py-5 text-xl shadow-xl shadow-green-600/20 bg-green-600 hover:bg-green-700">
+                          {isSendingResults || isGeneratingReport ? <><i className="fas fa-spinner fa-spin mr-3"></i> {isGeneratingReport ? "Generando valoración..." : "Enviando..."}</> : <><i className="fas fa-paper-plane mr-3"></i> Enviar Resultados</>}
                         </Button>
                     </div>
                 )}
