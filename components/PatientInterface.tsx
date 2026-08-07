@@ -296,13 +296,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const answersRef = useRef<Record<string, string>>({});
 
   const setAnswersSafely = (nextAnswers: Record<string, string>) => {
+    setReportReady(false);
     answersRef.current = nextAnswers || {};
     setAnswers(nextAnswers || {});
   };
   const [pinInput, setPinInput] = useState('');
   
-  const [clinicalReport, setClinicalReport] = useState<string>('');
-  const [finalConclusion, setFinalConclusion] = useState<string>('');
+  const [reportReady, setReportReady] = useState<boolean>(false);
   const [clinicalReportGenerationError, setClinicalReportGenerationError] = useState<{error: boolean, message: string} | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [isSendingResults, setIsSendingResults] = useState(false);
@@ -615,8 +615,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   }, []);
 
   useEffect(() => {
-    if (step === 'finish' && !clinicalReport && !isEditorMode && !hasSentResults) {
-      generateClinicalReport();
+    if (step === 'finish' && !isEditorMode && !hasSentResults) {
+      if (!reportReady) {
+        generateClinicalReport();
+      }
       const finalText = processText(globalConfig.finishText);
       playOrSpeak(finalText, globalConfig.finishAudio);
       addMessage(finalText, 'ia');
@@ -647,6 +649,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const generateClinicalReport = async () => {
+    if (isGeneratingReport || reportReady) return;
     setIsGeneratingReport(true);
     setClinicalReportGenerationError(null);
     
@@ -671,28 +674,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
       const data = await response.json();
 
-      if (!response.ok || !data.success || !data.internalReport || !data.externalConclusion) {
+      if (!response.ok || !data.success || !data.reportReady) {
         throw new Error(data.error || "No se pudo generar la valoración automática.");
       }
 
-      const normalizedInternalReport = normalizeGeneratedClinicalReport(
-        data.internalReport,
-        globalConfig.clinicalPrompt
-      );
-      const normalizedExternalConclusion = data.externalConclusion;
-
-      setClinicalReport(normalizedInternalReport);
-      setFinalConclusion(normalizedExternalConclusion);
-
-      // Actualizar datos del paciente localmente
-      const updated = {
-        ...currentPatientData,
-        conversationSummary: normalizedInternalReport,
-        finalConclusion: normalizedExternalConclusion
-      };
-      setCurrentPatientData(updated);
-      patientDataRef.current = updated;
-
+      setReportReady(true);
     } catch (err: any) {
       console.error("[REPORT GENERATION ERROR]", err);
       setClinicalReportGenerationError({
@@ -730,13 +716,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       });
     } catch (e) {
       console.error("[SEND RESULTS] Error guardando respuestas finales:", e);
+      showToast("Error al guardar las respuestas. Por favor, inténtalo de nuevo.");
+      setIsSendingResults(false);
+      return; // Detener aquí si falla el guardado de respuestas finales
     }
 
-    // 2. Si no hay informe/conclusión previa, solicitar generación al backend
-    let internalReport = clinicalReport;
-    let externalConclusion = finalConclusion;
-
-    if (!internalReport || !externalConclusion) {
+    // 2. Si el informe no está listo, solicitar generación al backend
+    if (!reportReady) {
       setIsGeneratingReport(true);
       setClinicalReportGenerationError(null);
       try {
@@ -747,17 +733,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         });
         const data = await response.json();
 
-        if (!response.ok || !data.success || !data.internalReport || !data.externalConclusion) {
+        if (!response.ok || !data.success || !data.reportReady) {
           throw new Error(data.error || "Error al generar la valoración con IA.");
         }
 
-        internalReport = normalizeGeneratedClinicalReport(
-          data.internalReport,
-          globalConfig.clinicalPrompt
-        );
-        externalConclusion = data.externalConclusion;
-        setClinicalReport(internalReport);
-        setFinalConclusion(externalConclusion);
+        setReportReady(true);
       } catch (err: any) {
         console.error("[SEND RESULTS] Error en generación backend:", err);
         setClinicalReportGenerationError({
@@ -772,28 +752,16 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       }
     }
 
-    // 3. Confirmar que existen internalReport y externalConclusion
-    if (!internalReport || !externalConclusion) {
-      showToast("No se pudo completar el proceso: la valoración está incompleta.");
-      setIsSendingResults(false);
-      return;
-    }
-
-    // 4. Guardar/confirmar status: completed solo cuando todo fue correcto
+    // 3. Guardar/confirmar status: completed solo cuando todo fue correcto
     const now = Date.now();
     try {
       await DataService.updatePatient(patientId, {
         dateAnswered: now,
         status: 'completed',
-        answers: finalAnswers,
-        conversationSummary: internalReport,
-        finalConclusion: externalConclusion,
-        aiGeneratedAt: now,
-        aiInputAnswerCount: Object.keys(finalAnswers).length,
-        aiInputHadSoyBienestarContext: !!currentPatientData.soybienestarContext
+        answers: finalAnswers
       });
 
-      const updatedData = { ...currentPatientData, dateAnswered: now, status: 'completed' as const };
+      const updatedData = { ...currentPatientData, dateAnswered: now, status: 'completed' as const, answers: finalAnswers };
       setCurrentPatientData(updatedData);
       patientDataRef.current = updatedData;
     } catch (e) {
@@ -803,19 +771,21 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       return; // Detener todo si no se pudo guardar status: completed
     }
 
-    // 5. Notificar a SoyBienestar: questionnaire_completed
+    // 4. Notificar a SoyBienestar: questionnaire_completed
     try {
       const syncRes = await fetch('/api/notify-soybienestar-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
       });
-      console.log("[SoyBienestar Sync Status]", syncRes.status);
+      if (!syncRes.ok) {
+        console.error("[SoyBienestar Sync Error]", syncRes.status);
+      }
     } catch (e) {
       console.error("[SoyBienestar Sync Error]", e);
     }
 
-    // 6. Notificación interna SMTP de cuestionario completado
+    // 5. Notificación interna SMTP de cuestionario completado
     try {
       const notifyRes = await fetch('/api/notify-questionnaire-completed', {
         method: 'POST',
@@ -827,7 +797,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       console.error("[Internal SMTP Notification Error]", e);
     }
 
-    // 7. Actualizar estado local y mostrar mensaje final
+    // 6. Actualizar estado local y mostrar mensaje final
     setHasSentResults(true);
     setIsSendingResults(false);
 
@@ -836,8 +806,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
 
     const afterSendMsg = processText(globalConfig.afterSendText);
-    addMessage(afterSendMsg, 'ia');
-    await playOrSpeak(afterSendMsg, globalConfig.afterSendAudio);
+    if (afterSendMsg) {
+      addMessage(afterSendMsg, 'ia');
+      await playOrSpeak(afterSendMsg, globalConfig.afterSendAudio);
+    }
   };
 
   const pendingResolvesRef = useRef<(() => void)[]>([]);
@@ -1032,7 +1004,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setCurrentQuestionIndex(0);
       setVerificationAttempts(0);
       setInputValue('');
-      setClinicalReport('');
+      setReportReady(false);
       setIsGeneratingReport(false);
       setHasSentResults(false);
     }

@@ -4,6 +4,7 @@ import admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Initialize Firebase Admin
@@ -702,9 +703,19 @@ const buildCleanSoyBienestarContextForAI = (patientData: any) => {
   };
 };
 
+function buildAnswersHash(answers: Record<string, any> | undefined | null): string {
+  if (!answers || typeof answers !== 'object') return '';
+  const sortedKeys = Object.keys(answers).sort();
+  const sortedAnswers: Record<string, any> = {};
+  for (const key of sortedKeys) {
+    sortedAnswers[key] = answers[key];
+  }
+  return crypto.createHash("sha256").update(JSON.stringify(sortedAnswers)).digest("hex");
+}
+
 app.post("/api/generate-patient-report", async (req, res) => {
   try {
-    const { patientId, accessPin } = req.body;
+    const { patientId, accessPin } = req.body || {};
 
     if (!patientId || typeof patientId !== "string" || !patientId.trim()) {
       return res.status(400).json({ success: false, error: "Identificador de paciente requerido." });
@@ -733,28 +744,30 @@ app.post("/api/generate-patient-report", async (req, res) => {
       return res.status(401).json({ success: false, error: "Clave de acceso no válida." });
     }
 
-    // IDEMPOTENCIA: Si ya se generó previamente el informe y la conclusión, los reutilizamos sin consumir Gemini de nuevo
+    // Verificar respuestas y calcular hash determinista
+    const answers = patientData.answers || {};
+    const answerCount = Object.keys(answers).length;
+    if (answerCount === 0) {
+      return res.status(400).json({ success: false, error: "No hay respuestas disponibles para generar la valoración." });
+    }
+
+    const currentAnswersHash = buildAnswersHash(answers);
+
+    // IDEMPOTENCIA: Si ya se generó previamente el informe y la conclusión con las MISMAS respuestas (hash idéntico), los reutilizamos sin consumir Gemini de nuevo
     if (
       typeof patientData.conversationSummary === "string" &&
       patientData.conversationSummary.trim().length > 0 &&
       typeof patientData.finalConclusion === "string" &&
       patientData.finalConclusion.trim().length > 0 &&
-      patientData.aiGeneratedAt
+      patientData.aiGeneratedAt &&
+      patientData.aiInputAnswersHash === currentAnswersHash
     ) {
       console.log(`[GEMINI BACKEND] Reutilizando informe existente para paciente ${patientId.slice(0, 12)}...`);
       return res.json({
         success: true,
-        internalReport: patientData.conversationSummary,
-        externalConclusion: patientData.finalConclusion,
+        reportReady: true,
         reusedExistingReport: true
       });
-    }
-
-    // Verificar respuestas
-    const answers = patientData.answers || {};
-    const answerCount = Object.keys(answers).length;
-    if (answerCount === 0) {
-      return res.status(400).json({ success: false, error: "No hay respuestas disponibles para generar la valoración." });
     }
 
     // Comprobar clave Gemini
@@ -872,6 +885,7 @@ ${finalConclusionPrompt}
       aiGeneratedAt: now,
       aiInputAnswerCount: answerCount,
       aiInputHadSoyBienestarContext: !!patientData.soybienestarContext,
+      aiInputAnswersHash: currentAnswersHash,
       aiModel: activeModel,
       aiProvider: "google"
     }, { merge: true });
@@ -880,8 +894,8 @@ ${finalConclusionPrompt}
 
     return res.json({
       success: true,
-      internalReport,
-      externalConclusion
+      reportReady: true,
+      reusedExistingReport: false
     });
 
   } catch (error: any) {
