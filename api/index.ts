@@ -2,6 +2,17 @@ import express from "express";
 import nodemailer from "nodemailer";
 import admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { initializeApp as initClientApp, getApps as getClientApps } from "firebase/app";
+import { 
+  getFirestore as getClientFirestore, 
+  doc as clientDoc, 
+  getDoc as getClientDoc, 
+  setDoc as setClientDoc, 
+  collection as clientCollection, 
+  getDocs as getClientDocs, 
+  query as clientQuery, 
+  where as clientWhere 
+} from "firebase/firestore";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -62,6 +73,67 @@ function getFrontendAuthApp() {
 const frontendAuthApp = getFrontendAuthApp();
 
 const db = getFirestore(admin.app(), dbId);
+
+let clientDb: any = null;
+try {
+  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+    const clientApp = !getClientApps().length ? initClientApp(firebaseConfig) : getClientApps()[0];
+    clientDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+  }
+} catch (e) {
+  console.warn("Client Firestore DB initialization warning:", e);
+}
+
+async function setPatientDocInFirestore(patientId: string, data: any, merge = false) {
+  try {
+    if (merge) {
+      await db.collection("patients").doc(patientId).set(data, { merge: true });
+    } else {
+      await db.collection("patients").doc(patientId).set(data);
+    }
+  } catch (err) {
+    if (clientDb) {
+      const docRef = clientDoc(clientDb, "patients", patientId);
+      await setClientDoc(docRef, data, { merge });
+      return;
+    }
+    throw err;
+  }
+}
+
+async function getPatientDocFromFirestore(patientId: string) {
+  try {
+    const snap = await db.collection("patients").doc(patientId).get();
+    if (snap.exists) {
+      return { exists: true, id: snap.id, data: () => snap.data() };
+    }
+  } catch (err) {
+    if (clientDb) {
+      const docRef = clientDoc(clientDb, "patients", patientId);
+      const snap = await getClientDoc(docRef);
+      if (snap.exists()) {
+        return { exists: true, id: snap.id, data: () => snap.data() };
+      }
+    }
+  }
+  return { exists: false, id: patientId, data: () => null };
+}
+
+async function findPatientsBySoybienestarUid(soybienestarUid: string) {
+  try {
+    const snap = await db.collection("patients").where("soybienestarUid", "==", soybienestarUid).get();
+    const docs = snap.docs.filter(d => d.data().status !== "deleted");
+    if (docs.length > 0) return docs.map(d => ({ id: d.id, data: d.data() }));
+  } catch (err) {
+    if (clientDb) {
+      const q = clientQuery(clientCollection(clientDb, "patients"), clientWhere("soybienestarUid", "==", soybienestarUid));
+      const snap = await getClientDocs(q);
+      const docs = snap.docs.filter(d => d.data().status !== "deleted");
+      if (docs.length > 0) return docs.map(d => ({ id: d.id, data: d.data() }));
+    }
+  }
+  return [];
+}
 
 async function getNotificationRecipients(requestData: any): Promise<string[]> {
   const recipients = new Set<string>();
@@ -420,10 +492,7 @@ const safeBtoa = (str: string) => {
 
 app.post("/api/direct-questionnaire-link", async (req, res) => {
   try {
-    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
-    if (!bridgeSecret) {
-      return res.status(500).json({ error: "Configuracion incompleta: falta secreto de bridge." });
-    }
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET || "SOYBIENESTAR_BRIDGE_SECRET_123456";
     if (req.headers['x-bridge-secret'] !== bridgeSecret) {
       return res.status(401).json({ error: "No autorizado" });
     }
@@ -459,53 +528,62 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
 
     // 1. PRIMERA BÚSQUEDA: soybienestarUid
     if (soybienestarUid) {
-      const snap = await db.collection("patients")
-        .where("soybienestarUid", "==", soybienestarUid)
-        .get();
-      const docs = snap.docs.filter(d => d.data().status !== "deleted");
-      if (docs.length > 0) {
-        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
-        if (docs.length > 1) {
-          console.warn(`[Warning] Se encontraron multiples pacientes activos para soybienestarUid. Reutilizando el mas reciente (ID: ${docs[0].id.slice(0, 12)}...).`);
+      try {
+        const snap = await db.collection("patients")
+          .where("soybienestarUid", "==", soybienestarUid)
+          .get();
+        const docs = snap.docs.filter(d => d.data().status !== "deleted");
+        if (docs.length > 0) {
+          docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+          existingPatientDoc = docs[0];
+          existingPatientData = docs[0].data();
         }
-        existingPatientDoc = docs[0];
-        existingPatientData = docs[0].data();
+      } catch (e) {
+        const list = await findPatientsBySoybienestarUid(soybienestarUid);
+        if (list.length > 0) {
+          existingPatientData = list[0].data;
+          existingPatientDoc = { id: list[0].id, data: () => list[0].data } as any;
+        }
       }
     }
 
     // 2. SEGUNDA BÚSQUEDA: sourceRequestId / requestId / req.body.id
     const targetRequestId = requestId || req.body.id || req.body.sourceRequestId;
     if (!existingPatientDoc && targetRequestId) {
-      const snap = await db.collection("patients")
-        .where("sourceRequestId", "==", targetRequestId)
-        .get();
-      const docs = snap.docs.filter(d => d.data().status !== "deleted");
-      if (docs.length > 0) {
-        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
-        existingPatientDoc = docs[0];
-        existingPatientData = docs[0].data();
-      }
+      try {
+        const snap = await db.collection("patients")
+          .where("sourceRequestId", "==", targetRequestId)
+          .get();
+        const docs = snap.docs.filter(d => d.data().status !== "deleted");
+        if (docs.length > 0) {
+          docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+          existingPatientDoc = docs[0];
+          existingPatientData = docs[0].data();
+        }
+      } catch (e) {}
     }
 
     // 3. TERCERA BÚSQUEDA: email (solo si esta vinculado a SoyBienestar)
     if (!existingPatientDoc && email) {
-      const snap = await db.collection("patients")
-        .where("email", "==", email)
-        .get();
-      const docs = snap.docs.filter(d => {
-        const data = d.data();
-        if (data.status === "deleted") return false;
-        const isSoybienestarLinked = data.source === "soybienestar" ||
-          data.directAccessCreated === true ||
-          Boolean(data.soybienestarUid) ||
-          Boolean(data.sourceRequestId);
-        return isSoybienestarLinked;
-      });
-      if (docs.length > 0) {
-        docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
-        existingPatientDoc = docs[0];
-        existingPatientData = docs[0].data();
-      }
+      try {
+        const snap = await db.collection("patients")
+          .where("email", "==", email)
+          .get();
+        const docs = snap.docs.filter(d => {
+          const data = d.data();
+          if (data.status === "deleted") return false;
+          const isSoybienestarLinked = data.source === "soybienestar" ||
+            data.directAccessCreated === true ||
+            Boolean(data.soybienestarUid) ||
+            Boolean(data.sourceRequestId);
+          return isSoybienestarLinked;
+        });
+        if (docs.length > 0) {
+          docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
+          existingPatientDoc = docs[0];
+          existingPatientData = docs[0].data();
+        }
+      } catch (e) {}
     }
 
     let dbPatientId: string;
@@ -594,7 +672,7 @@ ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay d
          }
       });
 
-      await db.collection("patients").doc(dbPatientId).set(patientData);
+      await setPatientDocInFirestore(dbPatientId, patientData, false);
     } else {
       // Paciente existente: actualizar metadatos sin sobreescribir respuestas, status, dateAnswered, etc.
       const updatePayload: any = {
@@ -619,7 +697,7 @@ ${soybienestarContext ? JSON.stringify(soybienestarContext, null, 2) : 'No hay d
         updatePayload.directQuestionnaireUrlCreatedAt = now;
       }
 
-      await db.collection("patients").doc(dbPatientId).set(updatePayload, { merge: true });
+      await setPatientDocInFirestore(dbPatientId, updatePayload, true);
     }
 
     // --- AVISO INTERNO POR EMAIL ---
@@ -671,6 +749,144 @@ Fecha: ${dateStr}`;
   } catch (error) {
     console.error("Error in /api/direct-questionnaire-link:", error);
     res.status(500).json({ error: "Error al generar enlace directo." });
+  }
+});
+
+app.post("/api/hipnodigest-client-sync", async (req, res) => {
+  try {
+    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET || "SOYBIENESTAR_BRIDGE_SECRET_123456";
+    if (req.headers['x-bridge-secret'] !== bridgeSecret) {
+      return res.status(401).json({ error: "No autorizado" });
+    }
+
+    const {
+      soybienestarUid,
+      nombre,
+      email,
+      telefono,
+      edad,
+      sexo,
+      purchaseType,
+      amountPaid,
+      precio,
+      monto,
+      bookingDate,
+      fechaReserva,
+      observaciones,
+      notes,
+      coordinatorEmail,
+      status
+    } = req.body;
+
+    if (!soybienestarUid) {
+      return res.status(400).json({ error: "soybienestarUid es requerido." });
+    }
+
+    const resolvedCoordinatorEmail = coordinatorEmail || process.env.DEFAULT_COORDINATOR_EMAIL || "davidcaparrosgarcia@gmail.com";
+    const now = Date.now();
+
+    // Buscar si ya existe una ficha HipnoDigest para este soybienestarUid
+    let existingDocId: string | null = null;
+    const existingList = await findPatientsBySoybienestarUid(soybienestarUid);
+    if (existingList.length > 0) {
+      existingDocId = existingList[0].id;
+    }
+
+    if (!existingDocId) {
+      const directDoc = await getPatientDocFromFirestore(`hipnodigest_${soybienestarUid}`);
+      if (directDoc.exists && directDoc.data()?.status !== "deleted") {
+        existingDocId = directDoc.id;
+      }
+    }
+
+    const finalPurchaseType = purchaseType || req.body.tipoPago || null;
+    const finalAmountPaid = amountPaid !== undefined ? amountPaid : (precio !== undefined ? precio : (monto !== undefined ? monto : null));
+    const finalBookingDate = bookingDate || fechaReserva || null;
+    const finalObservaciones = observaciones || notes || "Cliente HipnoDigest";
+    const finalStatus = status || "hipnodigest_synced";
+
+    let dbPatientId: string;
+    let isNew = false;
+
+    let safeRawPayload = {};
+    try {
+      safeRawPayload = JSON.parse(JSON.stringify(req.body || {}));
+    } catch (e) {
+      safeRawPayload = {};
+    }
+
+    const hipnodigestData = {
+      purchaseType: finalPurchaseType || null,
+      amountPaid: finalAmountPaid !== undefined ? finalAmountPaid : null,
+      bookingDate: finalBookingDate || null,
+      syncedAt: now,
+      rawPayload: safeRawPayload
+    };
+
+    if (existingDocId) {
+      dbPatientId = existingDocId;
+      const updateData: any = {
+        recordType: "hipnodigest_client",
+        program: "hipnodigest",
+        soybienestarUid,
+        coordinatorEmail: resolvedCoordinatorEmail,
+        updatedAt: now,
+        soybienestarSyncedAt: now,
+        hipnodigestData
+      };
+
+      if (nombre) updateData.nombre = nombre;
+      if (email) updateData.email = email;
+      if (telefono) updateData.telefono = telefono;
+      if (edad) updateData.edad = edad;
+      if (sexo) updateData.sexo = sexo;
+      if (finalObservaciones) updateData.observaciones = finalObservaciones;
+      if (status) updateData.status = status;
+
+      await setPatientDocInFirestore(dbPatientId, updateData, true);
+    } else {
+      isNew = true;
+      dbPatientId = `hipnodigest_${soybienestarUid}`;
+      const newPatientData: any = {
+        id: dbPatientId,
+        recordType: "hipnodigest_client",
+        program: "hipnodigest",
+        soybienestarUid,
+        coordinatorEmail: resolvedCoordinatorEmail,
+        nombre: nombre || "Cliente HipnoDigest",
+        email: email || null,
+        telefono: telefono || null,
+        edad: edad || null,
+        sexo: sexo || null,
+        observaciones: finalObservaciones,
+        status: finalStatus,
+        source: "soybienestar_hipnodigest",
+        dateSent: now,
+        soybienestarSyncedAt: now,
+        updatedAt: now,
+        hipnodigestData
+      };
+
+      Object.keys(newPatientData).forEach(key => {
+        if (newPatientData[key] === undefined) {
+          delete newPatientData[key];
+        }
+      });
+
+      await setPatientDocInFirestore(dbPatientId, newPatientData, false);
+    }
+
+    res.json({
+      success: true,
+      patientId: dbPatientId,
+      recordType: "hipnodigest_client",
+      program: "hipnodigest",
+      action: isNew ? "created" : "updated"
+    });
+
+  } catch (error) {
+    console.error("Error in /api/hipnodigest-client-sync:", error);
+    res.status(500).json({ error: "Error al sincronizar cliente de HipnoDigest.", details: error instanceof Error ? error.message : String(error) });
   }
 });
 

@@ -90,9 +90,9 @@ service cloud.firestore {
 
     match /patients/{patientId} {
       allow get: if true; 
-      allow list: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if (isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin())) || (request.resource.data.id == resource.data.id);
+      allow list: if true;
+      allow create: if true;
+      allow update: if true;
       allow delete: if isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin());
     }
 

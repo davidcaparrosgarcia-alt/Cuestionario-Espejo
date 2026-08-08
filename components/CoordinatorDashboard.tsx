@@ -134,6 +134,11 @@ const isSoyBienestarPatient = (p: PatientData) =>
   !!(p as any).soybienestarContext ||
   !!(p as any).preInformeSoyBienestar;
 
+const isHipnoDigest = (p: PatientData) =>
+  (p as any).recordType === 'hipnodigest_client' ||
+  (p as any).program === 'hipnodigest' ||
+  p.source === 'soybienestar_hipnodigest';
+
 const getInitialObservationsForDisplay = (p: PatientData) => {
   if (isSoyBienestarPatient(p)) {
     return `<div style="color: #b45309; font-style: italic;">Origen SoyBienestar.<br/>Ficha generada con los datos iniciales de SoyBienestar, pendiente de respuestas del cuestionario.<br/>Estado: ${p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized' ? 'Completado' : 'Pendiente'}</div>`;
@@ -380,6 +385,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterProgram, setFilterProgram] = useState<'all' | 'reprogramate' | 'hipnodigest'>('all');
   const [showDeletedMode, setShowDeletedMode] = useState(false);
   const [selectedDeletedPatientIds, setSelectedDeletedPatientIds] = useState<string[]>([]);
   
@@ -516,7 +522,11 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       'viewed': 'VISTO',
       'completed': 'HECHO',
       'concluded': 'CONCLUIDO',
-      'finalized': 'FINALIZADO'
+      'finalized': 'FINALIZADO',
+      'hipnodigest_synced': 'HIPNODIGEST',
+      'hipnodigest_active': 'HIPNODIGEST',
+      'hipnodigest_completed': 'HIPNODIGEST',
+      'hipnodigest_pending': 'HIPNODIGEST'
   };
 
   useEffect(() => {
@@ -1870,21 +1880,27 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       }
 
       const matchesSearch = searchTerm === '' || 
-          p.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || 
-          p.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (p.nombre && p.nombre.toLowerCase().includes(searchTerm.toLowerCase())) || 
+          (p.email && p.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
           (p.telefono && p.telefono.includes(searchTerm));
       
       const matchesStatus = showDeletedMode 
           ? true 
           : (filterStatus === 'all' || p.status === filterStatus);
       
+      const isHD = isHipnoDigest(p);
+      const matchesProgram = 
+          filterProgram === 'all' ? true :
+          filterProgram === 'hipnodigest' ? isHD :
+          !isHD;
+
       // FILTRO DE FECHAS AÑADIDO
-      const pDate = p.dateSent || 0;
+      const pDate = p.dateSent || (p as any).soybienestarSyncedAt || 0;
       const startMs = dateStart ? new Date(dateStart).getTime() : 0;
       const endMs = dateEnd ? new Date(dateEnd).setHours(23,59,59,999) : Infinity;
       const matchesDate = pDate >= startMs && pDate <= endMs;
 
-      return matchesSearch && matchesStatus && matchesDate;
+      return matchesSearch && matchesStatus && matchesProgram && matchesDate;
   });
 
   const deletedCount = registry.filter(p => p.status === 'deleted' || !!p.deletedAt).length;
@@ -1933,12 +1949,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       {selectedPatientDetails && (
           <div className="fixed inset-0 z-[230] bg-black/80 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
              <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                <div className="p-6 border-b flex justify-between items-center bg-blue-900 text-white">
+                <div className={`p-6 border-b flex justify-between items-center text-white ${isHipnoDigest(selectedPatientDetails) ? 'bg-purple-900' : 'bg-blue-900'}`}>
                     <h2 className="text-2xl font-bold flex items-center gap-3">
-                        <i className="fas fa-user-circle"></i> Ficha del Paciente {isEditingDetails && <span className="text-sm bg-amber-400 text-blue-900 px-2 py-1 rounded ml-2 font-bold">EDICIÓN</span>}
+                        <i className={`fas ${isHipnoDigest(selectedPatientDetails) ? 'fa-book-medical' : 'fa-user-circle'}`}></i>
+                        {isHipnoDigest(selectedPatientDetails) ? 'Ficha Informativa HipnoDigest' : 'Ficha del Paciente'}
+                        {isHipnoDigest(selectedPatientDetails) && (
+                            <span className="text-xs bg-purple-200 text-purple-900 px-2.5 py-1 rounded-full font-black tracking-widest uppercase">
+                                HIPNODIGEST
+                            </span>
+                        )}
+                        {isEditingDetails && <span className="text-sm bg-amber-400 text-blue-900 px-2 py-1 rounded ml-2 font-bold">EDICIÓN</span>}
                     </h2>
                     <div className="flex gap-2">
-                         {!isEditingDetails && (
+                         {!isEditingDetails && !isHipnoDigest(selectedPatientDetails) && (
                             <button onClick={handleEditDetails} className="text-blue-200 hover:text-white mr-4" title="Editar Ficha">
                                 <i className="fas fa-edit text-xl"></i>
                             </button>
@@ -1997,7 +2020,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         // MODO VISUALIZACIÓN
                         <>
                             <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200">
-                                <h3 className="text-sm font-black uppercase text-slate-400 tracking-widest mb-4 border-b pb-2">Datos del Expediente</h3>
+                                <h3 className="text-sm font-black uppercase text-slate-400 tracking-widest mb-4 border-b pb-2">
+                                    {isHipnoDigest(selectedPatientDetails) ? 'Datos del Cliente HipnoDigest' : 'Datos del Expediente'}
+                                </h3>
                                 <div className="grid grid-cols-2 gap-y-4 gap-x-8">
                                     <div>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Nombre Completo</span>
@@ -2005,30 +2030,72 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     </div>
                                     <div>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Contacto</span>
-                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.email}</span>
+                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.email || 'N/A'}</span>
                                         <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.telefono || 'N/A'}</span>
                                     </div>
                                     <div>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Edad / Sexo</span>
-                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.edad} años / {selectedPatientDetails.sexo}</span>
+                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.edad ? `${selectedPatientDetails.edad} años` : 'N/A'} / {selectedPatientDetails.sexo || 'N/A'}</span>
                                     </div>
-                                    <div>
-                                        <span className="block text-xs font-bold text-slate-500 uppercase">Historial de Fechas</span>
-                                        <div className="text-xs text-slate-600 space-y-1">
-                                            <p><span className="font-bold">Envío:</span> {formatDate(selectedPatientDetails.dateSent)}</p>
-                                            <p><span className="font-bold">Respuesta:</span> {formatDate(selectedPatientDetails.dateAnswered)}</p>
-                                            {selectedPatientDetails.dateConclusionSent && <p><span className="font-bold text-green-600">Conclusión Enviada:</span> {formatDate(selectedPatientDetails.dateConclusionSent)}</p>}
-                                            {selectedPatientDetails.dateConclusionViewed && <p><span className="font-bold text-blue-600">Conclusión Vista:</span> {formatDate(selectedPatientDetails.dateConclusionViewed)}</p>}
+
+                                    {isHipnoDigest(selectedPatientDetails) ? (
+                                      <>
+                                        <div>
+                                            <span className="block text-xs font-bold text-slate-500 uppercase">Programa / Origen</span>
+                                            <span className="block text-base font-bold text-purple-800">HipnoDigest (Ficha Informativa)</span>
+                                            {selectedPatientDetails.soybienestarUid && (
+                                              <span className="block text-xs text-slate-500">UID: {selectedPatientDetails.soybienestarUid}</span>
+                                            )}
                                         </div>
-                                    </div>
+                                        {(selectedPatientDetails as any).hipnodigestData && (
+                                          <div className="col-span-2 bg-purple-50 p-4 rounded-xl border border-purple-100 grid grid-cols-2 gap-4">
+                                            <div>
+                                              <span className="block text-xs font-bold text-purple-700 uppercase">Tipo de Compra / Pago</span>
+                                              <span className="block text-sm font-bold text-slate-800">{(selectedPatientDetails as any).hipnodigestData.purchaseType || 'Cliente HipnoDigest'}</span>
+                                            </div>
+                                            <div>
+                                              <span className="block text-xs font-bold text-purple-700 uppercase">Importe</span>
+                                              <span className="block text-sm font-bold text-slate-800">{(selectedPatientDetails as any).hipnodigestData.amountPaid !== null && (selectedPatientDetails as any).hipnodigestData.amountPaid !== undefined ? `${(selectedPatientDetails as any).hipnodigestData.amountPaid} €` : 'N/A'}</span>
+                                            </div>
+                                            {(selectedPatientDetails as any).hipnodigestData.bookingDate && (
+                                              <div>
+                                                <span className="block text-xs font-bold text-purple-700 uppercase">Fecha Reserva</span>
+                                                <span className="block text-sm font-medium text-slate-800">{(selectedPatientDetails as any).hipnodigestData.bookingDate}</span>
+                                              </div>
+                                            )}
+                                            <div>
+                                              <span className="block text-xs font-bold text-purple-700 uppercase">Fecha Sincronización</span>
+                                              <span className="block text-sm font-medium text-slate-800">{formatDate((selectedPatientDetails as any).soybienestarSyncedAt || selectedPatientDetails.dateSent)}</span>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <div>
+                                            <span className="block text-xs font-bold text-slate-500 uppercase">Historial de Fechas</span>
+                                            <div className="text-xs text-slate-600 space-y-1">
+                                                <p><span className="font-bold">Envío:</span> {formatDate(selectedPatientDetails.dateSent)}</p>
+                                                <p><span className="font-bold">Respuesta:</span> {formatDate(selectedPatientDetails.dateAnswered)}</p>
+                                                {selectedPatientDetails.dateConclusionSent && <p><span className="font-bold text-green-600">Conclusión Enviada:</span> {formatDate(selectedPatientDetails.dateConclusionSent)}</p>}
+                                                {selectedPatientDetails.dateConclusionViewed && <p><span className="font-bold text-blue-600">Conclusión Vista:</span> {formatDate(selectedPatientDetails.dateConclusionViewed)}</p>}
+                                            </div>
+                                        </div>
+                                        <div className="col-span-2 mt-2">
+                                            <span className="block text-xs font-bold text-slate-500 uppercase">PIN de Acceso</span>
+                                            <span className="block text-xl font-bold text-blue-600 tracking-widest">{selectedPatientDetails.accessPin ? selectedPatientDetails.accessPin.toUpperCase() : "N/A"}</span>
+                                        </div>
+                                      </>
+                                    )}
+
                                     <div className="col-span-2 mt-2">
-                                        <span className="block text-xs font-bold text-slate-500 uppercase">PIN de Acceso</span>
-                                        <span className="block text-xl font-bold text-blue-600 tracking-widest">{selectedPatientDetails.accessPin ? selectedPatientDetails.accessPin.toUpperCase() : "N/A"}</span>
-                                    </div>
-                                    <div className="col-span-2 mt-2">
-                                        <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones Iniciales</span>
+                                        <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones</span>
                                         <div className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-100">
-                                            {isSoyBienestarPatient(selectedPatientDetails) ? (
+                                            {isHipnoDigest(selectedPatientDetails) ? (
+                                                <div className="italic text-purple-900 font-medium">
+                                                  {selectedPatientDetails.observaciones || "Cliente comprador de HipnoDigest."}
+                                                </div>
+                                            ) : isSoyBienestarPatient(selectedPatientDetails) ? (
                                                 <div className="font-medium text-amber-800 italic">
                                                     Origen SoyBienestar.<br/>
                                                     {(() => {
@@ -2050,39 +2117,41 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 </div>
                             </div>
 
-                            <div>
-                                <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
-                                <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed p-4 bg-blue-50/30 rounded-xl border border-blue-100">
-                                    {selectedPatientDetails.conversationSummary ? (
-                                        <div className="space-y-4">
-                                          {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary, globalConfig?.clinicalPrompt).map((block, index) => (
-                                            block.isTitle ? (
-                                              <h4 key={index} className="text-sm font-black uppercase tracking-widest text-blue-900 border-b border-blue-200 pb-1 mt-4">
-                                                {block.text}
-                                              </h4>
-                                            ) : block.isSubTitle ? (
-                                              <h5 key={index} className="text-xs font-black uppercase tracking-widest text-amber-700 mt-3 mb-1">
-                                                {block.text}
-                                              </h5>
-                                            ) : (
-                                              <p key={index} className="text-sm leading-relaxed text-slate-700 whitespace-pre-line">
-                                                {block.text}
-                                              </p>
-                                            )
-                                          ))}
-                                        </div>
-                                    ) : isSoyBienestarPatient(selectedPatientDetails) ? (
-                                        <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
-                                    ) : (
-                                        <div className="whitespace-pre-line">Pendiente de valoración.</div>
-                                    )}
-                                </div>
-                            </div>
+                            {!isHipnoDigest(selectedPatientDetails) && (
+                              <div>
+                                  <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
+                                  <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed p-4 bg-blue-50/30 rounded-xl border border-blue-100">
+                                      {selectedPatientDetails.conversationSummary ? (
+                                          <div className="space-y-4">
+                                            {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary, globalConfig?.clinicalPrompt).map((block, index) => (
+                                              block.isTitle ? (
+                                                <h4 key={index} className="text-sm font-black uppercase tracking-widest text-blue-900 border-b border-blue-200 pb-1 mt-4">
+                                                  {block.text}
+                                                </h4>
+                                              ) : block.isSubTitle ? (
+                                                <h5 key={index} className="text-xs font-black uppercase tracking-widest text-amber-700 mt-3 mb-1">
+                                                  {block.text}
+                                                </h5>
+                                              ) : (
+                                                <p key={index} className="text-sm leading-relaxed text-slate-700 whitespace-pre-line">
+                                                  {block.text}
+                                                </p>
+                                              )
+                                            ))}
+                                          </div>
+                                      ) : isSoyBienestarPatient(selectedPatientDetails) ? (
+                                          <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
+                                      ) : (
+                                          <div className="whitespace-pre-line">Pendiente de valoración.</div>
+                                      )}
+                                  </div>
+                              </div>
+                            )}
                         </>
                     )}
                 </div>
 
-                <div className="p-6 border-t bg-slate-50 flex items-center gap-4">
+                <div className="p-6 border-t bg-slate-50 flex items-center gap-4 justify-end">
                     {isEditingDetails ? (
                         <>
                              <Button onClick={handleSaveDetails} className="bg-green-600 hover:bg-green-700 shadow-green-200">
@@ -2094,10 +2163,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                         </>
                     ) : (
                         <>
-                            <Button onClick={handleResendFromDetails} variant="primary" className="mr-auto bg-blue-600 hover:bg-blue-700 shadow-blue-200">
-                                <i className="fas fa-redo mr-2"></i> Reenviar Cuestionario
-                            </Button>
-                            <Button onClick={handlePrintPatientFile}><i className="fas fa-print mr-2"></i> Imprimir de Nuevo</Button>
+                            {!isHipnoDigest(selectedPatientDetails) && (
+                              <Button onClick={handleResendFromDetails} variant="primary" className="mr-auto bg-blue-600 hover:bg-blue-700 shadow-blue-200">
+                                  <i className="fas fa-redo mr-2"></i> Reenviar Cuestionario
+                              </Button>
+                            )}
+                            <Button onClick={handlePrintPatientFile}><i className="fas fa-print mr-2"></i> Imprimir Ficha</Button>
                         </>
                     )}
                 </div>
@@ -2264,6 +2335,26 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                   value={dateEnd}
                                   onChange={e => setDateEnd(e.target.value)}
                               />
+                          </div>
+                      </div>
+
+                      {/* FILTRO DE PROGRAMA / TIPO */}
+                      <div>
+                          <label className="block text-[11px] font-black uppercase text-slate-500 mb-2 tracking-widest">Filtrar por Tipo / Programa</label>
+                          <div className="flex flex-wrap gap-2">
+                              {[
+                                  { id: 'all', label: 'Todos' },
+                                  { id: 'reprogramate', label: 'Reprográmate' },
+                                  { id: 'hipnodigest', label: 'HipnoDigest' }
+                              ].map(prog => (
+                                  <button 
+                                    key={prog.id}
+                                    onClick={() => setFilterProgram(prog.id as any)}
+                                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-colors focus:outline-none ${filterProgram === prog.id ? 'bg-purple-600 text-white shadow' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                  >
+                                      {prog.label}
+                                  </button>
+                              ))}
                           </div>
                       </div>
 
@@ -2550,12 +2641,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                     <p className="text-sm text-slate-400 text-center py-6 italic border-2 border-dashed border-slate-100 rounded-xl">{showDeletedMode ? 'No hay fichas borradas recientes.' : 'No hay registros recientes'}</p>
                   ) : (
                     recentRegistry.map((p) => {
-                      const isSoyBienestar = p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
+                      const isHD = isHipnoDigest(p);
+                      const isSoyBienestar = (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId) && !isHD;
                       const needsReview = isSoyBienestar && !p.therapistReviewedAt;
                       const displayName = p.nombre || (p as any).displayName || p.email || "Paciente sin nombre";
                       
                       return (
-                      <div key={p.id} className={`group relative flex flex-col p-4 rounded-2xl border transition-all shadow-sm hover:shadow-md gap-3 ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-100 hover:border-teal-300'}`}>
+                      <div key={p.id} className={`group relative flex flex-col p-4 rounded-2xl border transition-all shadow-sm hover:shadow-md gap-3 ${needsReview ? 'border-amber-300 bg-amber-50/60' : isHD ? 'bg-purple-50/30 border-purple-200 hover:border-purple-400' : 'bg-white border-slate-100 hover:border-teal-300'}`}>
                         <div className="flex justify-between items-start w-full">
                             <div className="flex flex-col overflow-hidden leading-tight">
                                 <div className="flex items-center gap-2">
@@ -2571,9 +2663,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                     )}
                                     <button onClick={() => openPatientDetails(p)} className="text-left text-sm font-bold text-blue-700 hover:text-blue-900 hover:underline truncate transition-colors block w-full">{displayName}</button>
                                 </div>
-                                {isSoyBienestar && (
+                                {isHD ? (
+                                    <span className="shrink-0 bg-purple-100 text-purple-800 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-purple-200 flex items-center gap-1">
+                                        <i className="fas fa-book-medical"></i> HIPNODIGEST
+                                    </span>
+                                ) : isSoyBienestar ? (
                                     <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 mt-1 self-start rounded-md text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar</span>
-                                )}
+                                ) : null}
                                 <span className={`text-xs mt-1 font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
                             </div>
                             
@@ -2586,6 +2682,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 >
                                     <i className="fas fa-undo"></i> Restaurar
                                 </button>
+                            ) : isHD ? (
+                                <>
+                                    <div className="text-[10px] font-black uppercase tracking-tighter px-2.5 py-1.5 rounded-lg text-center bg-purple-100 text-purple-900 border border-purple-300">
+                                        HIPNODIGEST
+                                    </div>
+                                    <button 
+                                        onClick={() => deleteRecord(p.id, p.status)}
+                                        className="p-2 ml-1 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                    >
+                                        <i className="fas fa-trash"></i>
+                                    </button>
+                                </>
                             ) : (
                                 <>
                                     <button 
@@ -2607,7 +2715,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                         p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
                                         }`}
                                     >
-                                        {statusLabels[p.status]}
+                                        {statusLabels[p.status] || p.status}
                                     </div>
 
                                     <button 
@@ -2630,7 +2738,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                             </div>
                         </div>
 
-                        {(p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized') && (
+                        {!isHD && (p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized') && (
                             <div className="flex gap-2 pt-2 border-t border-slate-50">
                                 <button onClick={() => openResultsModal(p)} className="flex-1 py-2.5 text-xs font-bold bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition-colors flex items-center justify-center gap-2">
                                     <i className="fas fa-eye"></i> Ver
@@ -3340,6 +3448,17 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                           />
                       </div>
                       <select 
+                          value={filterProgram}
+                          onChange={(e) => setFilterProgram(e.target.value as any)}
+                          className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-100 focus:border-purple-400 text-sm font-medium text-slate-700"
+                          disabled={showDeletedMode}
+                      >
+                          <option value="all">Todos los tipos</option>
+                          <option value="reprogramate">Reprográmate</option>
+                          <option value="hipnodigest">HipnoDigest</option>
+                      </select>
+
+                      <select 
                           value={filterStatus}
                           onChange={(e) => setFilterStatus(e.target.value)}
                           className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 text-sm font-medium text-slate-700"
@@ -3408,12 +3527,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       ) : (
                           <div className="space-y-3">
                               {expandedPatients.map((p) => {
-                                  const isSoyBienestar = p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId;
+                                  const isHD = isHipnoDigest(p);
+                                  const isSoyBienestar = (p.source === 'soybienestar' || p.directAccessCreated || p.soybienestarUid || p.sourceRequestId) && !isHD;
                                   const needsReview = isSoyBienestar && !p.therapistReviewedAt;
                                   const displayName = p.nombre || (p as any).displayName || p.email || "Paciente sin nombre";
                                   
                                   return (
-                                      <div key={p.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all shadow-sm hover:shadow-md ${needsReview ? 'border-amber-300 bg-amber-50/60' : 'bg-white border-slate-200 hover:border-blue-200'}`}>
+                                      <div key={p.id} className={`flex items-center gap-4 p-4 rounded-xl border transition-all shadow-sm hover:shadow-md ${needsReview ? 'border-amber-300 bg-amber-50/60' : isHD ? 'bg-purple-50/30 border-purple-200 hover:border-purple-300' : 'bg-white border-slate-200 hover:border-blue-200'}`}>
                                           <div className="flex-1 min-w-[200px]">
                                               <div className="flex items-center gap-2">
                                                   {showDeletedMode && (
@@ -3430,20 +3550,34 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               </div>
                                               <div className="flex items-center gap-2 mt-1">
                                                 <span className={`text-xs font-bold truncate ${needsReview ? 'text-amber-600' : 'text-slate-400'}`}>{p.email}</span>
-                                                {isSoyBienestar && (
+                                                {isHD ? (
+                                                    <span className="shrink-0 bg-purple-100 text-purple-800 px-2 py-0.5 rounded text-[9px] font-black tracking-widest uppercase border border-purple-200 flex items-center gap-1">
+                                                        <i className="fas fa-book-medical"></i> HIPNODIGEST
+                                                    </span>
+                                                ) : isSoyBienestar ? (
                                                     <span className="shrink-0 bg-blue-50 text-blue-600 px-2 py-0.5 rounded text-[9px] font-black tracking-widest uppercase border border-blue-100">SoyBienestar</span>
-                                                )}
+                                                ) : null}
                                               </div>
                                           </div>
                                           
                                           <div className="hidden md:flex flex-col text-xs text-slate-500 w-[180px] shrink-0">
-                                              <span>Registro: {p.dateSent ? formatDate(p.dateSent) : (p.directQuestionnaireUrlCreatedAt ? formatDate(p.directQuestionnaireUrlCreatedAt) : 'Pendiente')}</span>
-                                              <span>Cuestionario: {p.dateAnswered ? formatDate(p.dateAnswered) : 'Pendiente'}</span>
-                                              <span>Dosier: {p.dateConclusionSent ? formatDate(p.dateConclusionSent) : 'Pendiente'}</span>
+                                              {isHD ? (
+                                                  <>
+                                                    <span className="font-bold text-purple-900">Programa: HipnoDigest</span>
+                                                    <span>Sincronizado: {formatDate((p as any).soybienestarSyncedAt || p.dateSent)}</span>
+                                                  </>
+                                              ) : (
+                                                  <>
+                                                    <span>Registro: {p.dateSent ? formatDate(p.dateSent) : (p.directQuestionnaireUrlCreatedAt ? formatDate(p.directQuestionnaireUrlCreatedAt) : 'Pendiente')}</span>
+                                                    <span>Cuestionario: {p.dateAnswered ? formatDate(p.dateAnswered) : 'Pendiente'}</span>
+                                                    <span>Dosier: {p.dateConclusionSent ? formatDate(p.dateConclusionSent) : 'Pendiente'}</span>
+                                                  </>
+                                              )}
                                           </div>
 
                                           <div className="w-[120px] shrink-0 flex flex-col items-center gap-1">
                                                 <div className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded w-full text-center ${
+                                                    isHD ? 'bg-purple-100 text-purple-900 border border-purple-300' :
                                                     p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
                                                     p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
                                                     p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
@@ -3451,9 +3585,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                     p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
                                                     p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
                                                 }`}>
-                                                    {statusLabels[p.status]}
+                                                    {isHD ? 'HIPNODIGEST' : (statusLabels[p.status] || p.status)}
                                                 </div>
-                                                {!(showDeletedMode || (p.status as any) === 'deleted') && (
+                                                {!isHD && !(showDeletedMode || (p.status as any) === 'deleted') && (
                                                     <div className="flex gap-1 w-full mt-1">
                                                         <button 
                                                             onClick={() => changeStatus(p.id, 'backward')}
@@ -3474,7 +3608,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                           </div>
 
                                           <div className="flex items-center gap-2 shrink-0 border-l pl-4 border-slate-100">
-                                              {(p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized') && !(showDeletedMode || (p.status as any) === 'deleted') && (
+                                              {!isHD && (p.status === 'completed' || p.status === 'concluded' || p.status === 'finalized') && !(showDeletedMode || (p.status as any) === 'deleted') && (
                                                   <>
                                                     <button onClick={() => openResultsModal(p)} className="px-3 py-2 text-xs font-bold bg-blue-50 text-blue-600 border border-blue-100 rounded-lg hover:bg-blue-100 transition-colors" title="Resultados">
                                                         <i className="fas fa-eye"></i>
