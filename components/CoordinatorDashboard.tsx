@@ -356,15 +356,6 @@ async function validateAIReportForPatient(patient: PatientData): Promise<AIRepor
   }
 }
 
-function isAIReportMarkedCurrent(patient: PatientData) {
-  const reportStatus = (patient as any).aiReportStatus;
-  return !!patient.conversationSummary &&
-    !!(patient as any).aiInputAnswersHash &&
-    reportStatus !== 'pending' &&
-    reportStatus !== 'error' &&
-    reportStatus !== 'stale';
-}
-
 export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullProfile, onProfileUpdate, onLogout, onEnterEditMode }) => {
   const [patient, setPatient] = useState<Partial<PatientData>>({
     nombre: '', edad: '', sexo: '', observaciones: '', telefono: '', email: ''
@@ -1607,9 +1598,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     downloadAnchorNode.remove();
   };
 
-  const handlePrintPatientFile = () => {
+  const handlePrintPatientFile = async () => {
     if (!selectedPatientDetails) return;
     const p = selectedPatientDetails;
+    const reportIsCurrent = await validateAIReportForPatient(p) === 'valid';
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       triggerToast("Por favor, permite las ventanas emergentes.");
@@ -1709,7 +1701,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             <div class="section">
                 <div class="section-title">Valoración Clínica / Coaching (Uso Interno)</div>
                 <div class="clinical-report">
-                    ${isAIReportMarkedCurrent(p) ?
+                    ${reportIsCurrent ?
                         (() => {
                             const blocks = formatGeneratedReportForDisplay(p.conversationSummary, globalConfig?.clinicalPrompt);
                             let outHtml = '';
