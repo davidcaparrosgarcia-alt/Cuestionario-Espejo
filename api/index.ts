@@ -838,7 +838,21 @@ function buildAnswersHash(answers: Record<string, any> | undefined | null): stri
   return crypto.createHash("sha256").update(JSON.stringify(sortedAnswers)).digest("hex");
 }
 
+async function markPatientReportState(patientRef: any, status: "pending" | "ready" | "error" | "stale", error?: string | null) {
+  try {
+    await patientRef.set({
+      aiReportStatus: status,
+      aiReportError: error || null,
+      aiReportErrorAt: status === "error" ? Date.now() : null,
+      aiReportLastAttemptAt: Date.now()
+    }, { merge: true });
+  } catch (stateError: any) {
+    console.error("[GEMINI BACKEND] No se pudo persistir el estado de la valoración:", stateError?.message || stateError);
+  }
+}
+
 app.post("/api/generate-patient-report", async (req, res) => {
+  let authenticatedPatientRef: any = null;
   try {
     const { patientId, accessPin } = req.body || {};
 
@@ -869,10 +883,13 @@ app.post("/api/generate-patient-report", async (req, res) => {
       return res.status(401).json({ success: false, error: "Clave de acceso no válida." });
     }
 
+    authenticatedPatientRef = patientRef;
+
     // Verificar respuestas y calcular hash determinista
     const answers = patientData.answers || {};
     const answerCount = Object.keys(answers).length;
     if (answerCount === 0) {
+      await markPatientReportState(patientRef, "error", "No hay respuestas disponibles para generar la valoración.");
       return res.status(400).json({ success: false, error: "No hay respuestas disponibles para generar la valoración." });
     }
 
@@ -888,6 +905,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
       patientData.aiInputAnswersHash === currentAnswersHash
     ) {
       console.log(`[GEMINI BACKEND] Reutilizando informe existente para paciente ${patientId.slice(0, 12)}...`);
+      await markPatientReportState(patientRef, "ready");
       return res.json({
         success: true,
         reportReady: true,
@@ -899,6 +917,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.error("[GEMINI BACKEND] Falta GEMINI_API_KEY en variables de entorno de servidor.");
+      await markPatientReportState(patientRef, "error", "Configuración de servidor incompleta: falta GEMINI_API_KEY.");
       return res.status(500).json({ success: false, error: "Configuración de servidor incompleta: falta GEMINI_API_KEY." });
     }
 
@@ -925,6 +944,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
 
     if (!clinicalPrompt || !conclusionPrompt) {
       console.error("[GEMINI BACKEND] Error: Prompts de generación no configurados en config/global_config");
+      await markPatientReportState(patientRef, "error", "Los prompts de generación de valoración no están configurados en los Ajustes.");
       return res.status(400).json({
         success: false,
         error: "Los prompts de generación de valoración no están configurados en los Ajustes."
@@ -996,6 +1016,7 @@ ${finalConclusionPrompt}
 
     if (!internalReport || !externalConclusion) {
       console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o estructura inválida.");
+      await markPatientReportState(patientRef, "error", "La respuesta de IA no contiene la estructura requerida.");
       return res.status(500).json({
         success: false,
         error: "Error en la generación con IA: la respuesta no contiene la estructura requerida."
@@ -1012,7 +1033,11 @@ ${finalConclusionPrompt}
       aiInputHadSoyBienestarContext: !!patientData.soybienestarContext,
       aiInputAnswersHash: currentAnswersHash,
       aiModel: activeModel,
-      aiProvider: "google"
+      aiProvider: "google",
+      aiReportStatus: "ready",
+      aiReportError: null,
+      aiReportErrorAt: null,
+      aiReportLastAttemptAt: now
     }, { merge: true });
 
     console.log(`[GEMINI BACKEND] Informe guardado con éxito para el paciente ${patientId.slice(0, 12)}...`);
@@ -1025,6 +1050,9 @@ ${finalConclusionPrompt}
 
   } catch (error: any) {
     console.error("Error in POST /api/generate-patient-report:", error?.message || error);
+    if (authenticatedPatientRef) {
+      await markPatientReportState(authenticatedPatientRef, "error", error?.message || "Error interno al generar el informe con Gemini.");
+    }
     return res.status(500).json({
       success: false,
       error: error.message || "Error interno al generar el informe con Gemini."

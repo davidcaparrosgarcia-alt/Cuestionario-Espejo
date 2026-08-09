@@ -323,6 +323,48 @@ function isConclusionOnlyHeadersOrEmpty(text: string): boolean {
   return nonHeaderLines.join("").trim().length === 0;
 }
 
+type AIReportValidationState = 'checking' | 'valid' | 'pending' | 'error' | 'stale' | 'missing';
+
+async function buildClientAnswersHash(answers: Record<string, string> | undefined): Promise<string> {
+  const sourceAnswers = answers || {};
+  const sortedAnswers: Record<string, string> = {};
+  Object.keys(sourceAnswers).sort().forEach(key => {
+    sortedAnswers[key] = sourceAnswers[key];
+  });
+
+  const bytes = new TextEncoder().encode(JSON.stringify(sortedAnswers));
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function validateAIReportForPatient(patient: PatientData): Promise<AIReportValidationState> {
+  if (patient.id?.startsWith('sample-') && patient.conversationSummary) return 'valid';
+
+  const reportStatus = (patient as any).aiReportStatus;
+  if (reportStatus === 'pending' || reportStatus === 'error' || reportStatus === 'stale') {
+    return reportStatus;
+  }
+
+  if (!patient.conversationSummary || !(patient as any).aiInputAnswersHash) return 'missing';
+
+  try {
+    const currentAnswersHash = await buildClientAnswersHash(patient.answers);
+    return currentAnswersHash === (patient as any).aiInputAnswersHash ? 'valid' : 'stale';
+  } catch (error) {
+    console.error('[AI REPORT VALIDATION] No se pudo verificar el hash:', error);
+    return 'stale';
+  }
+}
+
+function isAIReportMarkedCurrent(patient: PatientData) {
+  const reportStatus = (patient as any).aiReportStatus;
+  return !!patient.conversationSummary &&
+    !!(patient as any).aiInputAnswersHash &&
+    reportStatus !== 'pending' &&
+    reportStatus !== 'error' &&
+    reportStatus !== 'stale';
+}
+
 export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullProfile, onProfileUpdate, onLogout, onEnterEditMode }) => {
   const [patient, setPatient] = useState<Partial<PatientData>>({
     nombre: '', edad: '', sexo: '', observaciones: '', telefono: '', email: ''
@@ -360,12 +402,30 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [selectedPatientConclusion, setSelectedPatientConclusion] = useState<PatientData | null>(null);
   
   const [selectedPatientDetails, setSelectedPatientDetails] = useState<PatientData | null>(null); 
+  const [selectedPatientReportState, setSelectedPatientReportState] = useState<AIReportValidationState>('missing');
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [tempPatientDetails, setTempPatientDetails] = useState<PatientData | null>(null);
 
   const [editingConclusion, setEditingConclusion] = useState('');
   const [editingAudio, setEditingAudio] = useState<string | undefined>(undefined);
   const [resolvedAudioUrl, setResolvedAudioUrl] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+      let cancelled = false;
+      if (!selectedPatientDetails) {
+          setSelectedPatientReportState('missing');
+          return;
+      }
+
+      setSelectedPatientReportState('checking');
+      validateAIReportForPatient(selectedPatientDetails).then(state => {
+          if (!cancelled) setSelectedPatientReportState(state);
+      });
+
+      return () => {
+          cancelled = true;
+      };
+  }, [selectedPatientDetails]);
   
   useEffect(() => {
       if (editingAudio && editingAudio.startsWith('audio_ref_')) {
@@ -1244,7 +1304,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     setSelectedPatientResults(p);
   };
 
-  const openConclusionModal = (p: PatientData) => {
+  const openConclusionModal = async (p: PatientData) => {
+    const reportState = await validateAIReportForPatient(p);
+    if (reportState !== 'valid') {
+      const message = reportState === 'error'
+        ? `La valoración automática falló y está pendiente de regeneración: ${(p as any).aiReportError || 'error no especificado'}`
+        : reportState === 'pending'
+          ? 'La valoración automática todavía está pendiente.'
+          : 'La valoración disponible no corresponde a las respuestas actuales y no puede usarse como conclusión final.';
+      triggerToast(message);
+      setSelectedPatientDetails(p);
+      return;
+    }
+
     setSelectedPatientConclusion(p);
     setEditingConclusion(p.finalConclusion || "");
     setEditingAudio(p.audioConclusion);
@@ -1637,7 +1709,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             <div class="section">
                 <div class="section-title">Valoración Clínica / Coaching (Uso Interno)</div>
                 <div class="clinical-report">
-                    ${p.conversationSummary ? 
+                    ${isAIReportMarkedCurrent(p) ?
                         (() => {
                             const blocks = formatGeneratedReportForDisplay(p.conversationSummary, globalConfig?.clinicalPrompt);
                             let outHtml = '';
@@ -2023,15 +2095,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 <h3 className="text-sm font-black uppercase text-slate-400 tracking-widest mb-4 border-b pb-2">
                                     {isHipnoDigest(selectedPatientDetails) ? 'Datos del Cliente HipnoDigest' : 'Datos del Expediente'}
                                 </h3>
-                                <div className="grid grid-cols-2 gap-y-4 gap-x-8">
+                                <div className={isHipnoDigest(selectedPatientDetails) ? "grid grid-cols-2 gap-y-4 gap-x-8" : "grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-8 min-w-0"}>
                                     <div>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Nombre Completo</span>
-                                        <span className="block text-lg font-bold text-slate-800">{selectedPatientDetails.nombre}</span>
+                                        <span className="block text-lg font-bold text-slate-800 break-words">{selectedPatientDetails.nombre}</span>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <span className="block text-xs font-bold text-slate-500 uppercase">Email</span>
+                                        <span className="block text-base font-medium text-slate-800 break-words [overflow-wrap:anywhere]">{selectedPatientDetails.email || 'N/A'}</span>
                                     </div>
                                     <div>
-                                        <span className="block text-xs font-bold text-slate-500 uppercase">Contacto</span>
-                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.email || 'N/A'}</span>
-                                        <span className="block text-base font-medium text-slate-800">{selectedPatientDetails.telefono || 'N/A'}</span>
+                                        <span className="block text-xs font-bold text-slate-500 uppercase">Teléfono</span>
+                                        <span className="block text-base font-medium text-slate-800 break-words">{selectedPatientDetails.telefono || 'N/A'}</span>
                                     </div>
                                     <div>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Edad / Sexo</span>
@@ -2081,14 +2156,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                 {selectedPatientDetails.dateConclusionViewed && <p><span className="font-bold text-blue-600">Conclusión Vista:</span> {formatDate(selectedPatientDetails.dateConclusionViewed)}</p>}
                                             </div>
                                         </div>
-                                        <div className="col-span-2 mt-2">
+                                        <div className="sm:col-span-2 mt-2">
                                             <span className="block text-xs font-bold text-slate-500 uppercase">PIN de Acceso</span>
                                             <span className="block text-xl font-bold text-blue-600 tracking-widest">{selectedPatientDetails.accessPin ? selectedPatientDetails.accessPin.toUpperCase() : "N/A"}</span>
                                         </div>
                                       </>
                                     )}
 
-                                    <div className="col-span-2 mt-2">
+                                    <div className={isHipnoDigest(selectedPatientDetails) ? "col-span-2 mt-2" : "sm:col-span-2 mt-2 min-w-0"}>
                                         <span className="block text-xs font-bold text-slate-500 uppercase">Observaciones</span>
                                         <div className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-100">
                                             {isHipnoDigest(selectedPatientDetails) ? (
@@ -2121,7 +2196,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                               <div>
                                   <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b pb-2 mb-4">Valoración Clínica / Coaching (Uso Interno)</h3>
                                   <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed p-4 bg-blue-50/30 rounded-xl border border-blue-100">
-                                      {selectedPatientDetails.conversationSummary ? (
+                                      {selectedPatientReportState === 'valid' && selectedPatientDetails.conversationSummary ? (
                                           <div className="space-y-4">
                                             {formatGeneratedReportForDisplay(selectedPatientDetails.conversationSummary, globalConfig?.clinicalPrompt).map((block, index) => (
                                               block.isTitle ? (
@@ -2139,6 +2214,16 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                               )
                                             ))}
                                           </div>
+                                      ) : selectedPatientReportState === 'checking' ? (
+                                          <div className="whitespace-pre-line text-slate-500">Verificando que la valoración corresponde a las respuestas actuales...</div>
+                                      ) : selectedPatientReportState === 'error' ? (
+                                          <div className="whitespace-pre-line text-red-700 font-medium">
+                                            Valoración automática pendiente por error: {(selectedPatientDetails as any).aiReportError || 'error no especificado'}
+                                          </div>
+                                      ) : selectedPatientReportState === 'pending' ? (
+                                          <div className="whitespace-pre-line text-amber-700 font-medium">Valoración automática pendiente de generación.</div>
+                                      ) : selectedPatientReportState === 'stale' || (selectedPatientReportState === 'missing' && !!selectedPatientDetails.conversationSummary) ? (
+                                          <div className="whitespace-pre-line text-amber-700 font-medium">La valoración almacenada no corresponde de forma verificable a las respuestas actuales. No se muestra como valoración final válida.</div>
                                       ) : isSoyBienestarPatient(selectedPatientDetails) ? (
                                           <div className="whitespace-pre-line">{buildSoyBienestarClinicalSummary(selectedPatientDetails)}</div>
                                       ) : (

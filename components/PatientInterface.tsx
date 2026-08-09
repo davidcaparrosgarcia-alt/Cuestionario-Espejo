@@ -69,6 +69,16 @@ export function resolveInitialVoiceFromSex(sexo?: string | null, fallbackVoice: 
   return fallbackVoice;
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 const FALLBACK_TEXTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"; // Transparent pixel fallback
 
 const BACKGROUNDS = {
@@ -296,17 +306,17 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   const answersRef = useRef<Record<string, string>>({});
 
   const setAnswersSafely = (nextAnswers: Record<string, string>) => {
-    setReportReady(false);
     answersRef.current = nextAnswers || {};
     setAnswers(nextAnswers || {});
   };
   const [pinInput, setPinInput] = useState('');
   
-  const [reportReady, setReportReady] = useState<boolean>(false);
   const [clinicalReportGenerationError, setClinicalReportGenerationError] = useState<{error: boolean, message: string} | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [isSendingResults, setIsSendingResults] = useState(false);
   const [hasSentResults, setHasSentResults] = useState(false);
+  const [isReviewMode, setIsReviewMode] = useState(false);
+  const sendResultsInFlightRef = useRef(false);
   const sequenceIdRef = useRef<number>(0);
 
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -616,9 +626,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   useEffect(() => {
     if (step === 'finish' && !isEditorMode && !hasSentResults) {
-      if (!reportReady) {
-        generateClinicalReport();
-      }
       const finalText = processText(globalConfig.finishText);
       playOrSpeak(finalText, globalConfig.finishAudio);
       addMessage(finalText, 'ia');
@@ -648,53 +655,13 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     return FALLBACK_TEXTURE;
   };
 
-  const generateClinicalReport = async () => {
-    if (isGeneratingReport || reportReady) return;
-    setIsGeneratingReport(true);
-    setClinicalReportGenerationError(null);
-    
-    const patientId = currentPatientData.id || patientDataRef.current?.id;
-    const accessPin = currentPatientData.accessPin || patientDataRef.current?.accessPin || pinInput;
-    
-    if (!patientId) {
-      setClinicalReportGenerationError({
-        error: true,
-        message: "No se encontró el identificador del paciente."
-      });
-      setIsGeneratingReport(false);
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/generate-patient-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ patientId, accessPin })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success || !data.reportReady) {
-        throw new Error(data.error || "No se pudo generar la valoración automática.");
-      }
-
-      setReportReady(true);
-    } catch (err: any) {
-      console.error("[REPORT GENERATION ERROR]", err);
-      setClinicalReportGenerationError({
-        error: true,
-        message: err.message || "Error al generar la valoración del paciente."
-      });
-    } finally {
-      setIsGeneratingReport(false);
-    }
-  };
-
   const handleSendResults = async () => {
-    if (isGeneratingReport || isSendingResults) {
+    if (sendResultsInFlightRef.current || isGeneratingReport || isSendingResults) {
       return;
     }
 
+    sendResultsInFlightRef.current = true;
+    sequenceIdRef.current++;
     stopAudio();
     setIsSendingResults(true);
 
@@ -704,112 +671,130 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     if (!patientId) {
       showToast("Error: No se encontró el identificador del paciente.");
       setIsSendingResults(false);
+      sendResultsInFlightRef.current = false;
       return;
     }
 
-    // 1. Guardar las respuestas finales del cuestionario en Firestore
     const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
+    const now = Date.now();
+
+    // 1. Una sola escritura representa la finalización lógica completa.
     try {
       await DataService.updatePatient(patientId, {
         answers: finalAnswers,
-        lastAnswerSavedAt: Date.now()
-      });
-    } catch (e) {
-      console.error("[SEND RESULTS] Error guardando respuestas finales:", e);
-      showToast("Error al guardar las respuestas. Por favor, inténtalo de nuevo.");
-      setIsSendingResults(false);
-      return; // Detener aquí si falla el guardado de respuestas finales
-    }
-
-    // 2. Si el informe no está listo, solicitar generación al backend
-    if (!reportReady) {
-      setIsGeneratingReport(true);
-      setClinicalReportGenerationError(null);
-      try {
-        const response = await fetch('/api/generate-patient-report', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patientId, accessPin })
-        });
-        const data = await response.json();
-
-        if (!response.ok || !data.success || !data.reportReady) {
-          throw new Error(data.error || "Error al generar la valoración con IA.");
-        }
-
-        setReportReady(true);
-      } catch (err: any) {
-        console.error("[SEND RESULTS] Error en generación backend:", err);
-        setClinicalReportGenerationError({
-          error: true,
-          message: err.message || "Error al generar la valoración."
-        });
-        setIsGeneratingReport(false);
-        setIsSendingResults(false);
-        return; // Detener aquí. No marcar como completed si falló la IA.
-      } finally {
-        setIsGeneratingReport(false);
-      }
-    }
-
-    // 3. Guardar/confirmar status: completed solo cuando todo fue correcto
-    const now = Date.now();
-    try {
-      await DataService.updatePatient(patientId, {
+        lastAnswerSavedAt: now,
         dateAnswered: now,
         status: 'completed',
-        answers: finalAnswers
-      });
-
-      const updatedData = { ...currentPatientData, dateAnswered: now, status: 'completed' as const, answers: finalAnswers };
-      setCurrentPatientData(updatedData);
-      patientDataRef.current = updatedData;
+        aiReportStatus: 'pending',
+        aiReportError: null,
+        aiReportErrorAt: null
+      } as any);
     } catch (e) {
-      console.error("[SEND RESULTS] Error guardando estado completed:", e);
-      showToast("Error al guardar la finalización. Inténtalo de nuevo.");
+      console.error("[SEND RESULTS] Error fijando la finalización:", e);
+      showToast("Error al guardar la finalización. Por favor, inténtalo de nuevo.");
       setIsSendingResults(false);
-      return; // Detener todo si no se pudo guardar status: completed
+      sendResultsInFlightRef.current = false;
+      return;
     }
 
-    // 4. Notificar a SoyBienestar: questionnaire_completed
+    // 2. El estado local solo cambia después de que Firestore confirme completed.
+    const updatedData = {
+      ...currentPatientData,
+      dateAnswered: now,
+      lastAnswerSavedAt: now,
+      status: 'completed' as const,
+      answers: finalAnswers,
+      aiReportStatus: 'pending'
+    } as Partial<PatientData> & { aiReportStatus: string };
+    setCurrentPatientData(updatedData);
+    patientDataRef.current = updatedData;
+    setHasSentResults(true);
+
+    if (!isEditorMode) {
+      localStorage.setItem(`radar_completed_${patientId}`, 'true');
+    }
+
+    // 3. Notificar después de completed y comprobar también el cuerpo de la respuesta.
     try {
-      const syncRes = await fetch('/api/notify-soybienestar-status', {
+      const syncRes = await fetchWithTimeout('/api/notify-soybienestar-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
-      });
-      if (!syncRes.ok) {
-        console.error("[SoyBienestar Sync Error]", syncRes.status);
+      }, 20000);
+      const syncData = await syncRes.json().catch(() => null);
+      if (!syncRes.ok || syncData?.success !== true) {
+        console.error("[SoyBienestar Sync Error]", {
+          status: syncRes.status,
+          response: syncData
+        });
+      } else {
+        console.log("[SoyBienestar Sync Success]", syncData);
       }
     } catch (e) {
       console.error("[SoyBienestar Sync Error]", e);
     }
 
-    // 5. Notificación interna SMTP de cuestionario completado
+    // 4. Generar la valoración únicamente con las respuestas definitivas ya persistidas.
+    setIsGeneratingReport(true);
+    setClinicalReportGenerationError(null);
     try {
-      const notifyRes = await fetch('/api/notify-questionnaire-completed', {
+      const response = await fetchWithTimeout('/api/generate-patient-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patientId, accessPin })
-      });
+      }, 120000);
+      const data = await response.json();
+
+      if (!response.ok || !data.success || !data.reportReady) {
+        throw new Error(data.error || "Error al generar la valoración con IA.");
+      }
+
+      setCurrentPatientData(prev => ({ ...prev, aiReportStatus: 'ready' } as any));
+      patientDataRef.current = { ...patientDataRef.current, aiReportStatus: 'ready' } as any;
+    } catch (err: any) {
+      const message = err.message || "Error al generar la valoración.";
+      console.error("[SEND RESULTS] Error en generación backend; completed se conserva:", err);
+      setClinicalReportGenerationError({ error: true, message });
+
+      try {
+        await DataService.updatePatient(patientId, {
+          aiReportStatus: 'error',
+          aiReportError: message,
+          aiReportErrorAt: Date.now()
+        } as any);
+      } catch (reportStateError) {
+        console.error("[SEND RESULTS] No se pudo registrar el estado de error IA:", reportStateError);
+      }
+    } finally {
+      setIsGeneratingReport(false);
+    }
+
+    // 5. Notificación interna SMTP; tampoco puede revertir la finalización.
+    try {
+      const notifyRes = await fetchWithTimeout('/api/notify-questionnaire-completed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, accessPin })
+      }, 20000);
       console.log("[Internal SMTP Notification Status]", notifyRes.status);
     } catch (e) {
       console.error("[Internal SMTP Notification Error]", e);
     }
 
-    // 6. Actualizar estado local y mostrar mensaje final
-    setHasSentResults(true);
+    // 6. Mensaje final y salida garantizada, incluso si el audio no termina.
     setIsSendingResults(false);
-
-    if (!isEditorMode && patientId) {
-      localStorage.setItem(`radar_completed_${patientId}`, 'true');
-    }
 
     const afterSendMsg = processText(globalConfig.afterSendText);
     if (afterSendMsg) {
       addMessage(afterSendMsg, 'ia');
-      await playOrSpeak(afterSendMsg, globalConfig.afterSendAudio);
     }
+
+    await Promise.race([
+      afterSendMsg ? playOrSpeak(afterSendMsg, globalConfig.afterSendAudio) : Promise.resolve(),
+      new Promise<void>(resolve => setTimeout(resolve, 30000))
+    ]);
+
+    finishCompletedSession();
   };
 
   const pendingResolvesRef = useRef<(() => void)[]>([]);
@@ -1002,9 +987,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       setTranscript([]);
       setAnswersSafely({});
       setCurrentQuestionIndex(0);
+      setIsReviewMode(false);
       setVerificationAttempts(0);
       setInputValue('');
-      setReportReady(false);
       setIsGeneratingReport(false);
       setHasSentResults(false);
     }
@@ -1015,14 +1000,61 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setShowExitConfirm(false);
 
     try {
-      window.location.replace("https://soybienestar.es");
+      window.location.replace("https://soybienestar.es/herramientas");
     } catch (e) {
       console.warn("[FINISH SESSION] Redirect error", e);
-      window.location.href = "https://soybienestar.es";
+      window.location.href = "https://soybienestar.es/herramientas";
     }
   };
 
+  const loadReviewQuestion = (index: number) => {
+    const q = activeQuestions[index];
+    if (!q) {
+      setIsReviewMode(false);
+      setStep('finish');
+      return;
+    }
+
+    setVisibleOptions(q.isScale ? [] : q.options.map(option => option.key));
+    setIsInteractionLocked(false);
+    playQuestionSequence(q, index, true);
+  };
+
+  const enterReviewMode = () => {
+    sequenceIdRef.current++;
+    stopAudio();
+    setIsReviewMode(true);
+    setStep('questionnaire');
+    const lastIndex = Math.max(0, activeQuestions.length - 1);
+    setCurrentQuestionIndex(lastIndex);
+    loadReviewQuestion(lastIndex);
+  };
+
+  const handleReviewNavigation = (direction: 'prev' | 'next') => {
+    sequenceIdRef.current++;
+    stopAudio();
+    setIsInteractionLocked(false);
+
+    const nextIndex = direction === 'next' ? currentQuestionIndex + 1 : currentQuestionIndex - 1;
+    if (nextIndex >= activeQuestions.length) {
+      setIsReviewMode(false);
+      setVisibleOptions([]);
+      setStep('finish');
+      return;
+    }
+
+    if (nextIndex < 0) return;
+
+    setCurrentQuestionIndex(nextIndex);
+    loadReviewQuestion(nextIndex);
+  };
+
   const handleBack = () => {
+    if (isReviewMode) {
+      handleReviewNavigation('prev');
+      return;
+    }
+
     stopAudio();
     if (currentQuestionIndex > 0) {
       const prevIdx = currentQuestionIndex - 1;
@@ -1052,14 +1084,19 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       }
   };
 
-  const playQuestionSequence = async (q: Question, index: number) => {
+  const playQuestionSequence = async (q: Question, index: number, reviewMode = false) => {
     const seqId = ++sequenceIdRef.current;
-    setIsInteractionLocked(true); 
-    setVisibleOptions([]);
+    setIsInteractionLocked(!reviewMode);
+    setVisibleOptions(reviewMode && !q.isScale ? q.options.map(option => option.key) : []);
 
     const scenarioText = processText(q.speechScript || q.scenario);
     await playOrSpeak(scenarioText, q.audio);
     if (seqId !== sequenceIdRef.current) return;
+
+    if (reviewMode) {
+      setIsInteractionLocked(false);
+      return;
+    }
 
     if (q.isScale) {
         setIsInteractionLocked(false);
@@ -1412,12 +1449,19 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const handleAnswer = async (key: string) => {
-    if (isInteractionLocked || isSavingAnswer) return; 
+    if ((isInteractionLocked && !isReviewMode) || isSavingAnswer) return;
+    if (isReviewMode) {
+      sequenceIdRef.current++;
+    }
     stopAudio();
     const q = activeQuestions[currentQuestionIndex];
     if (!q) return;
 
     const currentAnswers = answersRef.current || answers;
+    if (isReviewMode && currentAnswers[q.id] === key) {
+      return;
+    }
+
     const newAnswers = { ...currentAnswers, [q.id]: key };
     setAnswersSafely(newAnswers);
     addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
@@ -1438,8 +1482,12 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 answers: newAnswers,
                 lastAnswerSavedAt: Date.now(),
                 lastAnsweredQuestionId: q.id,
-                lastAnsweredQuestionIndex: currentQuestionIndex
-            });
+                lastAnsweredQuestionIndex: currentQuestionIndex,
+                ...(isReviewMode ? {
+                  aiReportStatus: 'stale',
+                  aiReportStaleAt: Date.now()
+                } : {})
+            } as any);
 
             console.log("[ANSWER SAVE] success", {
                 patientId: patientId,
@@ -1453,6 +1501,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         } finally {
             setIsSavingAnswer(false);
         }
+    }
+
+    if (isReviewMode) {
+      setVisibleOptions(q.isScale ? [] : q.options.map(option => option.key));
+      return;
     }
 
     const nextIdx = currentQuestionIndex + 1;
@@ -1794,15 +1847,36 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 <div className="flex justify-between items-center mb-6">
                     <span className={`text-xs font-black uppercase tracking-[0.3em] block opacity-70 ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>Reflexión del Momento</span>
                     
-                    {currentQuestionIndex > 0 && (
-                    <button 
-                        onClick={handleBack} 
-                        disabled={isInteractionLocked || isSavingAnswer}
-                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-30 ${isDarkMode ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                        title="Pregunta anterior"
-                    >
-                        <i className="fas fa-arrow-left text-base"></i>
-                    </button>
+                    {isReviewMode ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleReviewNavigation('prev')}
+                          disabled={currentQuestionIndex === 0 || isSavingAnswer}
+                          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-30 ${isDarkMode ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                          title="Pregunta anterior"
+                          aria-label="Pregunta anterior"
+                        >
+                          <i className="fas fa-arrow-left text-base"></i>
+                        </button>
+                        <button
+                          onClick={() => handleReviewNavigation('next')}
+                          disabled={isSavingAnswer}
+                          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-30 ${isDarkMode ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                          title={currentQuestionIndex === activeQuestions.length - 1 ? "Volver a la pantalla final" : "Pregunta siguiente"}
+                          aria-label={currentQuestionIndex === activeQuestions.length - 1 ? "Volver a la pantalla final" : "Pregunta siguiente"}
+                        >
+                          <i className="fas fa-arrow-right text-base"></i>
+                        </button>
+                      </div>
+                    ) : currentQuestionIndex > 0 && (
+                      <button
+                          onClick={handleBack}
+                          disabled={isInteractionLocked || isSavingAnswer}
+                          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-30 ${isDarkMode ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                          title="Pregunta anterior"
+                      >
+                          <i className="fas fa-arrow-left text-base"></i>
+                      </button>
                     )}
                 </div>
 
@@ -1826,13 +1900,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                     <div className="px-8 pb-8 animate-in slide-in-from-bottom-4">
                         <p className={`text-base font-bold mb-8 leading-relaxed ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{processText(globalConfig.finishText)}</p>
                         <Button 
-                            onClick={() => {
-                                stopAudio();
-                                setStep("questionnaire");
-                                const lastIndex = Math.max(0, activeQuestions.length - 1);
-                                setCurrentQuestionIndex(lastIndex);
-                                loadQuestion(lastIndex);
-                            }}
+                            onClick={enterReviewMode}
                             variant="outline"
                             className={`w-full py-4 text-lg font-bold mb-4 ${isDarkMode ? 'border-slate-600 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-700 hover:bg-slate-50'}`}
                         >
@@ -1937,8 +2005,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                             <select 
                                 className={`w-full p-4 rounded-xl text-lg font-bold bg-transparent outline-none ${isDarkMode ? 'text-white' : 'text-blue-900'} disabled:opacity-50`}
                                 onChange={(e) => handleAnswer(e.target.value)}
-                                defaultValue=""
-                                disabled={isInteractionLocked || isSavingAnswer}
+                                value={isReviewMode ? (answersRef.current[activeQuestions[currentQuestionIndex].id] ?? answers[activeQuestions[currentQuestionIndex].id] ?? "") : ""}
+                                disabled={(isInteractionLocked && !isReviewMode) || isSavingAnswer}
                             >
                                 <option value="" disabled>Selecciona un valor ({activeQuestions[currentQuestionIndex].scaleRange.min} - {activeQuestions[currentQuestionIndex].scaleRange.max})</option>
                                 {Array.from({length: (activeQuestions[currentQuestionIndex].scaleRange.max - activeQuestions[currentQuestionIndex].scaleRange.min + 1)}, (_, i) => i + activeQuestions[currentQuestionIndex].scaleRange.min).map(val => (
@@ -1954,13 +2022,21 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                             <button 
                             key={opt.key} 
                             id={`opt-${opt.key}`}
-                            disabled={isInteractionLocked || isSavingAnswer}
+                            disabled={(isInteractionLocked && !isReviewMode) || isSavingAnswer}
                             onClick={() => handleAnswer(opt.key)} 
                             className={`w-full text-left p-6 rounded-2xl border-2 transition-all shadow-md active:scale-[0.98] animate-option flex items-start gap-5 backdrop-blur-lg ${
-                                (isInteractionLocked || isSavingAnswer) ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:border-blue-400'
-                            } ${isDarkMode ? 'bg-[#1e293b]/60 border-white/5 hover:bg-white/10' : 'bg-white/80 border-white hover:bg-white'}`}
+                                ((isInteractionLocked && !isReviewMode) || isSavingAnswer) ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:border-blue-400'
+                            } ${isDarkMode ? 'bg-[#1e293b]/60 border-white/5 hover:bg-white/10' : 'bg-white/80 border-white hover:bg-white'} ${
+                                isReviewMode && (answersRef.current[activeQuestions[currentQuestionIndex].id] ?? answers[activeQuestions[currentQuestionIndex].id]) === opt.key
+                                  ? 'border-green-500 ring-2 ring-green-400/40'
+                                  : ''
+                            }`}
                             >
-                            <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shadow-sm ${isDarkMode ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-600'}`}>{opt.key.toUpperCase()}</span>
+                            <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center font-black text-sm shadow-sm ${
+                              isReviewMode && (answersRef.current[activeQuestions[currentQuestionIndex].id] ?? answers[activeQuestions[currentQuestionIndex].id]) === opt.key
+                                ? 'bg-green-600 text-white'
+                                : isDarkMode ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-600'
+                            }`}>{opt.key.toUpperCase()}</span>
                             <span className={`font-bold leading-relaxed text-lg md:text-xl ${isDarkMode ? 'text-blue-50' : 'text-slate-800'}`}>{processText(opt.text)}</span>
                             </button>
                         )
