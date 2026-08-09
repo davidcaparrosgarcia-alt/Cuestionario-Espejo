@@ -921,7 +921,12 @@ app.post("/api/generate-patient-report", async (req, res) => {
       return res.status(500).json({ success: false, error: "Configuración de servidor incompleta: falta GEMINI_API_KEY." });
     }
 
-    const activeModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const modelCandidates = Array.from(new Set([
+      process.env.GEMINI_MODEL?.trim(),
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash-lite"
+    ].filter((model): model is string => Boolean(model))));
 
     // Recuperar prompts configurables desde config/global_config
     let clinicalPrompt = "";
@@ -980,35 +985,55 @@ INSTRUCCIONES PARA LA CONCLUSIÓN DEL PACIENTE:
 ${finalConclusionPrompt}
 `;
 
-    console.log("[GEMINI BACKEND CALL]", {
-      patientId: patientId.slice(0, 12),
-      model: activeModel,
-      answerCount
-    });
-
     const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model: activeModel,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            internalReport: { type: Type.STRING, description: "El informe técnico para uso interno" },
-            externalConclusion: { type: Type.STRING, description: "La conclusión empática para el paciente" }
-          },
-          required: ["internalReport", "externalConclusion"]
-        }
-      }
-    });
+    let activeModel = "";
+    let data: any = null;
+    let lastModelError: any = null;
 
-    const text = response.text || "{}";
-    let data: any = {};
-    try {
-      data = JSON.parse(text);
-    } catch (pErr: any) {
-      console.error("[GEMINI BACKEND] Error parseando respuesta JSON de Gemini:", pErr?.message || pErr);
+    for (const model of modelCandidates) {
+      try {
+        console.log("[GEMINI BACKEND CALL]", {
+          patientId: patientId.slice(0, 12),
+          model,
+          answerCount
+        });
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                internalReport: { type: Type.STRING, description: "El informe técnico para uso interno" },
+                externalConclusion: { type: Type.STRING, description: "La conclusión empática para el paciente" }
+              },
+              required: ["internalReport", "externalConclusion"]
+            }
+          }
+        });
+
+        const candidateData = JSON.parse(response.text || "{}");
+        const hasRequiredFields =
+          typeof candidateData.internalReport === "string" && candidateData.internalReport.trim() &&
+          typeof candidateData.externalConclusion === "string" && candidateData.externalConclusion.trim();
+
+        if (!hasRequiredFields) {
+          throw new Error("La respuesta de IA no contiene la estructura requerida.");
+        }
+
+        activeModel = model;
+        data = candidateData;
+        break;
+      } catch (modelError: any) {
+        lastModelError = modelError;
+        console.error(`[GEMINI BACKEND] Fallo con el modelo ${model}:`, modelError?.message || modelError);
+      }
+    }
+
+    if (!activeModel || !data) {
+      throw lastModelError || new Error("No se pudo generar el informe con ningún modelo configurado.");
     }
 
     const internalReport = typeof data.internalReport === "string" ? data.internalReport.trim() : "";

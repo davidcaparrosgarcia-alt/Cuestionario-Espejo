@@ -1601,12 +1601,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const handlePrintPatientFile = async () => {
     if (!selectedPatientDetails) return;
     const p = selectedPatientDetails;
-    const reportIsCurrent = await validateAIReportForPatient(p) === 'valid';
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       triggerToast("Por favor, permite las ventanas emergentes.");
       return;
     }
+    const reportIsCurrent = await validateAIReportForPatient(p) === 'valid';
 
     const htmlContent = `
         <!DOCTYPE html>
