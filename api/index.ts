@@ -903,6 +903,85 @@ app.post("/api/generate-patient-report", async (req, res) => {
 
     const currentAnswersHash = buildAnswersHash(answers);
 
+    // Traducir las claves almacenadas a contexto semántico usando el cuestionario configurable vigente.
+    let activeQuestions: any[] = [];
+    try {
+      const questionnaireDoc = await db.collection("questionnaires").doc("active").get();
+      const questionnaireData = questionnaireDoc.exists ? questionnaireDoc.data() || {} : {};
+      activeQuestions = Array.isArray(questionnaireData.questions) ? questionnaireData.questions : [];
+    } catch (questionnaireError) {
+      console.error("[GEMINI BACKEND] Error al leer questionnaires/active:", questionnaireError);
+    }
+
+    const semanticAnswers: any[] = [];
+    const resolvedQuestionIds = new Set<string>();
+    let usefulSemanticAnswerCount = 0;
+
+    for (const questionDefinition of activeQuestions) {
+      const questionId = String(questionDefinition?.id ?? "");
+      if (!questionId || !Object.prototype.hasOwnProperty.call(answers, questionId)) continue;
+
+      resolvedQuestionIds.add(questionId);
+      const selectedKey = String(answers[questionId] ?? "");
+      const questionTextCandidate = questionDefinition?.text || questionDefinition?.scenario;
+      const questionText = typeof questionTextCandidate === "string" ? questionTextCandidate.trim() : "";
+
+      if (questionDefinition?.isScale) {
+        if (questionText) {
+          const scaleAnswer: any = {
+            questionId,
+            question: questionText,
+            answerKey: selectedKey,
+            answer: selectedKey,
+            scale: true
+          };
+          if (questionDefinition.scaleLabel !== undefined) {
+            scaleAnswer.scaleLabel = questionDefinition.scaleLabel;
+          }
+          if (questionDefinition.scaleRange !== undefined) {
+            scaleAnswer.scaleRange = questionDefinition.scaleRange;
+          }
+          semanticAnswers.push(scaleAnswer);
+          usefulSemanticAnswerCount += 1;
+        } else {
+          semanticAnswers.push({ questionId, answerKey: selectedKey, semanticContextAvailable: false });
+        }
+        continue;
+      }
+
+      const selectedOption = Array.isArray(questionDefinition?.options)
+        ? questionDefinition.options.find((option: any) => String(option?.key) === selectedKey)
+        : undefined;
+      const selectedAnswerText = typeof selectedOption?.text === "string" ? selectedOption.text.trim() : "";
+
+      if (questionText && selectedAnswerText) {
+        semanticAnswers.push({
+          questionId,
+          question: questionText,
+          answerKey: selectedKey,
+          answer: selectedAnswerText
+        });
+        usefulSemanticAnswerCount += 1;
+      } else {
+        semanticAnswers.push({
+          questionId,
+          ...(questionText ? { question: questionText } : {}),
+          answerKey: selectedKey,
+          semanticContextAvailable: false
+        });
+      }
+    }
+
+    for (const [storedQuestionId, storedAnswerKey] of Object.entries(answers)) {
+      if (!resolvedQuestionIds.has(String(storedQuestionId))) {
+        semanticAnswers.push({
+          questionId: String(storedQuestionId),
+          answerKey: String(storedAnswerKey ?? ""),
+          semanticContextAvailable: false
+        });
+      }
+    }
+
     // Recuperar los prompts configurables antes de decidir si un informe sigue vigente.
     let clinicalPrompt = "";
     let conclusionPrompt = "";
@@ -958,6 +1037,15 @@ app.post("/api/generate-patient-report", async (req, res) => {
       });
     }
 
+    if (usefulSemanticAnswerCount === 0) {
+      const semanticContextError = "No se pudo cargar la definición del cuestionario necesaria para interpretar las respuestas.";
+      console.error("[GEMINI BACKEND]", semanticContextError);
+      if (!isPreviewOnly) {
+        await markPatientReportState(patientRef, "error", semanticContextError);
+      }
+      return res.status(500).json({ success: false, error: semanticContextError });
+    }
+
     // Comprobar clave Gemini
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -995,7 +1083,8 @@ Edad: ${patientData.edad || 'Desconocida'}
 Sexo: ${patientData.sexo || 'Desconocido'}
 ${patientData.soybienestarContext ? `Contexto clínico previo de SoyBienestar:\n${JSON.stringify(buildCleanSoyBienestarContextForAI(patientData), null, 2)}` : ''}
 ${patientData.preInformeSoyBienestar ? `Pre-informe de origen:\n${patientData.preInformeSoyBienestar}` : ''}
-Respuestas al cuestionario: ${JSON.stringify(answers)}
+RESPUESTAS INTERPRETADAS DEL CUESTIONARIO:
+${JSON.stringify(semanticAnswers, null, 2)}
 
 INSTRUCCIONES PARA EL INFORME TÉCNICO:
 ${finalClinicalPrompt}
