@@ -36,6 +36,13 @@ export interface PatientData {
   dateConclusionSent?: number;
   dateConclusionViewed?: number;
   audioConclusion?: string; // Base64 del audio
+  audioConclusionCreatedAt?: number;
+  audioConclusionExpiresAt?: number;
+  audioConclusionConsumedAt?: number | null;
+  audioConclusionExpiredAt?: number;
+  audioConclusionDurationMs?: number;
+  audioConclusionMimeType?: string;
+  audioConclusionSizeBytes?: number;
   lastAnswerSavedAt?: number;
   lastAnsweredQuestionId?: string;
   lastAnsweredQuestionIndex?: number;
@@ -83,6 +90,15 @@ export interface PatientData {
   aiGeneratedAt?: number;
   aiInputAnswerCount?: number;
   aiInputHadSoyBienestarContext?: boolean;
+  aiInputAnswersHash?: string;
+  aiClinicalPromptHash?: string;
+  aiConclusionPromptHash?: string;
+  aiModel?: string;
+  aiProvider?: string;
+  aiReportStatus?: string;
+  aiReportError?: string | null;
+  aiReportErrorAt?: number | null;
+  aiReportLastAttemptAt?: number;
 }
 
 export interface DualAudio {

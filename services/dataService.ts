@@ -59,6 +59,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 const isBase64Audio = (str: any) => typeof str === 'string' && str.startsWith('data:audio/');
 const isAudioRef = (str: any) => typeof str === 'string' && str.startsWith('audio_ref_');
+const PATIENT_CONCLUSION_AUDIO_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const FirestoreDebug = {
   stats: {
@@ -942,12 +943,23 @@ export const DataService = {
           console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
           processedPatient.audioConclusion = existingRef;
         } else {
+          const audioCreatedAt = Date.now();
+          const audioExpiresAt = audioCreatedAt + PATIENT_CONCLUSION_AUDIO_TTL_MS;
+          processedPatient.audioConclusionCreatedAt = audioCreatedAt;
+          processedPatient.audioConclusionExpiresAt = audioExpiresAt;
+          processedPatient.audioConclusionConsumedAt = null;
           const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
           console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
           processedPatient.audioConclusion = audioId;
           this._updateAudioRegistry(baseKey, audioId, val);
           FirestoreDebug.log('write', 'audios/' + audioId);
-          await setDoc(doc(db, 'audios', audioId), { data: val, usedBy: {} });
+          await setDoc(doc(db, 'audios', audioId), {
+            data: val,
+            usedBy: {},
+            kind: 'patient_conclusion',
+            createdAt: audioCreatedAt,
+            expiresAt: audioExpiresAt
+          });
         }
       }
 
@@ -988,13 +1000,32 @@ export const DataService = {
           console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
           processedData.audioConclusion = existingRef;
         } else {
+          const audioCreatedAt = Date.now();
+          const audioExpiresAt = audioCreatedAt + PATIENT_CONCLUSION_AUDIO_TTL_MS;
+          processedData.audioConclusionCreatedAt = audioCreatedAt;
+          processedData.audioConclusionExpiresAt = audioExpiresAt;
+          processedData.audioConclusionConsumedAt = null;
+          processedData.audioConclusionExpiredAt = deleteField();
           const audioId = `audio_ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
           console.log(`[AUDIO-PERSIST] Uploading NEW audio for ${baseKey} -> ${audioId}`);
           processedData.audioConclusion = audioId;
           this._updateAudioRegistry(baseKey, audioId, val);
           FirestoreDebug.log('write', 'audios/' + audioId);
-          await setDoc(doc(db, 'audios', audioId), { data: val, usedBy: {} });
+          await setDoc(doc(db, 'audios', audioId), {
+            data: val,
+            usedBy: {},
+            kind: 'patient_conclusion',
+            createdAt: audioCreatedAt,
+            expiresAt: audioExpiresAt
+          });
         }
+      } else if (val === null) {
+        processedData.audioConclusionCreatedAt = deleteField();
+        processedData.audioConclusionExpiresAt = deleteField();
+        processedData.audioConclusionConsumedAt = deleteField();
+        processedData.audioConclusionDurationMs = deleteField();
+        processedData.audioConclusionMimeType = deleteField();
+        processedData.audioConclusionSizeBytes = deleteField();
       }
 
       FirestoreDebug.log('update', 'patients/' + patientId);

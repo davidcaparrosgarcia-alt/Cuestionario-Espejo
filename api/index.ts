@@ -838,6 +838,10 @@ function buildAnswersHash(answers: Record<string, any> | undefined | null): stri
   return crypto.createHash("sha256").update(JSON.stringify(sortedAnswers)).digest("hex");
 }
 
+function buildPromptHash(prompt: string): string {
+  return crypto.createHash("sha256").update(prompt.trim()).digest("hex");
+}
+
 async function markPatientReportState(patientRef: any, status: "pending" | "ready" | "error" | "stale", error?: string | null) {
   try {
     await patientRef.set({
@@ -853,8 +857,10 @@ async function markPatientReportState(patientRef: any, status: "pending" | "read
 
 app.post("/api/generate-patient-report", async (req, res) => {
   let authenticatedPatientRef: any = null;
+  let isPreviewOnly = false;
   try {
-    const { patientId, accessPin } = req.body || {};
+    const { patientId, accessPin, forceRegenerate, previewOnly } = req.body || {};
+    isPreviewOnly = previewOnly === true;
 
     if (!patientId || typeof patientId !== "string" || !patientId.trim()) {
       return res.status(400).json({ success: false, error: "Identificador de paciente requerido." });
@@ -889,46 +895,15 @@ app.post("/api/generate-patient-report", async (req, res) => {
     const answers = patientData.answers || {};
     const answerCount = Object.keys(answers).length;
     if (answerCount === 0) {
-      await markPatientReportState(patientRef, "error", "No hay respuestas disponibles para generar la valoración.");
+      if (!isPreviewOnly) {
+        await markPatientReportState(patientRef, "error", "No hay respuestas disponibles para generar la valoración.");
+      }
       return res.status(400).json({ success: false, error: "No hay respuestas disponibles para generar la valoración." });
     }
 
     const currentAnswersHash = buildAnswersHash(answers);
 
-    // IDEMPOTENCIA: Si ya se generó previamente el informe y la conclusión con las MISMAS respuestas (hash idéntico), los reutilizamos sin consumir Gemini de nuevo
-    if (
-      typeof patientData.conversationSummary === "string" &&
-      patientData.conversationSummary.trim().length > 0 &&
-      typeof patientData.finalConclusion === "string" &&
-      patientData.finalConclusion.trim().length > 0 &&
-      patientData.aiGeneratedAt &&
-      patientData.aiInputAnswersHash === currentAnswersHash
-    ) {
-      console.log(`[GEMINI BACKEND] Reutilizando informe existente para paciente ${patientId.slice(0, 12)}...`);
-      await markPatientReportState(patientRef, "ready");
-      return res.json({
-        success: true,
-        reportReady: true,
-        reusedExistingReport: true
-      });
-    }
-
-    // Comprobar clave Gemini
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error("[GEMINI BACKEND] Falta GEMINI_API_KEY en variables de entorno de servidor.");
-      await markPatientReportState(patientRef, "error", "Configuración de servidor incompleta: falta GEMINI_API_KEY.");
-      return res.status(500).json({ success: false, error: "Configuración de servidor incompleta: falta GEMINI_API_KEY." });
-    }
-
-    const modelCandidates = Array.from(new Set([
-      process.env.GEMINI_MODEL?.trim(),
-      "gemini-3.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-2.5-flash-lite"
-    ].filter((model): model is string => Boolean(model))));
-
-    // Recuperar prompts configurables desde config/global_config
+    // Recuperar los prompts configurables antes de decidir si un informe sigue vigente.
     let clinicalPrompt = "";
     let conclusionPrompt = "";
 
@@ -949,12 +924,56 @@ app.post("/api/generate-patient-report", async (req, res) => {
 
     if (!clinicalPrompt || !conclusionPrompt) {
       console.error("[GEMINI BACKEND] Error: Prompts de generación no configurados en config/global_config");
-      await markPatientReportState(patientRef, "error", "Los prompts de generación de valoración no están configurados en los Ajustes.");
+      if (!isPreviewOnly) {
+        await markPatientReportState(patientRef, "error", "Los prompts de generación de valoración no están configurados en los Ajustes.");
+      }
       return res.status(400).json({
         success: false,
         error: "Los prompts de generación de valoración no están configurados en los Ajustes."
       });
     }
+
+    const currentClinicalPromptHash = buildPromptHash(clinicalPrompt);
+    const currentConclusionPromptHash = buildPromptHash(conclusionPrompt);
+
+    // IDEMPOTENCIA: solo reutilizar si respuestas y ambos prompts siguen siendo exactamente los mismos.
+    if (
+      forceRegenerate !== true &&
+      !isPreviewOnly &&
+      typeof patientData.conversationSummary === "string" &&
+      patientData.conversationSummary.trim().length > 0 &&
+      typeof patientData.finalConclusion === "string" &&
+      patientData.finalConclusion.trim().length > 0 &&
+      patientData.aiGeneratedAt &&
+      patientData.aiInputAnswersHash === currentAnswersHash &&
+      patientData.aiClinicalPromptHash === currentClinicalPromptHash &&
+      patientData.aiConclusionPromptHash === currentConclusionPromptHash
+    ) {
+      console.log(`[GEMINI BACKEND] Reutilizando informe existente para paciente ${patientId.slice(0, 12)}...`);
+      await markPatientReportState(patientRef, "ready");
+      return res.json({
+        success: true,
+        reportReady: true,
+        reusedExistingReport: true
+      });
+    }
+
+    // Comprobar clave Gemini
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("[GEMINI BACKEND] Falta GEMINI_API_KEY en variables de entorno de servidor.");
+      if (!isPreviewOnly) {
+        await markPatientReportState(patientRef, "error", "Configuración de servidor incompleta: falta GEMINI_API_KEY.");
+      }
+      return res.status(500).json({ success: false, error: "Configuración de servidor incompleta: falta GEMINI_API_KEY." });
+    }
+
+    const modelCandidates = Array.from(new Set([
+      process.env.GEMINI_MODEL?.trim(),
+      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash-lite"
+    ].filter((model): model is string => Boolean(model))));
 
     const patientName = patientData.nombre || 'Paciente';
     const patientFirstName = patientName.split(' ')[0] || 'Paciente';
@@ -1041,7 +1060,9 @@ ${finalConclusionPrompt}
 
     if (!internalReport || !externalConclusion) {
       console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o estructura inválida.");
-      await markPatientReportState(patientRef, "error", "La respuesta de IA no contiene la estructura requerida.");
+      if (!isPreviewOnly) {
+        await markPatientReportState(patientRef, "error", "La respuesta de IA no contiene la estructura requerida.");
+      }
       return res.status(500).json({
         success: false,
         error: "Error en la generación con IA: la respuesta no contiene la estructura requerida."
@@ -1049,6 +1070,21 @@ ${finalConclusionPrompt}
     }
 
     const now = Date.now();
+
+    if (isPreviewOnly) {
+      return res.json({
+        success: true,
+        previewOnly: true,
+        internalReport,
+        externalConclusion,
+        aiGeneratedAt: now,
+        aiInputAnswersHash: currentAnswersHash,
+        aiClinicalPromptHash: currentClinicalPromptHash,
+        aiConclusionPromptHash: currentConclusionPromptHash,
+        aiModel: activeModel
+      });
+    }
+
     // Guardado en Firestore Admin
     await patientRef.set({
       conversationSummary: internalReport,
@@ -1057,6 +1093,8 @@ ${finalConclusionPrompt}
       aiInputAnswerCount: answerCount,
       aiInputHadSoyBienestarContext: !!patientData.soybienestarContext,
       aiInputAnswersHash: currentAnswersHash,
+      aiClinicalPromptHash: currentClinicalPromptHash,
+      aiConclusionPromptHash: currentConclusionPromptHash,
       aiModel: activeModel,
       aiProvider: "google",
       aiReportStatus: "ready",
@@ -1075,7 +1113,7 @@ ${finalConclusionPrompt}
 
   } catch (error: any) {
     console.error("Error in POST /api/generate-patient-report:", error?.message || error);
-    if (authenticatedPatientRef) {
+    if (authenticatedPatientRef && !isPreviewOnly) {
       await markPatientReportState(authenticatedPatientRef, "error", error?.message || "Error interno al generar el informe con Gemini.");
     }
     return res.status(500).json({
@@ -1575,14 +1613,217 @@ app.delete("/api/patient-requests/:id", requireCoordinatorAuth, async (req, res)
   }
 });
 
+const PATIENT_CONCLUSION_AUDIO_CLEANUP_LIMIT = 20;
+
+function getSoyBienestarBridgeSecret(): string {
+  return process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET || "";
+}
+
+function isSoyBienestarPatient(data: any): boolean {
+  return !!(data && (data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated));
+}
+
+function getDossierAudioAvailability(data: any) {
+  const expiresAt = Number(data?.audioConclusionExpiresAt || 0) || null;
+  const available = !!data?.audioConclusion && !data?.audioConclusionConsumedAt && (!expiresAt || Date.now() < expiresAt);
+  return {
+    audioAvailable: available,
+    audioExpiresAt: available ? expiresAt : null,
+    audioDelivery: "bridge_ephemeral_v1"
+  };
+}
+
+async function removePersistedPatientConclusionAudio(
+  patientRef: any,
+  patientData: any,
+  options: { consumedAt?: number; expiredAt?: number } = {}
+) {
+  const audioRef = typeof patientData?.audioConclusion === "string" && patientData.audioConclusion.startsWith("audio_ref_")
+    ? patientData.audioConclusion
+    : null;
+
+  if (audioRef) {
+    await db.collection("audios").doc(audioRef).delete().catch((error: any) => {
+      console.error(`[AUDIO CLEANUP] No se pudo borrar ${audioRef}:`, error?.message || error);
+    });
+  }
+
+  const updateData: any = {
+    audioConclusion: FieldValue.delete(),
+    audioConclusionCreatedAt: FieldValue.delete(),
+    audioConclusionExpiresAt: FieldValue.delete(),
+    audioConclusionDurationMs: FieldValue.delete(),
+    audioConclusionMimeType: FieldValue.delete(),
+    audioConclusionSizeBytes: FieldValue.delete()
+  };
+
+  if (options.consumedAt) {
+    updateData.audioConclusionConsumedAt = options.consumedAt;
+  } else {
+    updateData.audioConclusionConsumedAt = FieldValue.delete();
+  }
+  if (options.expiredAt) {
+    updateData.audioConclusionExpiredAt = options.expiredAt;
+  }
+
+  await patientRef.set(updateData, { merge: true });
+}
+
+async function cleanupExpiredPatientConclusionAudios() {
+  try {
+    const now = Date.now();
+    const audioSnapshot = await db.collection("audios")
+      .where("kind", "==", "patient_conclusion")
+      .limit(PATIENT_CONCLUSION_AUDIO_CLEANUP_LIMIT)
+      .get();
+
+    for (const audioDoc of audioSnapshot.docs) {
+      const audioData = audioDoc.data() || {};
+      if (!audioData.expiresAt || Number(audioData.expiresAt) > now) continue;
+
+      const patientSnapshot = await db.collection("patients")
+        .where("audioConclusion", "==", audioDoc.id)
+        .limit(5)
+        .get();
+
+      for (const patientDoc of patientSnapshot.docs) {
+        await removePersistedPatientConclusionAudio(patientDoc.ref, patientDoc.data(), { expiredAt: now });
+      }
+
+      await audioDoc.ref.delete().catch(() => undefined);
+    }
+  } catch (error: any) {
+    console.error("[AUDIO CLEANUP] Limpieza oportunista omitida:", error?.message || error);
+  }
+}
+
+function validateDossierAudioBridgeRequest(req: express.Request, res: express.Response): boolean {
+  const bridgeSecret = getSoyBienestarBridgeSecret();
+  if (!bridgeSecret) {
+    res.status(500).json({ success: false, error: "Configuracion incompleta: falta secreto de bridge." });
+    return false;
+  }
+  if (req.headers["x-bridge-secret"] !== bridgeSecret) {
+    res.status(401).json({ success: false, error: "No autorizado" });
+    return false;
+  }
+  return true;
+}
+
+app.post("/api/soybienestar-dossier-audio", async (req, res) => {
+  if (!validateDossierAudioBridgeRequest(req, res)) return;
+
+  try {
+    cleanupExpiredPatientConclusionAudios().catch(() => undefined);
+    const { patientId, soybienestarUid } = req.body || {};
+    if (!patientId || typeof patientId !== "string") {
+      return res.status(400).json({ success: false, error: "patientId es requerido." });
+    }
+
+    const patientRef = db.collection("patients").doc(patientId.trim());
+    const patientDoc = await patientRef.get();
+    if (!patientDoc.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado." });
+    }
+
+    const patientData = patientDoc.data() || {};
+    if (patientData.status === "deleted") {
+      return res.status(403).json({ success: false, error: "Paciente eliminado." });
+    }
+    if (!isSoyBienestarPatient(patientData)) {
+      return res.status(403).json({ success: false, error: "El paciente no corresponde a SoyBienestar." });
+    }
+    if (soybienestarUid && patientData.soybienestarUid !== soybienestarUid) {
+      return res.status(403).json({ success: false, error: "El usuario de SoyBienestar no coincide." });
+    }
+    if (patientData.audioConclusionConsumedAt) {
+      return res.json({ success: true, available: false, reason: "consumed" });
+    }
+    if (!patientData.audioConclusion) {
+      return res.json({ success: true, available: false, reason: "not_found" });
+    }
+
+    const expiresAt = Number(patientData.audioConclusionExpiresAt || 0) || null;
+    if (expiresAt && Date.now() >= expiresAt) {
+      await removePersistedPatientConclusionAudio(patientRef, patientData, { expiredAt: Date.now() });
+      return res.json({ success: true, available: false, reason: "expired" });
+    }
+
+    let audioDataUrl = patientData.audioConclusion;
+    if (typeof audioDataUrl === "string" && audioDataUrl.startsWith("audio_ref_")) {
+      const audioDoc = await db.collection("audios").doc(audioDataUrl).get();
+      if (!audioDoc.exists || typeof audioDoc.data()?.data !== "string") {
+        return res.json({ success: true, available: false, reason: "not_found" });
+      }
+      const storedAudio = audioDoc.data() || {};
+      const storedExpiresAt = Number(storedAudio.expiresAt || expiresAt || 0) || null;
+      if (storedExpiresAt && Date.now() >= storedExpiresAt) {
+        await removePersistedPatientConclusionAudio(patientRef, patientData, { expiredAt: Date.now() });
+        return res.json({ success: true, available: false, reason: "expired" });
+      }
+      audioDataUrl = storedAudio.data;
+    }
+
+    if (typeof audioDataUrl !== "string" || !audioDataUrl.startsWith("data:audio/")) {
+      return res.json({ success: true, available: false, reason: "not_found" });
+    }
+
+    return res.json({ success: true, available: true, audioDataUrl, expiresAt });
+  } catch (error: any) {
+    console.error("[DOSSIER AUDIO BRIDGE] Error consultando audio:", error?.message || error);
+    return res.status(500).json({ success: false, error: "Error interno al consultar el audio." });
+  }
+});
+
+app.post("/api/soybienestar-dossier-audio-consume", async (req, res) => {
+  if (!validateDossierAudioBridgeRequest(req, res)) return;
+
+  try {
+    cleanupExpiredPatientConclusionAudios().catch(() => undefined);
+    const { patientId, soybienestarUid } = req.body || {};
+    if (!patientId || typeof patientId !== "string") {
+      return res.status(400).json({ success: false, error: "patientId es requerido." });
+    }
+
+    const patientRef = db.collection("patients").doc(patientId.trim());
+    const patientDoc = await patientRef.get();
+    if (!patientDoc.exists) {
+      return res.status(404).json({ success: false, error: "Paciente no encontrado." });
+    }
+
+    const patientData = patientDoc.data() || {};
+    if (patientData.status === "deleted") {
+      return res.status(403).json({ success: false, error: "Paciente eliminado." });
+    }
+    if (!isSoyBienestarPatient(patientData)) {
+      return res.status(403).json({ success: false, error: "El paciente no corresponde a SoyBienestar." });
+    }
+    if (soybienestarUid && patientData.soybienestarUid !== soybienestarUid) {
+      return res.status(403).json({ success: false, error: "El usuario de SoyBienestar no coincide." });
+    }
+
+    const consumedAt = Number(patientData.audioConclusionConsumedAt || 0) || Date.now();
+    if (patientData.audioConclusion) {
+      await removePersistedPatientConclusionAudio(patientRef, patientData, { consumedAt });
+    } else if (!patientData.audioConclusionConsumedAt) {
+      await patientRef.set({ audioConclusionConsumedAt: consumedAt }, { merge: true });
+    }
+
+    return res.json({ success: true, consumed: true, consumedAt });
+  } catch (error: any) {
+    console.error("[DOSSIER AUDIO BRIDGE] Error consumiendo audio:", error?.message || error);
+    return res.status(500).json({ success: false, error: "Error interno al consumir el audio." });
+  }
+});
+
 async function notifySoyBienestarFromPatient(db: any, id: string, data: any, event: string, overrideStatus?: string) {
-  const isDirect = data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated;
+  const isDirect = isSoyBienestarPatient(data);
   if (!isDirect) {
     return { status: "skipped", reason: "not_soybienestar" };
   }
 
   const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
-  const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+  const bridgeSecret = getSoyBienestarBridgeSecret();
 
   if (!webhookUrl || !bridgeSecret) {
     try {
@@ -1618,11 +1859,14 @@ async function notifySoyBienestarFromPatient(db: any, id: string, data: any, eve
   };
 
   if (event === "dossier_available") {
+    cleanupExpiredPatientConclusionAudios().catch(() => undefined);
+    const audioMetadata = getDossierAudioAvailability(data);
     payload.dossier = {
       finalConclusion: data.finalConclusion || null,
       conversationSummary: data.conversationSummary || null,
-      audioConclusion: data.conclusionAudio || data.audioConclusion || null,
-      dateConclusionSent: data.dateConclusionSent || null
+      audioConclusion: audioMetadata.audioAvailable ? (data.conclusionAudio || data.audioConclusion || null) : null,
+      dateConclusionSent: data.dateConclusionSent || null,
+      ...audioMetadata
     };
   }
 
@@ -1826,7 +2070,7 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
   }
 
   const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
-  const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+  const bridgeSecret = getSoyBienestarBridgeSecret();
 
   if (!webhookUrl || !bridgeSecret) {
     console.log("[SoyBienestar] Webhook o bridge secret no configurado. Skipping dossier notification.");
@@ -1839,6 +2083,8 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
     patient.personalAccessCode ||
     null;
 
+  cleanupExpiredPatientConclusionAudios().catch(() => undefined);
+  const audioMetadata = getDossierAudioAvailability(patient);
   const payload = {
     event: "dossier_available",
     soybienestarUid: patient.soybienestarUid || null,
@@ -1854,8 +2100,9 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
     dossier: {
       finalConclusion: patient.finalConclusion || "",
       conversationSummary: patient.conversationSummary || "",
-      audioConclusion: patient.conclusionAudio || patient.audioConclusion || null,
-      dateConclusionSent: patient.dateConclusionSent || null
+      audioConclusion: audioMetadata.audioAvailable ? (patient.conclusionAudio || patient.audioConclusion || null) : null,
+      dateConclusionSent: patient.dateConclusionSent || null,
+      ...audioMetadata
     }
   };
 
@@ -1914,7 +2161,7 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
     }
 
     const webhookUrl = process.env.SOYBIENESTAR_WEBHOOK_URL;
-    const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET;
+    const bridgeSecret = getSoyBienestarBridgeSecret();
 
     if (!webhookUrl || !bridgeSecret) {
       console.log("[SoyBienestar] Webhook o bridge secret no configurado. Skipping status notification.");
@@ -1942,11 +2189,14 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
     };
 
     if (event === "dossier_available") {
+      cleanupExpiredPatientConclusionAudios().catch(() => undefined);
+      const audioMetadata = getDossierAudioAvailability(patient);
       payload.dossier = {
         finalConclusion: patient.finalConclusion || null,
         conversationSummary: patient.conversationSummary || null,
-        audioConclusion: patient.conclusionAudio || patient.audioConclusion || null,
-        dateConclusionSent: patient.dateConclusionSent || null
+        audioConclusion: audioMetadata.audioAvailable ? (patient.conclusionAudio || patient.audioConclusion || null) : null,
+        dateConclusionSent: patient.dateConclusionSent || null,
+        ...audioMetadata
       };
     }
 

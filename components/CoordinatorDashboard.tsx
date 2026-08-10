@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, Button, Input, Logo, Toast } from './UI';
 import { PatientData, CoordinatorProfile, AuthUser } from '../types';
 import { QUESTIONS } from '../constants';
@@ -95,6 +95,65 @@ const openSmsComposer = (phone: string, body: string, popupWindow: Window | null
 };
 
 import { ReportBlock, formatGeneratedReportForDisplay, normalizeGeneratedClinicalReport, escapeHtml } from '../utils/reportFormatting';
+
+const MAX_CONCLUSION_AUDIO_DURATION_SECONDS = 120;
+const MAX_CONCLUSION_AUDIO_SIZE_BYTES = 650 * 1024;
+const CONCLUSION_AUDIO_BITRATE = 32000;
+
+type PendingRegeneratedReport = {
+  internalReport: string;
+  aiGeneratedAt: number;
+  aiInputAnswersHash: string;
+  aiClinicalPromptHash: string;
+  aiConclusionPromptHash: string;
+  aiModel: string;
+};
+
+type ConclusionAudioMetadata = {
+  durationMs: number;
+  mimeType: string;
+  sizeBytes: number;
+};
+
+function getSupportedConclusionAudioMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/webm'
+  ];
+  return candidates.find(mimeType => MediaRecorder.isTypeSupported(mimeType)) || '';
+}
+
+function formatAudioDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('No se pudo leer el audio.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function getAudioDurationMs(source: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : 0;
+      resolve(durationMs);
+    };
+    audio.onerror = () => reject(new Error('No se pudo comprobar la duración del audio.'));
+    audio.src = source;
+  });
+}
 
 const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Pendiente';
@@ -264,37 +323,24 @@ PRONÓSTICO DE EVOLUCIÓN`;
 const DEFAULT_CONCLUSION_PROMPT = `Genera una CONCLUSIÓN PARA EL PACIENTE (Uso externo):
 Un mensaje cálido, empático y profesional dirigido directamente al paciente (Hola [Nombre]), explicando de forma comprensible lo que hemos detectado y cómo podemos ayudarle con nuestro enfoque, sin usar jerga excesivamente técnica, pero dándole esperanza y un plan claro. NO uses asteriscos ni guiones de markdown.`;
 
-function buildManualConclusionScaffold(text: string): string {
-  if (!text || !text.trim()) return "";
+function extractConclusionStructure(conclusionPrompt: string): string[] {
+  if (!conclusionPrompt || !conclusionPrompt.trim()) return [];
 
-  const lines = text.split(/\r?\n/);
-  const structuralHeaders: string[] = [];
+  const markerMatch = /ESTRUCTURA DEL TEXTO\s*:/i.exec(conclusionPrompt);
+  if (!markerMatch) return [];
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  const structureBlock = conclusionPrompt.slice(markerMatch.index + markerMatch[0].length);
+  const sections: string[] = [];
 
-    // 1. Markdown headers
-    const isMarkdownHeader = /^#{1,6}\s+.+/.test(trimmed);
-
-    // 2. ALL CAPS lines (at least 2 uppercase letters, no lowercase letters)
-    const hasLetters = /[A-ZÁÉÍÓÚÑ]/.test(trimmed);
-    const hasNoLowercase = !/[a-záéíóúñ]/.test(trimmed);
-    const isAllCapsHeader = hasLetters && hasNoLowercase && trimmed.length <= 100;
-
-    // 3. Short titles ending with ":"
-    const isTitleWithColon = trimmed.endsWith(":") && trimmed.length <= 80 && !trimmed.includes("\n");
-
-    if (isMarkdownHeader || isAllCapsHeader || isTitleWithColon) {
-      structuralHeaders.push(trimmed);
+  for (const line of structureBlock.split(/\r?\n/)) {
+    const match = line.match(/^\s*\d+[.)]\s*([^:\r\n]+)\s*:/);
+    if (match) {
+      const sectionName = match[1].trim();
+      if (sectionName) sections.push(sectionName);
     }
   }
 
-  if (structuralHeaders.length === 0) {
-    return "";
-  }
-
-  return structuralHeaders.join("\n\n\n") + "\n\n\n";
+  return sections;
 }
 
 function isConclusionOnlyHeadersOrEmpty(text: string): boolean {
@@ -400,6 +446,19 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [editingConclusion, setEditingConclusion] = useState('');
   const [editingAudio, setEditingAudio] = useState<string | undefined>(undefined);
   const [resolvedAudioUrl, setResolvedAudioUrl] = useState<string | undefined>(undefined);
+  const [conclusionStructureGuide, setConclusionStructureGuide] = useState<string[]>([]);
+  const [pendingRegeneratedReport, setPendingRegeneratedReport] = useState<PendingRegeneratedReport | null>(null);
+  const [isRegeneratingConclusion, setIsRegeneratingConclusion] = useState(false);
+  const [editingAudioMetadata, setEditingAudioMetadata] = useState<ConclusionAudioMetadata | null>(null);
+  const [isRecordingConclusionAudio, setIsRecordingConclusionAudio] = useState(false);
+  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
+  const [isConclusionAudioPlaying, setIsConclusionAudioPlaying] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingElapsedRef = useRef(0);
+  const conclusionAudioElementRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
       let cancelled = false;
@@ -425,6 +484,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           setResolvedAudioUrl(editingAudio);
       }
   }, [editingAudio]);
+
+  useEffect(() => {
+      return () => {
+          if (recordingTimerRef.current !== null) window.clearInterval(recordingTimerRef.current);
+          mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+      };
+  }, []);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<any>(null);
   const [isTestingAI, setIsTestingAI] = useState(false);
@@ -1311,20 +1377,203 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     setSelectedPatientConclusion(p);
     setEditingConclusion(p.finalConclusion || "");
     setEditingAudio(p.audioConclusion);
+    setEditingAudioMetadata(p.audioConclusion ? {
+      durationMs: p.audioConclusionDurationMs || 0,
+      mimeType: p.audioConclusionMimeType || '',
+      sizeBytes: p.audioConclusionSizeBytes || 0
+    } : null);
+    setConclusionStructureGuide([]);
+    setPendingRegeneratedReport(null);
+    setIsConclusionAudioPlaying(false);
   };
 
-  const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) {
-          if (file.size > 1572864) {
-              triggerToast("El archivo de audio es demasiado grande. Por favor, usa un clip corto o comprimido (Max 1.5MB).");
+      e.target.value = '';
+      if (!file) return;
+
+      if (!file.type.startsWith('audio/')) {
+          triggerToast("Selecciona un archivo de audio válido.");
+          return;
+      }
+      if (file.size > MAX_CONCLUSION_AUDIO_SIZE_BYTES) {
+          triggerToast("El audio supera el tamaño seguro. Graba un mensaje algo más breve.");
+          return;
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      try {
+          const durationMs = await getAudioDurationMs(objectUrl);
+          if (!durationMs || durationMs > MAX_CONCLUSION_AUDIO_DURATION_SECONDS * 1000) {
+              triggerToast("El audio no puede superar los 2 minutos.");
               return;
           }
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-              setEditingAudio(ev.target?.result as string);
+          const dataUrl = await readBlobAsDataUrl(file);
+          setEditingAudio(dataUrl);
+          setEditingAudioMetadata({ durationMs, mimeType: file.type, sizeBytes: file.size });
+          setIsConclusionAudioPlaying(false);
+      } catch (error) {
+          console.error("No se pudo validar el audio seleccionado:", error);
+          triggerToast("No se pudo comprobar el archivo de audio.");
+      } finally {
+          URL.revokeObjectURL(objectUrl);
+      }
+  };
+
+  const stopConclusionAudioRecording = () => {
+      if (recordingTimerRef.current !== null) {
+          window.clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+      }
+      if (mediaRecorderRef.current?.state === 'recording') {
+          mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+      setIsRecordingConclusionAudio(false);
+  };
+
+  const startConclusionAudioRecording = async () => {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+          triggerToast("Este navegador no permite grabar audio desde esta pantalla.");
+          return;
+      }
+
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const mimeType = getSupportedConclusionAudioMimeType();
+          let recorder: MediaRecorder;
+          try {
+              recorder = new MediaRecorder(stream, {
+                  ...(mimeType ? { mimeType } : {}),
+                  audioBitsPerSecond: CONCLUSION_AUDIO_BITRATE
+              });
+          } catch {
+              recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+          }
+
+          mediaStreamRef.current = stream;
+          mediaRecorderRef.current = recorder;
+          recordedChunksRef.current = [];
+          recordingElapsedRef.current = 0;
+          setRecordingElapsedSeconds(0);
+
+          recorder.ondataavailable = event => {
+              if (event.data.size > 0) recordedChunksRef.current.push(event.data);
           };
-          reader.readAsDataURL(file);
+          recorder.onstop = async () => {
+              if (recordingTimerRef.current !== null) {
+                  window.clearInterval(recordingTimerRef.current);
+                  recordingTimerRef.current = null;
+              }
+              stream.getTracks().forEach(track => track.stop());
+              setIsRecordingConclusionAudio(false);
+
+              const finalMimeType = recorder.mimeType || mimeType || 'audio/webm';
+              const blob = new Blob(recordedChunksRef.current, { type: finalMimeType });
+              recordedChunksRef.current = [];
+              if (!blob.size) return;
+              if (blob.size > MAX_CONCLUSION_AUDIO_SIZE_BYTES) {
+                  triggerToast("El audio supera el tamaño seguro. Graba un mensaje algo más breve.");
+                  return;
+              }
+
+              try {
+                  const dataUrl = await readBlobAsDataUrl(blob);
+                  setEditingAudio(dataUrl);
+                  setEditingAudioMetadata({
+                      durationMs: Math.min(recordingElapsedRef.current, MAX_CONCLUSION_AUDIO_DURATION_SECONDS) * 1000,
+                      mimeType: finalMimeType,
+                      sizeBytes: blob.size
+                  });
+                  setIsConclusionAudioPlaying(false);
+              } catch (error) {
+                  console.error("No se pudo preparar la grabación:", error);
+                  triggerToast("No se pudo preparar el audio grabado.");
+              }
+          };
+
+          recorder.start(1000);
+          setIsRecordingConclusionAudio(true);
+          recordingTimerRef.current = window.setInterval(() => {
+              recordingElapsedRef.current += 1;
+              setRecordingElapsedSeconds(recordingElapsedRef.current);
+              if (recordingElapsedRef.current >= MAX_CONCLUSION_AUDIO_DURATION_SECONDS) {
+                  stopConclusionAudioRecording();
+              }
+          }, 1000);
+      } catch (error) {
+          console.error("No se pudo iniciar la grabación:", error);
+          mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+          triggerToast("No se pudo acceder al micrófono. Revisa los permisos del navegador.");
+      }
+  };
+
+  const handleToggleConclusionAudioPlayback = async () => {
+      const audio = conclusionAudioElementRef.current;
+      if (!audio) return;
+      if (audio.paused) {
+          try {
+              await audio.play();
+              setIsConclusionAudioPlaying(true);
+          } catch {
+              triggerToast("No se pudo reproducir el audio.");
+          }
+      } else {
+          audio.pause();
+          setIsConclusionAudioPlaying(false);
+      }
+  };
+
+  const handleRemoveConclusionAudio = () => {
+      if (selectedPatientConclusion?.audioConclusion) {
+          const confirmed = window.confirm("Se eliminará el audio personal guardado cuando pulses Guardar. ¿Deseas continuar?");
+          if (!confirmed) return;
+      }
+      conclusionAudioElementRef.current?.pause();
+      setIsConclusionAudioPlaying(false);
+      setEditingAudio(undefined);
+      setEditingAudioMetadata(null);
+  };
+
+  const handleRegenerateConclusionPreview = async () => {
+      if (!selectedPatientConclusion || isRegeneratingConclusion) return;
+      const confirmed = window.confirm("Se generará una nueva propuesta con los prompts actuales de Ajustes y sustituirá en el editor la propuesta que estás viendo. No se guardará hasta que pulses Guardar. ¿Deseas continuar?");
+      if (!confirmed) return;
+
+      setIsRegeneratingConclusion(true);
+      try {
+          const response = await fetch('/api/generate-patient-report', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  patientId: selectedPatientConclusion.id,
+                  accessPin: selectedPatientConclusion.accessPin,
+                  forceRegenerate: true,
+                  previewOnly: true
+              })
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success || data.previewOnly !== true) {
+              throw new Error(data.error || 'No se pudo generar la nueva propuesta.');
+          }
+
+          setEditingConclusion(data.externalConclusion);
+          setPendingRegeneratedReport({
+              internalReport: data.internalReport,
+              aiGeneratedAt: data.aiGeneratedAt,
+              aiInputAnswersHash: data.aiInputAnswersHash,
+              aiClinicalPromptHash: data.aiClinicalPromptHash,
+              aiConclusionPromptHash: data.aiConclusionPromptHash,
+              aiModel: data.aiModel
+          });
+          setConclusionStructureGuide([]);
+          triggerToast("Nueva propuesta generada con los prompts actuales. Revísala y pulsa Guardar para aplicarla.");
+      } catch (error) {
+          console.error("Error regenerando la propuesta:", error);
+          triggerToast(error instanceof Error ? error.message : "No se pudo generar la nueva propuesta.");
+      } finally {
+          setIsRegeneratingConclusion(false);
       }
   };
 
@@ -1364,16 +1613,18 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   };
 
   const handleDraftFromScratch = () => {
+    const structure = extractConclusionStructure(globalConfig?.conclusionPrompt || '');
+    if (structure.length === 0) {
+      triggerToast("El prompt actual no contiene una estructura de redacción reconocible.");
+      return;
+    }
+
     const confirmMessage = "Se eliminará el contenido redactado, pero se conservará la estructura de la conclusión como guía. El cambio no se guardará hasta que pulses Guardar. ¿Deseas continuar?";
     if (!window.confirm(confirmMessage)) return;
 
-    const scaffold = buildManualConclusionScaffold(editingConclusion);
-    if (!scaffold.trim()) {
-      setEditingConclusion("");
-      triggerToast("No se detectaron títulos estructurales. El editor se ha dejado en blanco.");
-    } else {
-      setEditingConclusion(scaffold);
-    }
+    setEditingConclusion("");
+    setConclusionStructureGuide(structure);
+    setPendingRegeneratedReport(null);
   };
 
   const handleSaveConclusion = async () => {
@@ -1385,10 +1636,30 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     }
 
     const now = Date.now();
+    const audioMetadataUpdate = editingAudio && editingAudioMetadata ? {
+        audioConclusionDurationMs: editingAudioMetadata.durationMs,
+        audioConclusionMimeType: editingAudioMetadata.mimeType,
+        audioConclusionSizeBytes: editingAudioMetadata.sizeBytes
+    } : {};
+    const regeneratedReportUpdate = pendingRegeneratedReport ? {
+        conversationSummary: pendingRegeneratedReport.internalReport,
+        aiGeneratedAt: pendingRegeneratedReport.aiGeneratedAt,
+        aiInputAnswersHash: pendingRegeneratedReport.aiInputAnswersHash,
+        aiClinicalPromptHash: pendingRegeneratedReport.aiClinicalPromptHash,
+        aiConclusionPromptHash: pendingRegeneratedReport.aiConclusionPromptHash,
+        aiModel: pendingRegeneratedReport.aiModel,
+        aiProvider: "google",
+        aiReportStatus: "ready",
+        aiReportError: null,
+        aiReportErrorAt: null,
+        aiReportLastAttemptAt: pendingRegeneratedReport.aiGeneratedAt
+    } : {};
     const updatedPatient: PatientData = { 
         ...selectedPatientConclusion, 
+        ...regeneratedReportUpdate,
         finalConclusion: editingConclusion,
         audioConclusion: editingAudio,
+        ...audioMetadataUpdate,
         dateConclusionSent: now,
         status: selectedPatientConclusion.status === "finalized" ? "finalized" : "concluded"
     };
@@ -1396,10 +1667,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     await DataService.updatePatient(updatedPatient.id, { 
         finalConclusion: editingConclusion, 
         audioConclusion: editingAudio || null,
+        ...audioMetadataUpdate,
+        ...regeneratedReportUpdate,
         dateConclusionSent: now,
         status: updatedPatient.status
     });
     setSelectedPatientConclusion(updatedPatient);
+    setPendingRegeneratedReport(null);
+    setConclusionStructureGuide([]);
     triggerToast("Conclusión y audio guardados correctamente");
     
     const isSoyBienestarPatient = updatedPatient.source === "soybienestar" || !!updatedPatient.soybienestarUid || !!updatedPatient.sourceRequestId;
@@ -1438,7 +1713,12 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (baseUrl && !baseUrl.endsWith('/')) {
         baseUrl += '/';
     }
-    const url = baseUrl ? `${baseUrl}#/conclusion?id=${encodeURIComponent(p.id)}` : `${window.location.origin + window.location.pathname}#/conclusion?id=${encodeURIComponent(p.id)}`;
+    const isSoyBienestarPatient = p.source === "soybienestar" || !!p.soybienestarUid;
+    const url = isSoyBienestarPatient
+      ? 'https://soybienestar.es/dossier-espejo'
+      : baseUrl
+        ? `${baseUrl}#/conclusion?id=${encodeURIComponent(p.id)}`
+        : `${window.location.origin + window.location.pathname}#/conclusion?id=${encodeURIComponent(p.id)}`;
     
     let body = globalConfig?.conclusionMessage || `Hola [Nombre],\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a ellos a través del siguiente enlace:\n[Link]\n\nIMPORTANTE: Se te pedirá la clave personal de acceso que se te entregó al iniciar el cuestionario ([PIN]).`;
     
@@ -1446,8 +1726,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                .replace(/\[Link\]/g, url)
                .replace(/\[PIN\]/g, p.accessPin ? p.accessPin.toUpperCase() : 'Consulta con tu coordinador');
 
-    if (p.source === "soybienestar" || p.soybienestarUid) {
-        body = `Hola ${p.nombre.split(' ')[0]},\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a tus resultados desde el espacio personalizado de SoyBienestar cuando el equipo los active.\n\nGracias.`;
+    if (isSoyBienestarPatient) {
+        body = `Hola ${p.nombre.split(' ')[0]},\n\nYa están disponibles tus resultados del Cuestionario Espejo.\n\nPuedes acceder a tus resultados desde el espacio personalizado de SoyBienestar cuando el equipo los active.\n\n${url}\n\nGracias.`;
     }
                
     return { url, body };
@@ -2005,6 +2285,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     .sort((a, b) => getPatientLastActivityAt(b) - getPatientLastActivityAt(a))
     .slice(0, 3);
 
+  const hasPendingConclusionChanges = !!selectedPatientConclusion && (
+    editingConclusion !== (selectedPatientConclusion.finalConclusion || '') ||
+    (editingAudio || null) !== (selectedPatientConclusion.audioConclusion || null) ||
+    pendingRegeneratedReport !== null
+  );
+  const displayedConclusionAudioDurationMs = editingAudioMetadata?.durationMs ||
+    selectedPatientConclusion?.audioConclusionDurationMs ||
+    0;
+
   return (
     <div className="min-h-screen overflow-y-auto relative">
       <div className="absolute inset-0 pointer-events-none opacity-20 bg-cover bg-center -z-10" style={{backgroundImage: "url('https://images.unsplash.com/photo-1516550893923-42d28e5677af?q=80&w=2070&auto=format&fit=crop')"}}></div>
@@ -2555,23 +2844,54 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
              <Card className="w-full max-w-3xl max-h-[90vh] flex flex-col">
                 <div className="flex justify-between items-center mb-6 border-b pb-4">
                     <h2 className="text-2xl font-bold text-slate-800"><i className="fas fa-brain text-purple-600 mr-2"></i> Gestión de Conclusión</h2>
-                    <button onClick={() => setSelectedPatientConclusion(null)} className="text-slate-400 hover:text-red-500 text-2xl"><i className="fas fa-times"></i></button>
+                    <button onClick={() => { stopConclusionAudioRecording(); setSelectedPatientConclusion(null); }} className="text-slate-400 hover:text-red-500 text-2xl"><i className="fas fa-times"></i></button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto mb-4 pr-2">
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="flex gap-4 items-center">
-                            <label className="cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold text-sm transition-colors border border-slate-200">
-                                <i className="fas fa-microphone mr-2"></i> Subir MP3 Personal
-                                <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
-                            </label>
-                            {editingAudio ? (
-                                <div className="flex items-center gap-3">
-                                    <span className="text-xs font-bold text-green-600"><i className="fas fa-check"></i> Audio cargado</span>
-                                    {resolvedAudioUrl && <audio src={resolvedAudioUrl} controls className="h-8 w-48" />}
-                                    <button onClick={() => setEditingAudio(undefined)} className="text-red-500 hover:text-red-700 text-xs font-bold" title="Eliminar audio"><i className="fas fa-trash"></i></button>
+                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4 min-w-0">
+                        <div className="flex flex-wrap gap-2 items-center min-w-0">
+                            {isRecordingConclusionAudio ? (
+                                <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                                    <span className="text-xs font-bold text-red-600"><i className="fas fa-circle mr-1 animate-pulse"></i> Grabando {formatAudioDuration(recordingElapsedSeconds * 1000)}</span>
+                                    <button type="button" onClick={stopConclusionAudioRecording} className="text-xs font-bold text-red-700 hover:text-red-900">Detener</button>
                                 </div>
-                            ) : <span className="text-xs text-slate-600 font-bold">Sin audio</span>}
+                            ) : editingAudio ? (
+                                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 min-w-0">
+                                    {resolvedAudioUrl && (
+                                        <audio
+                                            ref={conclusionAudioElementRef}
+                                            src={resolvedAudioUrl}
+                                            className="hidden"
+                                            onEnded={() => setIsConclusionAudioPlaying(false)}
+                                            onPause={() => setIsConclusionAudioPlaying(false)}
+                                            onLoadedMetadata={(event) => {
+                                                if (!editingAudioMetadata?.durationMs && Number.isFinite(event.currentTarget.duration)) {
+                                                    setEditingAudioMetadata(previous => ({
+                                                        durationMs: Math.round(event.currentTarget.duration * 1000),
+                                                        mimeType: previous?.mimeType || selectedPatientConclusion.audioConclusionMimeType || '',
+                                                        sizeBytes: previous?.sizeBytes || selectedPatientConclusion.audioConclusionSizeBytes || 0
+                                                    }));
+                                                }
+                                            }}
+                                        />
+                                    )}
+                                    <button type="button" onClick={handleToggleConclusionAudioPlayback} disabled={!resolvedAudioUrl} className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 disabled:opacity-40" title={isConclusionAudioPlaying ? 'Pausar' : 'Reproducir'}>
+                                        <i className={`fas ${isConclusionAudioPlaying ? 'fa-pause' : 'fa-play'}`}></i>
+                                    </button>
+                                    <span className="text-xs font-bold text-slate-600">{formatAudioDuration(displayedConclusionAudioDurationMs)}</span>
+                                    <button type="button" onClick={handleRemoveConclusionAudio} className="w-8 h-8 text-red-500 hover:text-red-700" title="Eliminar audio"><i className="fas fa-trash"></i></button>
+                                </div>
+                            ) : (
+                                <>
+                                    <button type="button" onClick={startConclusionAudioRecording} className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-xl font-bold text-xs border border-slate-200">
+                                        <i className="fas fa-microphone mr-2"></i> Grabar mensaje
+                                    </button>
+                                    <label className="cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-2 rounded-xl font-bold text-xs border border-slate-200">
+                                        <i className="fas fa-upload mr-2"></i> Subir MP3
+                                        <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" />
+                                    </label>
+                                </>
+                            )}
                         </div>
                         
                         <button 
@@ -2579,24 +2899,42 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                 setSelectedPatientDetails(selectedPatientConclusion);
                                 setSelectedPatientConclusion(null);
                             }}
-                            className="bg-slate-50 hover:bg-slate-100 text-slate-600 px-4 py-2 rounded-xl font-bold text-sm transition-colors border border-slate-200 flex items-center justify-center"
+                            className="bg-slate-50 hover:bg-slate-100 text-slate-600 px-4 py-2 rounded-xl font-bold text-sm transition-colors border border-slate-200 flex items-center justify-center shrink-0 w-full sm:w-auto"
                         >
                             <i className="fas fa-file-alt mr-2"></i> Ver Ficha del Paciente
                         </button>
                     </div>
 
-                    <div className="flex justify-between items-center mb-2">
+                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
                         <label className="block text-xs font-black uppercase text-slate-500 tracking-widest">Texto de la Conclusión</label>
-                        <button
-                            type="button"
-                            onClick={handleDraftFromScratch}
-                            className="text-xs font-bold text-slate-500 hover:text-purple-700 flex items-center gap-1.5 bg-slate-100 hover:bg-purple-50 px-3 py-1.5 rounded-lg border border-slate-200 transition-colors"
-                            title="Redactar desde cero conservando la estructura"
-                        >
-                            <i className="fas fa-eraser text-slate-400"></i>
-                            <span>Redactar desde cero</span>
-                        </button>
+                        <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <button
+                                type="button"
+                                onClick={handleRegenerateConclusionPreview}
+                                disabled={isRegeneratingConclusion}
+                                className="w-8 h-8 text-slate-500 hover:text-purple-700 bg-slate-100 hover:bg-purple-50 rounded-lg border border-slate-200 transition-colors disabled:opacity-50"
+                                title="Regenerar con los prompts actuales"
+                                aria-label="Regenerar con los prompts actuales"
+                            >
+                                <i className={`fas fa-sync-alt ${isRegeneratingConclusion ? 'animate-spin' : ''}`}></i>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleDraftFromScratch}
+                                className="text-xs font-bold text-slate-500 hover:text-purple-700 flex items-center gap-1.5 bg-slate-100 hover:bg-purple-50 px-3 py-1.5 rounded-lg border border-slate-200 transition-colors"
+                                title="Redactar desde cero conservando la estructura"
+                            >
+                                <i className="fas fa-eraser text-slate-400"></i>
+                                <span>Redactar desde cero</span>
+                            </button>
+                        </div>
                     </div>
+                    {conclusionStructureGuide.length > 0 && (
+                        <div className="mb-2 rounded-lg border border-purple-100 bg-purple-50/60 px-3 py-2 text-xs text-purple-800">
+                            <span className="font-bold">Guía del prompt actual: </span>
+                            {conclusionStructureGuide.join(' → ')}
+                        </div>
+                    )}
                     <textarea 
                         className="w-full h-[36rem] p-4 rounded-xl border-2 border-slate-200 focus:border-purple-500 outline-none text-base leading-relaxed resize-none bg-white text-slate-700"
                         value={editingConclusion}
@@ -2605,20 +2943,22 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                     />
                 </div>
 
-                <div className="flex gap-3 pt-3 border-t">
-                    <Button onClick={handleSaveConclusion} className="flex-1 h-10 py-0 bg-purple-600 hover:bg-purple-700 shadow-purple-200 text-sm flex items-center justify-center">
-                        <i className="fas fa-save mr-2"></i> Guardar
-                    </Button>
+                <div className="flex flex-col sm:flex-row gap-3 pt-3 border-t min-w-0">
+                    {hasPendingConclusionChanges && (
+                        <Button onClick={handleSaveConclusion} className="sm:flex-1 h-10 py-0 bg-purple-600 hover:bg-purple-700 shadow-purple-200 text-sm flex items-center justify-center">
+                            <i className="fas fa-save mr-2"></i> Guardar
+                        </Button>
+                    )}
                     <button 
                         onClick={handlePrintConclusion} 
-                        className="flex-1 h-10 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-xl font-bold text-sm transition-colors border border-slate-200 flex items-center justify-center"
+                        className="hidden sm:flex sm:flex-1 h-10 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-xl font-bold text-sm transition-colors border border-slate-200 items-center justify-center"
                     >
                         <i className="fas fa-print mr-2"></i> Imprimir
                     </button>
-                    <Button onClick={handleSendConclusionLink} variant="secondary" className="flex-1 h-10 py-0 bg-green-600 hover:bg-green-700 shadow-green-200 text-sm flex items-center justify-center">
+                    <Button onClick={handleSendConclusionLink} variant="secondary" className="sm:flex-1 h-10 py-0 bg-green-600 hover:bg-green-700 shadow-green-200 text-sm flex items-center justify-center">
                         <i className="fas fa-envelope mr-2"></i> Email
                     </Button>
-                    <Button onClick={handleSendConclusionWhatsApp} variant="secondary" className="flex-1 h-10 py-0 bg-green-500 hover:bg-green-600 shadow-green-200 text-white text-sm flex items-center justify-center">
+                    <Button onClick={handleSendConclusionWhatsApp} variant="secondary" className="sm:flex-1 h-10 py-0 bg-green-500 hover:bg-green-600 shadow-green-200 text-white text-sm flex items-center justify-center">
                         <i className="fab fa-whatsapp mr-2"></i> WhatsApp
                     </Button>
                 </div>
