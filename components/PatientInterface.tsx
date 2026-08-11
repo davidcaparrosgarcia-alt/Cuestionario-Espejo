@@ -589,7 +589,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     if (!text) return "";
     const data = patientDataRef.current;
     
-    const name = data.questionnaireConfirmedName?.split(' ')[0] || data.nombre?.split(' ')[0] || 'amigo/a';
+    const name = data.nombre?.split(' ')[0] || 'amigo/a';
     let processed = text.replace(/{{nombre}}/gi, name);
 
     const rawSex = (data.sexo || '').toLowerCase().trim();
@@ -1361,33 +1361,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     stopAudio();
     const inputClean = nameInput.trim();
     addMessage(nameInput, 'user');
-
-    const applyAcceptedName = () => {
-        if (isEditorMode) {
-            const updatedData = { ...currentPatientData, nombre: inputClean };
-            setCurrentPatientData(updatedData);
-            patientDataRef.current = updatedData;
-            return;
-        }
-
-        const questionnaireConfirmedNameAt = Date.now();
-        const updatedData = {
-            ...currentPatientData,
-            questionnaireConfirmedName: inputClean,
-            questionnaireConfirmedNameAt
-        };
-        setCurrentPatientData(updatedData);
-        patientDataRef.current = updatedData;
-
-        if (updatedData.id) {
-            void DataService.updatePatient(updatedData.id, {
-                questionnaireConfirmedName: inputClean,
-                questionnaireConfirmedNameAt
-            }).catch(error => {
-                console.error("No se pudo guardar el nombre confirmado del cuestionario.", error);
-            });
-        }
-    };
     
     if (verificationAttempts === 0) {
         const nameToMatch = isEditorMode ? "Coordinador" : (currentPatientData.nombre || "");
@@ -1395,7 +1368,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         const expectedLower = nameToMatch.split(' ')[0].toLowerCase();
 
         if (inputLower.includes(expectedLower) || expectedLower.includes(inputLower) || isEditorMode) {
-            applyAcceptedName();
+            const updatedData = { ...currentPatientData, nombre: inputClean };
+            setCurrentPatientData(updatedData);
+            patientDataRef.current = updatedData;
             
             proceedToQuestionnaire();
         } else {
@@ -1405,7 +1380,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             await playOrSpeak(mismatchMsg);
         }
     } else {
-        applyAcceptedName();
+        const updatedData = { ...currentPatientData, nombre: inputClean };
+        setCurrentPatientData(updatedData);
+        patientDataRef.current = updatedData;
 
         const acceptedMsg = `Entendido, actualizamos tu ficha como "${inputClean}".`;
         addMessage(acceptedMsg, 'ia');

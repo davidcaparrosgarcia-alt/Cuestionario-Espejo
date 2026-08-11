@@ -1063,15 +1063,8 @@ app.post("/api/generate-patient-report", async (req, res) => {
       "gemini-2.5-flash-lite"
     ].filter((model): model is string => Boolean(model))));
 
-    const administrativeName = typeof patientData.nombre === "string" ? patientData.nombre.trim() : "";
-    const confirmedName = typeof patientData.questionnaireConfirmedName === "string"
-      ? patientData.questionnaireConfirmedName.trim()
-      : "";
-    const therapistClinicalGuidance = typeof patientData.therapistClinicalGuidance === "string"
-      ? patientData.therapistClinicalGuidance.trim()
-      : "";
-    const patientName = confirmedName || administrativeName || "Paciente";
-    const patientFirstName = patientName.split(/\s+/)[0] || "Paciente";
+    const patientName = patientData.nombre || 'Paciente';
+    const patientFirstName = patientName.split(' ')[0] || 'Paciente';
 
     const finalClinicalPrompt = clinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
     const finalConclusionPrompt = conclusionPrompt.replace(/\[Nombre\]/g, patientFirstName).replace(/\{\{nombre\}\}/gi, patientFirstName);
@@ -1085,13 +1078,11 @@ No incluyas JSON, claves técnicas ni nombres de campos internos.
 No inventes datos no presentes.
 
 DATOS DEL PACIENTE:
-${administrativeName ? `Nombre administrativo: ${administrativeName}` : ''}
-${confirmedName ? `Nombre confirmado por la persona al iniciar el cuestionario: ${confirmedName}` : ''}
+Nombre: ${patientName}
 Edad: ${patientData.edad || 'Desconocida'}
 Sexo: ${patientData.sexo || 'Desconocido'}
 ${patientData.soybienestarContext ? `Contexto clínico previo de SoyBienestar:\n${JSON.stringify(buildCleanSoyBienestarContextForAI(patientData), null, 2)}` : ''}
 ${patientData.preInformeSoyBienestar ? `Pre-informe de origen:\n${patientData.preInformeSoyBienestar}` : ''}
-${therapistClinicalGuidance ? `Aportaciones manuales de la terapeuta:\n${therapistClinicalGuidance}` : ''}
 RESPUESTAS INTERPRETADAS DEL CUESTIONARIO:
 ${JSON.stringify(semanticAnswers, null, 2)}
 

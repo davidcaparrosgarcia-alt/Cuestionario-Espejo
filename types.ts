@@ -27,11 +27,6 @@ export interface PatientData {
   status: 'pending' | 'sent' | 'viewed' | 'completed' | 'concluded' | 'finalized' | 'deleted';
   answers?: Record<string, string>;
   conversationSummary?: string; // Resumen técnico IA
-  questionnaireConfirmedName?: string;
-  questionnaireConfirmedNameAt?: number;
-  therapistClinicalGuidance?: string;
-  therapistClinicalGuidanceUpdatedAt?: number;
-  therapistClinicalGuidanceUpdatedBy?: string;
   finalConclusion?: string; // Conclusión editable para el paciente
   conclusionViews?: number; // Contador de veces que ha visto la conclusión
   

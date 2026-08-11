@@ -37,10 +37,6 @@ function isValidLegacyAccessCode(code: string) {
   return /^[a-z0-9]{4,6}$/.test(normalizeAccessCode(code));
 }
 
-function cloneConfigSnapshot<T>(config: T): T {
-  return JSON.parse(JSON.stringify(config));
-}
-
 const safeBtoa = (str: string) => {
   return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
       function toSolidBytes(match, p1) {
@@ -679,8 +675,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
             config.conclusionPrompt = DEFAULT_CONCLUSION_PROMPT;
         }
 
-        setGlobalConfig(cloneConfigSnapshot(config));
-        setTempConfig(cloneConfigSnapshot(config));
+        setGlobalConfig(config);
+        setTempConfig(config);
 
         const normalizedEmail = profile.email.toLowerCase();
         console.log("[CLIENT PATIENT QUERY] Fetching patients for coordinator:", normalizedEmail);
@@ -1705,23 +1701,9 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const handleSaveDetails = async () => {
       if (!tempPatientDetails) return;
-      const storedSummary = selectedPatientDetails?.conversationSummary || '';
-      const editableBaseline = storedSummary
-          ? normalizeGeneratedClinicalReport(storedSummary, globalConfig?.clinicalPrompt)
-          : '';
-      const editedSummary = tempPatientDetails.conversationSummary || '';
-      const guidanceUpdate = editedSummary !== editableBaseline
-          ? {
-              therapistClinicalGuidance: editedSummary,
-              therapistClinicalGuidanceUpdatedAt: Date.now(),
-              therapistClinicalGuidanceUpdatedBy: profile.email
-          }
-          : {};
-      const updatedDetails = { ...tempPatientDetails, ...guidanceUpdate };
-
-      setRegistry(registry.map(r => r.id === updatedDetails.id ? updatedDetails : r));
-      await DataService.updatePatient(updatedDetails.id, updatedDetails);
-      setSelectedPatientDetails(updatedDetails);
+      setRegistry(registry.map(r => r.id === tempPatientDetails.id ? tempPatientDetails : r));
+      await DataService.updatePatient(tempPatientDetails.id, tempPatientDetails);
+      setSelectedPatientDetails(tempPatientDetails);
       setIsEditingDetails(false);
       triggerToast("Ficha actualizada correctamente");
   };
@@ -2183,23 +2165,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               configToSave.notificationEmails = configToSave.notificationEmails.trim() !== '' ? [configToSave.notificationEmails] : [];
           }
           await DataService.saveGlobalConfig(configToSave);
-          setGlobalConfig(cloneConfigSnapshot(configToSave));
-          setTempConfig(cloneConfigSnapshot(configToSave));
+          setGlobalConfig(configToSave);
+          setTempConfig(configToSave);
           setShowSettingsModal(false);
           triggerToast("Ajustes guardados correctamente");
       } catch (e) {
           triggerToast("Error al guardar ajustes");
       }
-  };
-
-  const handleOpenSettings = () => {
-      setTempConfig(cloneConfigSnapshot(globalConfig));
-      setShowSettingsModal(true);
-  };
-
-  const handleCancelSettings = () => {
-      setTempConfig(cloneConfigSnapshot(globalConfig));
-      setShowSettingsModal(false);
   };
 
   const handleUpdateProfileName = async (newName: string) => {
@@ -2999,7 +2971,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
           <Logo />
           <div className="flex items-center gap-3">
               <button 
-                onClick={handleOpenSettings}
+                onClick={() => setShowSettingsModal(true)} 
                 className="w-10 h-10 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 flex items-center justify-center transition-all shadow-sm"
                 title="Ajustes"
               >
@@ -3801,7 +3773,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                   </div>
 
                   <div className="p-6 border-t bg-slate-50 flex justify-end gap-4">
-                      <Button variant="outline" onClick={handleCancelSettings}>Cancelar</Button>
+                      <Button variant="outline" onClick={() => setShowSettingsModal(false)}>Cancelar</Button>
                       <Button onClick={handleSaveSettings} className="bg-blue-600 hover:bg-blue-700">Guardar Todos los Ajustes</Button>
                   </div>
               </div>
