@@ -104,15 +104,6 @@ const MAX_CONCLUSION_AUDIO_DURATION_SECONDS = 120;
 const MAX_CONCLUSION_AUDIO_SIZE_BYTES = 650 * 1024;
 const CONCLUSION_AUDIO_BITRATE = 32000;
 
-type PendingRegeneratedReport = {
-  internalReport: string;
-  aiGeneratedAt: number;
-  aiInputAnswersHash: string;
-  aiClinicalPromptHash: string;
-  aiConclusionPromptHash: string;
-  aiModel: string;
-};
-
 type ConclusionAudioMetadata = {
   durationMs: number;
   mimeType: string;
@@ -451,7 +442,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [editingAudio, setEditingAudio] = useState<string | undefined>(undefined);
   const [resolvedAudioUrl, setResolvedAudioUrl] = useState<string | undefined>(undefined);
   const [conclusionStructureGuide, setConclusionStructureGuide] = useState<string[]>([]);
-  const [pendingRegeneratedReport, setPendingRegeneratedReport] = useState<PendingRegeneratedReport | null>(null);
   const [isRegeneratingConclusion, setIsRegeneratingConclusion] = useState(false);
   const [editingAudioMetadata, setEditingAudioMetadata] = useState<ConclusionAudioMetadata | null>(null);
   const [isRecordingConclusionAudio, setIsRecordingConclusionAudio] = useState(false);
@@ -1387,7 +1377,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       sizeBytes: p.audioConclusionSizeBytes || 0
     } : null);
     setConclusionStructureGuide([]);
-    setPendingRegeneratedReport(null);
     setIsConclusionAudioPlaying(false);
   };
 
@@ -1553,24 +1542,16 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
               body: JSON.stringify({
                   patientId: selectedPatientConclusion.id,
                   accessPin: selectedPatientConclusion.accessPin,
-                  forceRegenerate: true,
+                  conclusionOnly: true,
                   previewOnly: true
               })
           });
           const data = await response.json();
-          if (!response.ok || !data.success || data.previewOnly !== true) {
+          if (!response.ok || !data.success || data.previewOnly !== true || data.conclusionOnly !== true) {
               throw new Error(data.error || 'No se pudo generar la nueva propuesta.');
           }
 
           setEditingConclusion(data.externalConclusion);
-          setPendingRegeneratedReport({
-              internalReport: data.internalReport,
-              aiGeneratedAt: data.aiGeneratedAt,
-              aiInputAnswersHash: data.aiInputAnswersHash,
-              aiClinicalPromptHash: data.aiClinicalPromptHash,
-              aiConclusionPromptHash: data.aiConclusionPromptHash,
-              aiModel: data.aiModel
-          });
           setConclusionStructureGuide([]);
           triggerToast("Nueva propuesta generada con los prompts actuales. Revísala y pulsa Guardar para aplicarla.");
       } catch (error) {
@@ -1628,7 +1609,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
     setEditingConclusion("");
     setConclusionStructureGuide(structure);
-    setPendingRegeneratedReport(null);
   };
 
   const handleSaveConclusion = async () => {
@@ -1645,22 +1625,8 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         audioConclusionMimeType: editingAudioMetadata.mimeType,
         audioConclusionSizeBytes: editingAudioMetadata.sizeBytes
     } : {};
-    const regeneratedReportUpdate = pendingRegeneratedReport ? {
-        conversationSummary: pendingRegeneratedReport.internalReport,
-        aiGeneratedAt: pendingRegeneratedReport.aiGeneratedAt,
-        aiInputAnswersHash: pendingRegeneratedReport.aiInputAnswersHash,
-        aiClinicalPromptHash: pendingRegeneratedReport.aiClinicalPromptHash,
-        aiConclusionPromptHash: pendingRegeneratedReport.aiConclusionPromptHash,
-        aiModel: pendingRegeneratedReport.aiModel,
-        aiProvider: "google",
-        aiReportStatus: "ready",
-        aiReportError: null,
-        aiReportErrorAt: null,
-        aiReportLastAttemptAt: pendingRegeneratedReport.aiGeneratedAt
-    } : {};
     const updatedPatient: PatientData = { 
         ...selectedPatientConclusion, 
-        ...regeneratedReportUpdate,
         finalConclusion: editingConclusion,
         audioConclusion: editingAudio,
         ...audioMetadataUpdate,
@@ -1672,12 +1638,10 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
         finalConclusion: editingConclusion, 
         audioConclusion: editingAudio || null,
         ...audioMetadataUpdate,
-        ...regeneratedReportUpdate,
         dateConclusionSent: now,
         status: updatedPatient.status
     });
     setSelectedPatientConclusion(updatedPatient);
-    setPendingRegeneratedReport(null);
     setConclusionStructureGuide([]);
     triggerToast("Conclusión y audio guardados correctamente");
     
@@ -2315,8 +2279,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
 
   const hasPendingConclusionChanges = !!selectedPatientConclusion && (
     editingConclusion !== (selectedPatientConclusion.finalConclusion || '') ||
-    (editingAudio || null) !== (selectedPatientConclusion.audioConclusion || null) ||
-    pendingRegeneratedReport !== null
+    (editingAudio || null) !== (selectedPatientConclusion.audioConclusion || null)
   );
   const displayedConclusionAudioDurationMs = editingAudioMetadata?.durationMs ||
     selectedPatientConclusion?.audioConclusionDurationMs ||

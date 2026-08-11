@@ -859,8 +859,13 @@ app.post("/api/generate-patient-report", async (req, res) => {
   let authenticatedPatientRef: any = null;
   let isPreviewOnly = false;
   try {
-    const { patientId, accessPin, forceRegenerate, previewOnly } = req.body || {};
+    const { patientId, accessPin, forceRegenerate, previewOnly, conclusionOnly } = req.body || {};
     isPreviewOnly = previewOnly === true;
+    const isConclusionOnly = conclusionOnly === true;
+
+    if (isConclusionOnly && !isPreviewOnly) {
+      return res.status(400).json({ success: false, error: "La regeneración de conclusión debe realizarse como vista previa." });
+    }
 
     if (!patientId || typeof patientId !== "string" || !patientId.trim()) {
       return res.status(400).json({ success: false, error: "Identificador de paciente requerido." });
@@ -894,7 +899,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
     // Verificar respuestas y calcular hash determinista
     const answers = patientData.answers || {};
     const answerCount = Object.keys(answers).length;
-    if (answerCount === 0) {
+    if (answerCount === 0 && !isConclusionOnly) {
       if (!isPreviewOnly) {
         await markPatientReportState(patientRef, "error", "No hay respuestas disponibles para generar la valoración.");
       }
@@ -990,7 +995,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
       const configDoc = await db.collection("config").doc("global_config").get();
       if (configDoc.exists) {
         const configData = configDoc.data() || {};
-        if (typeof configData.clinicalPrompt === "string" && configData.clinicalPrompt.trim().length > 0) {
+        if (!isConclusionOnly && typeof configData.clinicalPrompt === "string" && configData.clinicalPrompt.trim().length > 0) {
           clinicalPrompt = configData.clinicalPrompt.trim();
         }
         if (typeof configData.conclusionPrompt === "string" && configData.conclusionPrompt.trim().length > 0) {
@@ -1001,7 +1006,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
       console.error("[GEMINI BACKEND] Error al leer config/global_config:", cfgErr);
     }
 
-    if (!clinicalPrompt || !conclusionPrompt) {
+    if (!conclusionPrompt || (!isConclusionOnly && !clinicalPrompt)) {
       console.error("[GEMINI BACKEND] Error: Prompts de generación no configurados en config/global_config");
       if (!isPreviewOnly) {
         await markPatientReportState(patientRef, "error", "Los prompts de generación de valoración no están configurados en los Ajustes.");
@@ -1012,11 +1017,12 @@ app.post("/api/generate-patient-report", async (req, res) => {
       });
     }
 
-    const currentClinicalPromptHash = buildPromptHash(clinicalPrompt);
+    const currentClinicalPromptHash = isConclusionOnly ? "" : buildPromptHash(clinicalPrompt);
     const currentConclusionPromptHash = buildPromptHash(conclusionPrompt);
 
     // IDEMPOTENCIA: solo reutilizar si respuestas y ambos prompts siguen siendo exactamente los mismos.
     if (
+      !isConclusionOnly &&
       forceRegenerate !== true &&
       !isPreviewOnly &&
       typeof patientData.conversationSummary === "string" &&
@@ -1037,7 +1043,7 @@ app.post("/api/generate-patient-report", async (req, res) => {
       });
     }
 
-    if (usefulSemanticAnswerCount === 0) {
+    if (!isConclusionOnly && usefulSemanticAnswerCount === 0) {
       const semanticContextError = "No se pudo cargar la definición del cuestionario necesaria para interpretar las respuestas.";
       console.error("[GEMINI BACKEND]", semanticContextError);
       if (!isPreviewOnly) {
@@ -1070,13 +1076,31 @@ app.post("/api/generate-patient-report", async (req, res) => {
     const therapistClinicalGuidance = typeof patientData.therapistClinicalGuidance === "string"
       ? patientData.therapistClinicalGuidance.trim()
       : "";
+    const currentClinicalFile = typeof patientData.conversationSummary === "string"
+      ? patientData.conversationSummary.trim()
+      : "";
     const patientName = confirmedName || administrativeName || "Paciente";
     const patientFirstName = patientName.split(/\s+/)[0] || "Paciente";
 
-    const finalClinicalPrompt = clinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
+    const finalClinicalPrompt = isConclusionOnly
+      ? ""
+      : clinicalPrompt.replace(/\[Nombre\]/g, patientName).replace(/\{\{nombre\}\}/gi, patientFirstName);
     const finalConclusionPrompt = conclusionPrompt.replace(/\[Nombre\]/g, patientFirstName).replace(/\{\{nombre\}\}/gi, patientFirstName);
 
-    const prompt = `
+    const prompt = isConclusionOnly ? `
+FUENTES PARA LA CONCLUSIÓN:
+${therapistClinicalGuidance ? `PRIORIDAD 1 — APORTACIONES PROFESIONALES DE LA TERAPEUTA:\n${therapistClinicalGuidance}` : ''}
+${currentClinicalFile && currentClinicalFile !== therapistClinicalGuidance ? `PRIORIDAD 2 — FICHA CLÍNICA ACTUAL REVISADA:\n${currentClinicalFile}` : ''}
+
+INFORMACIÓN SECUNDARIA DE APOYO Y CONTRASTE:
+${patientData.soybienestarContext ? `Contexto clínico previo de SoyBienestar:\n${JSON.stringify(buildCleanSoyBienestarContextForAI(patientData), null, 2)}` : ''}
+${patientData.preInformeSoyBienestar ? `Pre-informe de origen:\n${patientData.preInformeSoyBienestar}` : ''}
+Respuestas interpretadas del Cuestionario Espejo:
+${JSON.stringify(semanticAnswers, null, 2)}
+
+INSTRUCCIONES CONFIGURABLES PARA LA CONCLUSIÓN:
+${finalConclusionPrompt}
+` : `
 REGLA DE INTEGRACIÓN DE DATOS:
 Si hay contexto de SoyBienestar y respuestas del Cuestionario Espejo, integra ambas fuentes.
 SoyBienestar es la historia inicial y el Cuestionario Espejo es la ampliación estructurada.
@@ -1122,19 +1146,23 @@ ${finalConclusionPrompt}
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
-              properties: {
-                internalReport: { type: Type.STRING, description: "El informe técnico para uso interno" },
-                externalConclusion: { type: Type.STRING, description: "La conclusión empática para el paciente" }
-              },
-              required: ["internalReport", "externalConclusion"]
+              properties: isConclusionOnly
+                ? {
+                    externalConclusion: { type: Type.STRING, description: "La conclusión para el paciente" }
+                  }
+                : {
+                    internalReport: { type: Type.STRING, description: "El informe técnico para uso interno" },
+                    externalConclusion: { type: Type.STRING, description: "La conclusión empática para el paciente" }
+                  },
+              required: isConclusionOnly ? ["externalConclusion"] : ["internalReport", "externalConclusion"]
             }
           }
         });
 
         const candidateData = JSON.parse(response.text || "{}");
         const hasRequiredFields =
-          typeof candidateData.internalReport === "string" && candidateData.internalReport.trim() &&
-          typeof candidateData.externalConclusion === "string" && candidateData.externalConclusion.trim();
+          typeof candidateData.externalConclusion === "string" && candidateData.externalConclusion.trim() &&
+          (isConclusionOnly || (typeof candidateData.internalReport === "string" && candidateData.internalReport.trim()));
 
         if (!hasRequiredFields) {
           throw new Error("La respuesta de IA no contiene la estructura requerida.");
@@ -1156,7 +1184,7 @@ ${finalConclusionPrompt}
     const internalReport = typeof data.internalReport === "string" ? data.internalReport.trim() : "";
     const externalConclusion = typeof data.externalConclusion === "string" ? data.externalConclusion.trim() : "";
 
-    if (!internalReport || !externalConclusion) {
+    if ((!isConclusionOnly && !internalReport) || !externalConclusion) {
       console.error("[GEMINI BACKEND] Gemini devolvió campos vacíos o estructura inválida.");
       if (!isPreviewOnly) {
         await markPatientReportState(patientRef, "error", "La respuesta de IA no contiene la estructura requerida.");
@@ -1168,6 +1196,17 @@ ${finalConclusionPrompt}
     }
 
     const now = Date.now();
+
+    if (isConclusionOnly) {
+      return res.json({
+        success: true,
+        previewOnly: true,
+        conclusionOnly: true,
+        externalConclusion,
+        aiGeneratedAt: now,
+        aiModel: activeModel
+      });
+    }
 
     if (isPreviewOnly) {
       return res.json({
