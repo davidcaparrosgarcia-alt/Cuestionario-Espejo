@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/__prompt-lab",
+      "destination": "/api/prompt-lab"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api"
     },
