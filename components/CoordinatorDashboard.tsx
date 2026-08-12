@@ -640,6 +640,15 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       'hipnodigest_pending': 'HIPNODIGEST'
   };
 
+  const statusDescriptions: Record<string, string> = {
+      pending: 'El cuestionario todavía está pendiente de envío al paciente.',
+      sent: 'El Cuestionario Espejo ha sido enviado al paciente y todavía no ha comenzado a responderlo.',
+      viewed: 'El paciente ha accedido al Cuestionario Espejo.',
+      completed: 'El paciente ha completado el cuestionario. El equipo puede revisar la ficha y preparar la conclusión.',
+      concluded: 'El Dossier Espejo ya ha sido preparado y está disponible para el paciente, pero todavía no consta como consultado.',
+      finalized: 'El paciente ya ha accedido a su Dossier Espejo y el proceso ha quedado finalizado.'
+  };
+
   useEffect(() => {
     // Audit Firestore config on mount
     import('../firebase-applet-config.json').then(config => {
@@ -3113,17 +3122,26 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                         <i className="fas fa-chevron-left text-xs"></i>
                                     </button>
                                     
-                                    <div 
-                                        className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg text-center min-w-[80px] ${
-                                        p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
-                                        p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
-                                        p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' : 
-                                        p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
-                                        p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
-                                        p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
-                                        }`}
-                                    >
-                                        {statusLabels[p.status] || p.status}
+                                    <div className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={(e) => e.stopPropagation()}
+                                            aria-label={`${statusLabels[p.status] || p.status}: ${statusDescriptions[p.status] || ''}`}
+                                            className={`peer text-[10px] font-black uppercase tracking-tighter px-2 py-1.5 rounded-lg text-center min-w-[80px] focus:outline-none ${
+                                            p.status === 'completed' ? 'bg-teal-100 text-teal-800' :
+                                            p.status === 'pending' ? 'bg-amber-50 text-amber-700' :
+                                            p.status === 'sent' ? 'bg-indigo-50 text-indigo-700' :
+                                            p.status === 'viewed' ? 'bg-blue-50 text-blue-700' :
+                                            p.status === 'concluded' ? 'bg-purple-50 text-purple-700' :
+                                            p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
+                                            }`}
+                                        >
+                                            {statusLabels[p.status] || p.status}
+                                        </button>
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-slate-800 text-white text-[10px] normal-case font-normal tracking-normal rounded shadow-lg opacity-0 invisible peer-focus:opacity-100 peer-focus:visible transition-all z-50 pointer-events-none text-center leading-tight">
+                                            {statusDescriptions[p.status]}
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                        </div>
                                     </div>
 
                                     <button 
@@ -3984,7 +4002,13 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                           </div>
 
                                           <div className="w-[120px] shrink-0 flex flex-col items-center gap-1">
-                                                <div className={`text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded w-full text-center ${
+                                                <div className="relative w-full">
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    disabled={isHD}
+                                                    aria-label={isHD ? 'HIPNODIGEST' : `${statusLabels[p.status] || p.status}: ${statusDescriptions[p.status] || ''}`}
+                                                    className={`peer text-[10px] font-black uppercase tracking-tighter px-2 py-1 rounded w-full text-center focus:outline-none ${
                                                     isHD ? 'bg-purple-100 text-purple-900 border border-purple-300' :
                                                     p.status === 'completed' ? 'bg-teal-100 text-teal-800' : 
                                                     p.status === 'pending' ? 'bg-amber-50 text-amber-700' : 
@@ -3992,8 +4016,16 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                                     p.status === 'viewed' ? 'bg-blue-50 text-blue-700' : 
                                                     p.status === 'concluded' ? 'bg-purple-50 text-purple-700' : 
                                                     p.status === 'finalized' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-500'
-                                                }`}>
+                                                  }`}
+                                                  >
                                                     {isHD ? 'HIPNODIGEST' : (statusLabels[p.status] || p.status)}
+                                                  </button>
+                                                  {!isHD && (
+                                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-slate-800 text-white text-[10px] normal-case font-normal tracking-normal rounded shadow-lg opacity-0 invisible peer-focus:opacity-100 peer-focus:visible transition-all z-50 pointer-events-none text-center leading-tight">
+                                                      {statusDescriptions[p.status]}
+                                                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                                    </div>
+                                                  )}
                                                 </div>
                                                 {!isHD && !(showDeletedMode || (p.status as any) === 'deleted') && (
                                                     <div className="flex gap-1 w-full mt-1">

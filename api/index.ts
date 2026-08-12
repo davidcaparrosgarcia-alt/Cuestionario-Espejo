@@ -1760,6 +1760,64 @@ function isSoyBienestarPatient(data: any): boolean {
   return !!(data && (data.source === "soybienestar" || data.soybienestarUid || data.sourceRequestId || data.directAccessCreated));
 }
 
+export function validateDossierViewedEnvelope(
+  configuredSecret: string,
+  providedSecret: unknown,
+  body: any
+) {
+  if (!configuredSecret) {
+    return { ok: false as const, statusCode: 500, body: { success: false, error: "Configuracion incompleta: falta secreto de bridge." } };
+  }
+  if (providedSecret !== configuredSecret) {
+    return { ok: false as const, statusCode: 401, body: { success: false, error: "No autorizado" } };
+  }
+  if (!body || body.event !== "dossier_viewed") {
+    return { ok: false as const, statusCode: 400, body: { success: false, error: "Evento no soportado." } };
+  }
+  if (typeof body.patientId !== "string" || !body.patientId.trim()) {
+    return { ok: false as const, statusCode: 400, body: { success: false, error: "patientId es requerido." } };
+  }
+  return { ok: true as const, patientId: body.patientId.trim() };
+}
+
+export function resolveDossierViewedTransition(patientData: any, viewedAt: number) {
+  if (!isSoyBienestarPatient(patientData)) {
+    return {
+      statusCode: 403,
+      body: { success: false, error: "El paciente no corresponde a SoyBienestar." },
+      transition: "rejected_not_soybienestar"
+    };
+  }
+
+  if (patientData.status === "finalized") {
+    return {
+      statusCode: 200,
+      body: { success: true, status: "finalized", idempotent: true },
+      transition: "finalized_to_finalized"
+    };
+  }
+
+  if (patientData.status !== "concluded") {
+    return {
+      statusCode: 409,
+      body: { success: false, error: "Transicion de estado no permitida." },
+      transition: `${String(patientData.status || "unknown")}_rejected`
+    };
+  }
+
+  const currentViews = Number(patientData.conclusionViews);
+  return {
+    statusCode: 200,
+    body: { success: true, status: "finalized" },
+    transition: "concluded_to_finalized",
+    update: {
+      status: "finalized",
+      dateConclusionViewed: viewedAt,
+      conclusionViews: Number.isFinite(currentViews) ? Math.max(1, currentViews) : 1
+    }
+  };
+}
+
 function getDossierAudioAvailability(data: any) {
   const expiresAt = Number(data?.audioConclusionExpiresAt || 0) || null;
   const available = !!data?.audioConclusion && !data?.audioConclusionConsumedAt && (!expiresAt || Date.now() < expiresAt);
@@ -1950,6 +2008,51 @@ app.post("/api/soybienestar-dossier-audio-consume", async (req, res) => {
   } catch (error: any) {
     console.error("[DOSSIER AUDIO BRIDGE] Error consumiendo audio:", error?.message || error);
     return res.status(500).json({ success: false, error: "Error interno al consumir el audio." });
+  }
+});
+
+app.post("/api/soybienestar-dossier-viewed", async (req, res) => {
+  const validation = validateDossierViewedEnvelope(
+    getSoyBienestarBridgeSecret(),
+    req.headers["x-bridge-secret"],
+    req.body
+  );
+  if (!validation.ok) {
+    return res.status(validation.statusCode).json(validation.body);
+  }
+
+  const patientId = validation.patientId;
+  const patientLogId = patientId.length > 8 ? `${patientId.slice(0, 8)}...` : patientId;
+
+  try {
+    const patientRef = db.collection("patients").doc(patientId);
+    const result = await db.runTransaction(async transaction => {
+      const patientDoc = await transaction.get(patientRef);
+      if (!patientDoc.exists) {
+        return {
+          statusCode: 404,
+          body: { success: false, error: "Paciente no encontrado." },
+          transition: "not_found"
+        };
+      }
+
+      const transition = resolveDossierViewedTransition(patientDoc.data() || {}, Date.now());
+      if (transition.update) {
+        transaction.set(patientRef, transition.update, { merge: true });
+      }
+      return transition;
+    });
+
+    console.log(
+      `[DOSSIER VIEWED BRIDGE] event=dossier_viewed patient=${patientLogId} transition=${result.transition} result=${result.statusCode}`
+    );
+    return res.status(result.statusCode).json(result.body);
+  } catch (error: any) {
+    console.error(
+      `[DOSSIER VIEWED BRIDGE] event=dossier_viewed patient=${patientLogId} transition=error result=500`,
+      error?.message || error
+    );
+    return res.status(500).json({ success: false, error: "Error interno al registrar la visualizacion." });
   }
 });
 
