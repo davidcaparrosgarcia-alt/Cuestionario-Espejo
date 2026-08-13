@@ -84,7 +84,7 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{email} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if isAuthenticated() && (request.auth.token.email.lower() == email.lower() || isAdmin());
     }
 
@@ -107,15 +107,17 @@ service cloud.firestore {
     }
 
     match /questionnaires/{docId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAuthenticated();
     }
 
     match /audios/{audioId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAuthenticated();
     }
 
     match /test/{testId} {
-      allow read, write: if true;
+      allow read, write: if isAdmin();
     }
   }
 }
