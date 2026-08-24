@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Card, Button, Logo, ProgressBar, Toast } from './UI';
 import { QUESTIONS as INITIAL_QUESTIONS } from '../constants';
 import { DataService } from '../services/dataService'; // Importamos el servicio
+import { PatientAccessApi, PatientAccessApiError, PatientQuestionnaireDto } from '../services/patientAccessApi';
 import { PatientData, Voice, Question, GlobalConfig, DualAudio } from '../types';
 import { normalizeGeneratedClinicalReport } from '../utils/reportFormatting';
 import { pipeline, env } from '@huggingface/transformers';
@@ -160,7 +161,15 @@ const sanitizeForLocalCache = (data: any): any => {
 };
 
 export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData: initialPatientData, isEditorMode, onExitEditor }) => {
-  const [currentPatientData, setCurrentPatientData] = useState(initialPatientData);
+  const [currentPatientData, setCurrentPatientData] = useState<Partial<PatientData>>(
+    isEditorMode ? initialPatientData : { id: initialPatientData.id }
+  );
+  const validatedAccessPinRef = useRef<string>('');
+  const temporaryLegacyConclusionPathRef = useRef(false);
+
+  useEffect(() => () => {
+    validatedAccessPinRef.current = '';
+  }, []);
 
   // Inicialización con localStorage/Defaults para evitar parpadeos
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig>(() => {
@@ -220,51 +229,37 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
              return prev;
         });
 
-        // Hidratar datos del paciente y progreso
+        // El cuestionario anónimo solo obtiene estado no sensible mediante el gateway.
         if (currentPatientData.id && !isEditorMode) {
             setIsPatientHydrating(true);
             try {
-                console.log("[PATIENT HYDRATION] Fetching patient by ID:", currentPatientData.id);
-                const fullPatient = await DataService.getPatientById(currentPatientData.id);
-                console.log("[PATIENT HYDRATION] Result:", fullPatient ? "Found" : "Not Found");
-                
-                if (fullPatient) {
-                    console.log("[PATIENT HYDRATION] answers", {
-                      patientId: fullPatient.id,
-                      status: fullPatient.status,
-                      answerKeys: fullPatient.answers ? Object.keys(fullPatient.answers) : [],
-                      answerCount: fullPatient.answers ? Object.keys(fullPatient.answers).length : 0,
-                      lastAnswerSavedAt: fullPatient.lastAnswerSavedAt || null,
-                      lastAnsweredQuestionId: fullPatient.lastAnsweredQuestionId || null
-                    });
-                    
-                    setCurrentPatientData(fullPatient);
-                    
-                    if (fullPatient.status === 'completed') {
-                        setStep('locked');
-                        setIsPatientHydrating(false);
-                        return;
-                    }
-                    
-                    if (fullPatient.status === 'concluded' || fullPatient.status === 'finalized') {
-                        setStep('pin_validation');
-                        setIsPatientHydrating(false);
-                        return;
-                    }
+                const bootstrap = await PatientAccessApi.bootstrap(currentPatientData.id);
+                temporaryLegacyConclusionPathRef.current = bootstrap.next === 'conclusion';
 
-                    if (fullPatient.answers) {
-                        setAnswersSafely(fullPatient.answers);
-                        // Si ya tiene respuestas pero no ha terminado, restauramos el índice
-                        const answeredCount = Object.keys(fullPatient.answers).length;
-                        if (answeredCount > 0 && answeredCount < activeQuestions.length) {
-                            setCurrentQuestionIndex(answeredCount);
-                        }
-                    }
-                } else {
+                if (bootstrap.next === 'completed') {
+                    setCurrentPatientData({ id: currentPatientData.id, status: 'completed' });
+                    setStep('locked');
+                    return;
+                }
+
+                if (bootstrap.next === 'unavailable') {
                     setPatientHydrationError('Enlace de paciente no válido o caducado.');
+                    return;
+                }
+
+                if (bootstrap.next === 'conclusion') {
+                    // TEMPORARY LEGACY CONCLUSION PATH — TO BE REMOVED IN CONCLUSION MIGRATION
+                    const fullPatient = await DataService.getPatientById(currentPatientData.id);
+                    if (!fullPatient) {
+                        setPatientHydrationError('Enlace de paciente no válido o caducado.');
+                        return;
+                    }
+                    setCurrentPatientData(fullPatient);
+                    if (fullPatient.answers) setAnswersSafely(fullPatient.answers);
+                    setStep('pin_validation');
                 }
             } catch (e) {
-                console.error("Error fetching full patient data", e);
+                console.error("Error preparando el acceso del paciente", e);
                 setPatientHydrationError('Error de conexión. Inténtalo de nuevo más tarde.');
             } finally {
                 setIsPatientHydrating(false);
@@ -277,11 +272,9 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   // Sincronizar props (patientData -> currentPatientData) si llega tarde
   useEffect(() => {
     if (!isEditorMode && initialPatientData?.id && initialPatientData.id !== currentPatientData.id) {
-      console.log("[PATIENT SESSION] syncing patient id from props", {
-        previousId: currentPatientData.id || null,
-        nextId: initialPatientData.id
-      });
-      setCurrentPatientData(initialPatientData);
+      validatedAccessPinRef.current = '';
+      temporaryLegacyConclusionPathRef.current = false;
+      setCurrentPatientData({ id: initialPatientData.id });
       setPatientHydrationError(null);
     }
   }, [initialPatientData?.id, isEditorMode]);
@@ -666,9 +659,11 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     setIsSendingResults(true);
 
     const patientId = currentPatientData.id || patientDataRef.current?.id;
-    const accessPin = currentPatientData.accessPin || patientDataRef.current?.accessPin || pinInput;
+    const accessPin = isEditorMode
+      ? (currentPatientData.accessPin || patientDataRef.current?.accessPin || pinInput)
+      : validatedAccessPinRef.current;
 
-    if (!patientId) {
+    if (!patientId || !accessPin) {
       showToast("Error: No se encontró el identificador del paciente.");
       setIsSendingResults(false);
       sendResultsInFlightRef.current = false;
@@ -678,17 +673,21 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     const finalAnswers = answersRef.current && Object.keys(answersRef.current).length > 0 ? answersRef.current : answers;
     const now = Date.now();
 
-    // 1. Una sola escritura representa la finalización lógica completa.
+    // 1. Una sola operación representa la finalización lógica completa.
     try {
-      await DataService.updatePatient(patientId, {
-        answers: finalAnswers,
-        lastAnswerSavedAt: now,
-        dateAnswered: now,
-        status: 'completed',
-        aiReportStatus: 'pending',
-        aiReportError: null,
-        aiReportErrorAt: null
-      } as any);
+      if (isEditorMode) {
+        await DataService.updatePatient(patientId, {
+          answers: finalAnswers,
+          lastAnswerSavedAt: now,
+          dateAnswered: now,
+          status: 'completed',
+          aiReportStatus: 'pending',
+          aiReportError: null,
+          aiReportErrorAt: null
+        } as any);
+      } else {
+        await PatientAccessApi.action(patientId, accessPin, 'complete', { answers: finalAnswers });
+      }
     } catch (e) {
       console.error("[SEND RESULTS] Error fijando la finalización:", e);
       showToast("Error al guardar la finalización. Por favor, inténtalo de nuevo.");
@@ -714,24 +713,23 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       localStorage.setItem(`radar_completed_${patientId}`, 'true');
     }
 
-    // 3. Notificar después de completed y comprobar también el cuerpo de la respuesta.
-    try {
-      const syncRes = await fetchWithTimeout('/api/notify-soybienestar-status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
-      }, 20000);
-      const syncData = await syncRes.json().catch(() => null);
-      if (!syncRes.ok || syncData?.success !== true) {
-        console.error("[SoyBienestar Sync Error]", {
-          status: syncRes.status,
-          response: syncData
-        });
-      } else {
-        console.log("[SoyBienestar Sync Success]", syncData);
+    // 3. El gateway ya emite questionnaire_completed para el flujo anónimo.
+    if (isEditorMode) {
+      try {
+        const syncRes = await fetchWithTimeout('/api/notify-soybienestar-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
+        }, 20000);
+        const syncData = await syncRes.json().catch(() => null);
+        if (!syncRes.ok || syncData?.success !== true) {
+          console.error("[SoyBienestar Sync Error]", { status: syncRes.status, response: syncData });
+        } else {
+          console.log("[SoyBienestar Sync Success]", syncData);
+        }
+      } catch (e) {
+        console.error("[SoyBienestar Sync Error]", e);
       }
-    } catch (e) {
-      console.error("[SoyBienestar Sync Error]", e);
     }
 
     // 4. Generar la valoración únicamente con las respuestas definitivas ya persistidas.
@@ -756,7 +754,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       console.error("[SEND RESULTS] Error en generación backend; completed se conserva:", err);
       setClinicalReportGenerationError({ error: true, message });
 
-      try {
+      if (isEditorMode) try {
         await DataService.updatePatient(patientId, {
           aiReportStatus: 'error',
           aiReportError: message,
@@ -978,6 +976,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
   const confirmExit = () => {
     sequenceIdRef.current++;
+    validatedAccessPinRef.current = '';
     setShowExitConfirm(false);
     stopAudio();
     if (isEditorMode && onExitEditor) {
@@ -996,6 +995,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   };
 
   const finishCompletedSession = () => {
+    validatedAccessPinRef.current = '';
     stopAudio();
     setShowExitConfirm(false);
 
@@ -1198,15 +1198,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         return;
     }
 
-    console.log("[PIN VALIDATION] current patient before validation", {
-      currentPatientId: currentPatientData.id || null,
-      initialPatientId: initialPatientData?.id || null,
-      hasHydrationError: !!patientHydrationError,
-      isPatientHydrating
-    });
-
     if (!currentPatientData.id && initialPatientData?.id) {
-      setCurrentPatientData(initialPatientData);
+      setCurrentPatientData({ id: initialPatientData.id });
       showToast("Preparando tu acceso seguro. Vuelve a pulsar entrar en unos segundos.");
       return;
     }
@@ -1219,137 +1212,101 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     try {
       setIsPatientHydrating(true);
 
-      const freshPatient = await DataService.getPatientById(String(currentPatientData.id));
+      if (temporaryLegacyConclusionPathRef.current) {
+        // TEMPORARY LEGACY CONCLUSION PATH — TO BE REMOVED IN CONCLUSION MIGRATION
+        const legacyPatient = await DataService.getPatientById(String(currentPatientData.id));
+        const expectedPin = normalizePatientAccessCode(legacyPatient?.accessPin || '');
+        if (!legacyPatient || expectedPin.length !== 4 || enteredPin !== expectedPin) {
+          setPinInput("");
+          addMessage("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.", 'ia');
+          playOrSpeak("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.");
+          showToast("Clave incorrecta. Revisa la clave personal recibida con tu enlace.");
+          return;
+        }
 
-      console.log("[PIN VALIDATION] fresh patient check", {
-        patientId: String(currentPatientData.id).slice(0, 30),
-        hasPatient: !!freshPatient,
-        hasAccessPin: !!freshPatient?.accessPin,
-        status: freshPatient?.status || null
-      });
+        setCurrentPatientData(legacyPatient);
+        patientDataRef.current = legacyPatient;
+        setPinInput("");
+        setStep("conclusion_view");
 
-      if (!freshPatient) {
+        if (legacyPatient.status === 'concluded') {
+          DataService.updatePatient(legacyPatient.id, {
+            status: 'finalized',
+            dateConclusionViewed: Date.now(),
+            conclusionViews: (legacyPatient.conclusionViews || 0) + 1
+          }).catch(e => console.error("Error updating status to finalized", e));
+        } else if (legacyPatient.status === 'finalized') {
+          DataService.updatePatient(legacyPatient.id, {
+            dateConclusionViewed: Date.now(),
+            conclusionViews: (legacyPatient.conclusionViews || 0) + 1
+          }).catch(e => console.error("Error updating conclusion views", e));
+        }
+        return;
+      }
+
+      const unlock = await PatientAccessApi.unlock(String(currentPatientData.id), enteredPin);
+      if (unlock.next === 'completed') {
+        validatedAccessPinRef.current = '';
+        setPinInput("");
+        setStep('locked');
+        return;
+      }
+      if (unlock.next !== 'questionnaire' || !unlock.patient) {
         showToast("Este enlace no está disponible o ha caducado. Solicita un nuevo acceso.");
         return;
       }
 
-      if (!freshPatient.accessPin) {
-        showToast("Estamos preparando tu acceso. Espera unos segundos e inténtalo de nuevo.");
+      const unlockedPatient = unlock.patient as PatientQuestionnaireDto & Partial<PatientData>;
+      validatedAccessPinRef.current = enteredPin;
+      setCurrentPatientData(unlockedPatient);
+      patientDataRef.current = unlockedPatient;
+      setPinInput("");
+
+      if (!hasVoiceBeenSetByUserRef.current && unlockedPatient.sexo) {
+        updateVoice(resolveInitialVoiceFromSex(unlockedPatient.sexo, globalConfig.defaultVoiceMode), false);
+      }
+
+      const savedAnswers = unlockedPatient.answers || {};
+      setAnswersSafely(savedAnswers);
+      const answeredCount = activeQuestions
+        .map(q => q.id)
+        .filter(id => savedAnswers[id] !== undefined && savedAnswers[id] !== null && savedAnswers[id] !== "")
+        .length;
+      const hasPartialProgress = answeredCount > 0 && answeredCount < activeQuestions.length;
+
+      if (hasPartialProgress) {
+        setStep("questionnaire");
+        proceedToQuestionnaire();
         return;
       }
 
-      const expectedPin = normalizePatientAccessCode(freshPatient.accessPin);
-      
-      if (expectedPin.length !== 4) {
-        showToast("Esta clave no es válida. Solicita un nuevo enlace de acceso.");
-        return;
+      const nameQ = processText(globalConfig.nameQuestionText);
+      setStep(nameQ ? "verification" : "questionnaire");
+      const welcome = processText(globalConfig.welcomeText);
+      if (welcome) {
+        addMessage(welcome, 'ia');
+        await playOrSpeak(welcome, globalConfig.welcomeAudio);
+      }
+      if (nameQ) {
+        addMessage(nameQ, 'ia');
+        playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
+      } else {
+        proceedToQuestionnaire();
       }
 
-      if (enteredPin !== expectedPin) {
+    } catch (error) {
+      if (error instanceof PatientAccessApiError && error.status === 401) {
         setPinInput("");
         addMessage("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.", 'ia');
         playOrSpeak("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.");
         showToast("Clave incorrecta. Revisa la clave personal recibida con tu enlace.");
         return;
       }
-
-      setCurrentPatientData(freshPatient);
-      patientDataRef.current = freshPatient;
-      setPinInput("");
-      
-      if (!isEditorMode && !hasVoiceBeenSetByUserRef.current && freshPatient.sexo) {
-        const resolvedVoice = resolveInitialVoiceFromSex(freshPatient.sexo, globalConfig.defaultVoiceMode);
-        updateVoice(resolvedVoice, false);
-      }
-      
-      if (freshPatient.answers) {
-        setAnswersSafely(freshPatient.answers);
-      }
-
-      console.log("[PIN VALIDATION] restored answers", {
-        patientId: freshPatient.id,
-        answerCount: freshPatient.answers ? Object.keys(freshPatient.answers).length : 0
-      });
-
-      if (freshPatient.status === "completed") {
-        setStep("locked");
+      if (error instanceof PatientAccessApiError && error.status === 429) {
+        setPinInput("");
+        showToast("Has realizado demasiados intentos. Espera unos minutos antes de volver a intentarlo.");
         return;
       }
-
-      if (freshPatient.status === "concluded" || freshPatient.status === "finalized") {
-        setStep("conclusion_view");
-        
-        // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed) o FINALIZADO (finalized)
-        if (freshPatient.id && freshPatient.status === 'concluded') {
-            DataService.updatePatient(freshPatient.id, {
-                status: 'finalized',
-                dateConclusionViewed: Date.now(),
-                conclusionViews: (freshPatient.conclusionViews || 0) + 1
-            }).catch(e => console.error("Error updating status to finalized", e));
-        } else if (freshPatient.id && freshPatient.status === 'finalized') {
-            DataService.updatePatient(freshPatient.id, {
-                dateConclusionViewed: Date.now(),
-                conclusionViews: (freshPatient.conclusionViews || 0) + 1
-            }).catch(e => console.error("Error updating conclusion views", e));
-        }
-      } else {
-        // AUTOMATIZACIÓN DE ESTADO: VISTO (viewed)
-        if (!isEditorMode && freshPatient.id && (freshPatient.status === 'pending' || freshPatient.status === 'sent')) {
-            DataService.updatePatient(freshPatient.id, { status: 'viewed' })
-              .then(() => {
-                setCurrentPatientData(prev => ({ ...prev, status: 'viewed' }));
-              })
-              .catch(e => {
-                console.error("Error updating viewed status", e);
-              });
-        }
-
-        // Enviar evento de validación
-        if (freshPatient.id) {
-            fetch('/api/notify-soybienestar-status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ patientId: freshPatient.id, event: 'questionnaire_started' })
-            }).catch(e => console.error("Notification error", e));
-        }
-
-        const savedAnswers = freshPatient.answers || {};
-        const answeredCount = activeQuestions
-          .map(q => q.id)
-          .filter(id => savedAnswers[id] !== undefined && savedAnswers[id] !== null && savedAnswers[id] !== "")
-          .length;
-
-        const hasPartialProgress =
-          answeredCount > 0 && answeredCount < activeQuestions.length;
-
-        if (hasPartialProgress) {
-            setStep("questionnaire");
-            proceedToQuestionnaire();
-            return;
-        }
-
-        const nameQ = processText(globalConfig.nameQuestionText);
-        if (nameQ) {
-            setStep("verification");
-        } else {
-            setStep("questionnaire");
-        }
-
-        const welcome = processText(globalConfig.welcomeText);
-        if (welcome) {
-            addMessage(welcome, 'ia');
-            await playOrSpeak(welcome, globalConfig.welcomeAudio);
-        }
-        
-        if (nameQ) {
-            addMessage(nameQ, 'ia');
-            playOrSpeak(nameQ, globalConfig.nameQuestionAudio);
-        } else {
-            proceedToQuestionnaire();
-        }
-      }
-
-    } catch (error) {
       console.error("[PIN VALIDATION] error", error);
       showToast("No hemos podido verificar la clave. Inténtalo de nuevo en unos segundos.");
     } finally {
@@ -1362,12 +1319,25 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     const inputClean = nameInput.trim();
     addMessage(nameInput, 'user');
 
-    const applyAcceptedName = () => {
+    const applyAcceptedName = async () => {
         if (isEditorMode) {
             const updatedData = { ...currentPatientData, nombre: inputClean };
             setCurrentPatientData(updatedData);
             patientDataRef.current = updatedData;
-            return;
+            return true;
+        }
+
+        const patientId = currentPatientData.id || patientDataRef.current?.id;
+        const accessPin = validatedAccessPinRef.current;
+        if (!patientId || !accessPin) return false;
+
+        try {
+            await PatientAccessApi.action(patientId, accessPin, 'confirm_name', {
+                questionnaireConfirmedName: inputClean
+            });
+        } catch (error) {
+            console.error("No se pudo guardar el nombre confirmado del cuestionario.", error);
+            return false;
         }
 
         const questionnaireConfirmedNameAt = Date.now();
@@ -1378,15 +1348,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         };
         setCurrentPatientData(updatedData);
         patientDataRef.current = updatedData;
-
-        if (updatedData.id) {
-            void DataService.updatePatient(updatedData.id, {
-                questionnaireConfirmedName: inputClean,
-                questionnaireConfirmedNameAt
-            }).catch(error => {
-                console.error("No se pudo guardar el nombre confirmado del cuestionario.", error);
-            });
-        }
+        return true;
     };
     
     if (verificationAttempts === 0) {
@@ -1395,9 +1357,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         const expectedLower = nameToMatch.split(' ')[0].toLowerCase();
 
         if (inputLower.includes(expectedLower) || expectedLower.includes(inputLower) || isEditorMode) {
-            applyAcceptedName();
-            
-            proceedToQuestionnaire();
+            if (await applyAcceptedName()) proceedToQuestionnaire();
         } else {
             const mismatchMsg = `El nombre no coincide con nuestros registros (${currentPatientData.nombre}). Por favor, escribe el nombre completo.`;
             setVerificationAttempts(1);
@@ -1405,7 +1365,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             await playOrSpeak(mismatchMsg);
         }
     } else {
-        applyAcceptedName();
+        if (!(await applyAcceptedName())) return;
 
         const acceptedMsg = `Entendido, actualizamos tu ficha como "${inputClean}".`;
         addMessage(acceptedMsg, 'ia');
@@ -1430,14 +1390,6 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
         resumeIndex = Math.min(currentPatientData.lastAnsweredQuestionIndex + 1, activeQuestions.length);
     }
     
-    console.log("[RESUME QUESTION INDEX]", {
-      answerKeys: Object.keys(savedAnswers || {}),
-      answeredCount,
-      activeQuestions: activeQuestions.length,
-      activeQuestionIds: activeQuestions.map(q => q.id),
-      resumeIndex
-    });
-
     return resumeIndex;
   };
 
@@ -1486,45 +1438,32 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     }
 
     const newAnswers = { ...currentAnswers, [q.id]: key };
-    setAnswersSafely(newAnswers);
-    addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
-    
-    // Guardado incremental en Firestore
     const patientId = currentPatientData.id || patientDataRef.current?.id;
-    if (patientId && !isEditorMode) {
+    if (!isEditorMode) {
+        const accessPin = validatedAccessPinRef.current;
+        if (!patientId || !accessPin) {
+            showToast("No se ha podido guardar esta respuesta. Revisa la conexión antes de continuar.");
+            return;
+        }
+
         setIsSavingAnswer(true);
         try {
-            console.log("[ANSWER SAVE] saving", {
-                patientId: patientId,
+            await PatientAccessApi.action(patientId, accessPin, 'save_progress', {
                 questionId: q.id,
-                answerKey: key,
-                answerCount: Object.keys(newAnswers).length
-            });
-            
-            await DataService.updatePatient(patientId, { 
-                answers: newAnswers,
-                lastAnswerSavedAt: Date.now(),
-                lastAnsweredQuestionId: q.id,
-                lastAnsweredQuestionIndex: currentQuestionIndex,
-                ...(isReviewMode ? {
-                  aiReportStatus: 'stale',
-                  aiReportStaleAt: Date.now()
-                } : {})
-            } as any);
-
-            console.log("[ANSWER SAVE] success", {
-                patientId: patientId,
-                answerCount: Object.keys(newAnswers).length
+                answer: key,
+                questionIndex: currentQuestionIndex
             });
         } catch (e) {
             console.error("[ANSWER SAVE] failed", e);
             showToast("No se ha podido guardar esta respuesta. Revisa la conexión antes de continuar.");
-            setIsSavingAnswer(false);
             return;
         } finally {
             setIsSavingAnswer(false);
         }
     }
+
+    setAnswersSafely(newAnswers);
+    addMessage(`Seleccionado: ${key.toUpperCase()}`, 'user');
 
     if (isReviewMode) {
       setVisibleOptions(q.isScale ? [] : q.options.map(option => option.key));
