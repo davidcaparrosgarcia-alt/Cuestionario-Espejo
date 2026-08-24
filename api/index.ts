@@ -10,15 +10,19 @@ import {
   PATIENT_ACCESS_RATE_LIMIT_COLLECTION,
   activeQuestionIds,
   bootstrapResponse,
+  buildConclusionPatientDto,
   canReuseDirectQuestionnaireRecord,
+  conclusionStatusResponse,
   createRateLimitKey,
   isRateLimitBlocked,
   isPatientAccessRateLimitConfigured,
   patientAccessCodeMatches,
   recordFailedRateLimitAttempt,
+  resolveConclusionAccess,
   resolvePatientAction,
   resolveUnlock,
-  validateActionEnvelope
+  validateActionEnvelope,
+  validateConclusionEnvelope
 } from "./patientAccess";
 
 // Initialize Firebase Admin
@@ -2525,6 +2529,98 @@ app.get("/api/patient-access/:id/bootstrap", async (req, res) => {
       code: error?.code || "unknown"
     });
     return res.status(503).json({ success: false, next: "unavailable", error: "Acceso temporalmente no disponible." });
+  }
+});
+
+app.get("/api/patient-access/:id/conclusion-status", async (req, res) => {
+  const patientId = String(req.params.id || "").trim();
+  if (!patientId || patientId.length > 256) {
+    return res.json({ success: true, state: "unavailable" });
+  }
+
+  try {
+    const patientDoc = await db.collection("patients").doc(patientId).get();
+    return res.json(conclusionStatusResponse(patientId, patientDoc.exists ? patientDoc.data() : null));
+  } catch (error: any) {
+    console.error("[PATIENT ACCESS] action=conclusion_status result=error", {
+      patient: patientAccessLogId(patientId),
+      code: error?.code || "unknown"
+    });
+    return res.status(503).json({ success: false, state: "unavailable", error: "Acceso temporalmente no disponible." });
+  }
+});
+
+app.post("/api/patient-access/:id/conclusion", async (req, res) => {
+  const patientId = String(req.params.id || "").trim();
+  const envelope = validateConclusionEnvelope(req.body);
+  if (!patientId || patientId.length > 256 || envelope.ok === false) {
+    return res.status(400).json({ success: false, error: "Solicitud no valida." });
+  }
+
+  const rateLimitSecret = getPatientAccessRateLimitSecret();
+  if (!isPatientAccessRateLimitConfigured(rateLimitSecret)) {
+    return res.status(503).json({ success: false, error: "Configuracion de seguridad incompleta." });
+  }
+
+  try {
+    const patientRef = db.collection("patients").doc(patientId);
+    const rateLimitRef = getPatientAccessRateLimitRef(req, patientId, rateLimitSecret);
+    const now = Date.now();
+
+    const result: any = await db.runTransaction(async transaction => {
+      const rateLimitDoc = await transaction.get(rateLimitRef);
+      const rateLimitData = rateLimitDoc.exists ? rateLimitDoc.data() : null;
+      if (isRateLimitBlocked(rateLimitData, now)) return { rateLimited: true };
+
+      const patientDoc = await transaction.get(patientRef);
+      const patientData = patientDoc.exists ? patientDoc.data() : null;
+      const decision = resolveConclusionAccess(
+        patientId,
+        patientData,
+        envelope.accessPin,
+        envelope.channel,
+        now
+      );
+
+      if (!decision.ok && decision.statusCode === 401) {
+        transaction.set(rateLimitRef, recordFailedRateLimitAttempt(rateLimitData, now));
+        return { unauthorized: true };
+      }
+
+      let resolvedAudio: string | null = null;
+      if (decision.ok && decision.audioRef) {
+        const audioDoc = await transaction.get(db.collection("audios").doc(decision.audioRef));
+        const audioData = audioDoc.exists ? audioDoc.data()?.data : null;
+        resolvedAudio = typeof audioData === "string" && audioData.trim() ? audioData : null;
+      }
+
+      if (rateLimitDoc.exists) transaction.delete(rateLimitRef);
+      if (!decision.ok && decision.expired) return { expired: true };
+      if (!decision.ok || !decision.update || !decision.patient) return { unauthorized: true };
+
+      transaction.set(patientRef, decision.update, { merge: true });
+      const patient = decision.audioRef
+        ? buildConclusionPatientDto(patientId, patientData || {}, resolvedAudio)
+        : decision.patient;
+      return { patient };
+    });
+
+    if (result.rateLimited) {
+      return res.status(429).json({ success: false, error: "Demasiados intentos. Intentalo mas tarde." });
+    }
+    if (result.unauthorized) {
+      return res.status(401).json({ success: false, error: "Acceso no autorizado." });
+    }
+    if (result.expired) {
+      return res.status(410).json({ success: false, expired: true });
+    }
+    return res.json({ success: true, patient: result.patient });
+  } catch (error: any) {
+    console.error("[PATIENT ACCESS] action=conclusion result=error", {
+      patient: patientAccessLogId(patientId),
+      code: error?.code || "unknown"
+    });
+    return res.status(503).json({ success: false, error: "No se pudo completar el acceso." });
   }
 });
 

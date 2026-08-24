@@ -17,6 +17,16 @@ export const QUESTIONNAIRE_STATUSES = [
 export type QuestionnaireStatus = typeof QUESTIONNAIRE_STATUSES[number];
 export type PatientDocumentKind = "QUESTIONNAIRE" | "HIPNODIGEST" | "UNKNOWN";
 export type PatientAccessNext = "questionnaire" | "completed" | "conclusion" | "unavailable";
+export type PatientConclusionState = "available" | "expired" | "unavailable";
+export type PatientConclusionChannel = "session" | "direct";
+
+export interface PatientConclusionDto {
+  id: string;
+  status: "finalized";
+  displayName: string;
+  finalConclusion: string | null;
+  audioConclusion?: string;
+}
 
 export interface PatientClassification {
   kind: PatientDocumentKind;
@@ -48,6 +58,15 @@ export interface ActionDecision {
   response?: Record<string, unknown>;
   notifyCompleted?: boolean;
   patientForNotification?: Record<string, unknown>;
+}
+
+export interface ConclusionDecision {
+  ok: boolean;
+  statusCode?: number;
+  expired?: boolean;
+  update?: Record<string, unknown>;
+  patient?: PatientConclusionDto;
+  audioRef?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -177,6 +196,111 @@ export function bootstrapResponse(documentId: string, data: unknown): { success:
     default:
       return { success: true, next: "unavailable" };
   }
+}
+
+export function conclusionStatusResponse(
+  documentId: string,
+  data: unknown
+): { success: true; state: PatientConclusionState } {
+  const classification = classifyPatientDocument(documentId, data);
+  if (
+    classification.kind !== "QUESTIONNAIRE" ||
+    !classification.identityMatches ||
+    !["concluded", "finalized"].includes(classification.status || "")
+  ) {
+    return { success: true, state: "unavailable" };
+  }
+
+  const views = Number((data as Record<string, unknown>).conclusionViews);
+  return {
+    success: true,
+    state: Number.isFinite(views) && views >= 2 ? "expired" : "available"
+  };
+}
+
+export function validateConclusionEnvelope(body: unknown):
+  | { ok: true; accessPin: string; channel: PatientConclusionChannel }
+  | { ok: false; error: string } {
+  if (!isRecord(body) || !hasOnlyKeys(body, ["accessPin", "channel"])) {
+    return { ok: false, error: "Solicitud no valida." };
+  }
+  if (typeof body.accessPin !== "string" || !["session", "direct"].includes(body.channel)) {
+    return { ok: false, error: "Solicitud no valida." };
+  }
+  return { ok: true, accessPin: body.accessPin, channel: body.channel };
+}
+
+function conclusionDisplayName(data: Record<string, unknown>): string {
+  const confirmed = typeof data.questionnaireConfirmedName === "string"
+    ? data.questionnaireConfirmedName.trim()
+    : "";
+  if (confirmed) return confirmed;
+  const administrative = typeof data.nombre === "string" ? data.nombre.trim() : "";
+  return administrative || "Paciente";
+}
+
+export function buildConclusionPatientDto(
+  documentId: string,
+  data: Record<string, unknown>,
+  resolvedAudio?: string | null
+): PatientConclusionDto {
+  const finalConclusion = typeof data.finalConclusion === "string" && data.finalConclusion.trim()
+    ? data.finalConclusion.trim()
+    : null;
+  const patient: PatientConclusionDto = {
+    id: documentId,
+    status: "finalized",
+    displayName: conclusionDisplayName(data),
+    finalConclusion
+  };
+  if (typeof resolvedAudio === "string" && resolvedAudio.trim()) {
+    patient.audioConclusion = resolvedAudio;
+  }
+  return patient;
+}
+
+export function resolveConclusionAccess(
+  documentId: string,
+  data: unknown,
+  providedCode: unknown,
+  channel: PatientConclusionChannel,
+  now: number
+): ConclusionDecision {
+  const classification = classifyPatientDocument(documentId, data);
+  if (
+    classification.kind !== "QUESTIONNAIRE" ||
+    !classification.identityMatches ||
+    !["concluded", "finalized"].includes(classification.status || "") ||
+    !patientAccessCodeMatches(data, providedCode)
+  ) {
+    return { ok: false, statusCode: 401 };
+  }
+
+  const patientData = data as Record<string, unknown>;
+  const numericViews = Number(patientData.conclusionViews);
+  const currentViews = Number.isFinite(numericViews) ? Math.max(0, numericViews) : 0;
+  if (channel === "direct" && currentViews >= 2) {
+    return { ok: false, statusCode: 410, expired: true };
+  }
+
+  const audioSource = typeof patientData.audioConclusion === "string"
+    ? patientData.audioConclusion.trim()
+    : "";
+  const audioRef = audioSource.startsWith("audio_ref_") ? audioSource : undefined;
+  const isDataAudio = /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(audioSource);
+  const isRawBase64Audio = audioSource.length >= 8 && audioSource.length % 4 === 0 && /^[a-z0-9+/]+={0,2}$/i.test(audioSource);
+  const inlineAudio = !audioRef && (isDataAudio || isRawBase64Audio) ? audioSource : undefined;
+
+  return {
+    ok: true,
+    update: {
+      status: "finalized",
+      dateConclusionViewed: now,
+      conclusionViews: currentViews + 1
+    },
+    patient: buildConclusionPatientDto(documentId, patientData, inlineAudio),
+    audioRef
+  };
 }
 
 function sanitizeAnswers(value: unknown): Record<string, string> {

@@ -4,17 +4,21 @@ import {
   PATIENT_ACCESS_RATE_LIMIT_MAX_FAILURES,
   activeQuestionIds,
   bootstrapResponse,
+  buildConclusionPatientDto,
   canReuseDirectQuestionnaireRecord,
   classifyPatientDocument,
+  conclusionStatusResponse,
   createRateLimitKey,
   isPatientAccessRateLimitConfigured,
   isRateLimitBlocked,
   patientAccessCodeMatches,
   recordFailedRateLimitAttempt,
+  resolveConclusionAccess,
   resolvePatientAction,
   resolveUnlock,
   selectStoredPatientAccessCode,
-  validateActionEnvelope
+  validateActionEnvelope,
+  validateConclusionEnvelope
 } from "../api/patientAccess";
 
 const PATIENT_ID = "patient_fixture_1";
@@ -36,6 +40,20 @@ function questionnaire(overrides: Record<string, unknown> = {}) {
 
 function applyUpdate(patient: Record<string, any>, update?: Record<string, unknown>) {
   return update ? { ...patient, ...structuredClone(update) } : { ...patient };
+}
+
+function conclusion(overrides: Record<string, unknown> = {}) {
+  return questionnaire({
+    status: "concluded",
+    conclusionViews: 0,
+    nombre: "Nombre Administrativo",
+    questionnaireConfirmedName: "Nombre Elegido",
+    finalConclusion: "Conclusión pública",
+    conversationSummary: "Resumen interno",
+    email: "private@example.invalid",
+    telefono: "private-phone",
+    ...overrides
+  });
 }
 
 test("1. clasifica un QUESTIONNAIRE válido", () => {
@@ -297,4 +315,119 @@ test("los envelopes rechazan campos y acciones arbitrarias", () => {
 
 test("la definición activa excluye preguntas ocultas", () => {
   assert.deepEqual(activeQuestionIds({ questions: [{ id: "q1" }, { id: "hidden", hidden: true }] }), new Set(["q1"]));
+});
+
+test("37. conclusion-status rechaza HipnoDigest, UNKNOWN, deleted, completed e identidad incoherente", () => {
+  const cases = [
+    conclusion({ recordType: "hipnodigest_client" }),
+    { id: PATIENT_ID, status: "legacy" },
+    conclusion({ status: "deleted" }),
+    conclusion({ status: "completed" }),
+    conclusion({ id: "different_patient" })
+  ];
+  for (const patient of cases) {
+    assert.deepEqual(conclusionStatusResponse(PATIENT_ID, patient), { success: true, state: "unavailable" });
+  }
+});
+
+test("38. conclusion-status direct diferencia available y expired", () => {
+  assert.equal(conclusionStatusResponse(PATIENT_ID, conclusion({ status: "concluded", conclusionViews: 0 })).state, "available");
+  assert.equal(conclusionStatusResponse(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 1 })).state, "available");
+  assert.equal(conclusionStatusResponse(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 2 })).state, "expired");
+});
+
+test("39. envelope de conclusión acepta solo accessPin y channel permitido", () => {
+  assert.deepEqual(validateConclusionEnvelope({ accessPin: "a2b3", channel: "session" }), {
+    ok: true, accessPin: "a2b3", channel: "session"
+  });
+  assert.deepEqual(validateConclusionEnvelope({ accessPin: "a2b3", channel: "direct" }), {
+    ok: true, accessPin: "a2b3", channel: "direct"
+  });
+  assert.equal(validateConclusionEnvelope({ accessPin: "a2b3", channel: "other" }).ok, false);
+  assert.equal(validateConclusionEnvelope({ accessPin: "a2b3", channel: "direct", extra: true }).ok, false);
+});
+
+test("40. session no aplica límite de dos vistas", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 2 }), "a2b3", "session", NOW);
+  assert.equal(decision.ok, true);
+  assert.deepEqual(decision.update, { status: "finalized", dateConclusionViewed: NOW, conclusionViews: 3 });
+});
+
+test("41. concluded session pasa a finalized e incrementa una vista", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ status: "concluded", conclusionViews: 0 }), "a2b3", "session", NOW);
+  assert.equal(decision.ok, true);
+  assert.deepEqual(decision.update, { status: "finalized", dateConclusionViewed: NOW, conclusionViews: 1 });
+});
+
+test("42. finalized session permanece finalized e incrementa una vista", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 7 }), "a2b3", "session", NOW);
+  assert.equal(decision.ok, true);
+  assert.deepEqual(decision.update, { status: "finalized", dateConclusionViewed: NOW, conclusionViews: 8 });
+});
+
+test("43. concluded direct con cero vistas pasa a finalized y una vista", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion(), "a2b3", "direct", NOW);
+  assert.equal(decision.ok, true);
+  assert.deepEqual(decision.update, { status: "finalized", dateConclusionViewed: NOW, conclusionViews: 1 });
+});
+
+test("44. finalized direct con una vista alcanza exactamente dos", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 1 }), "a2b3", "direct", NOW);
+  assert.equal(decision.ok, true);
+  assert.deepEqual(decision.update, { status: "finalized", dateConclusionViewed: NOW, conclusionViews: 2 });
+});
+
+test("45. direct con dos vistas devuelve 410 sin update", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ status: "finalized", conclusionViews: 2 }), "a2b3", "direct", NOW);
+  assert.deepEqual(decision, { ok: false, statusCode: 410, expired: true });
+});
+
+test("46. PIN incorrecto y estados no autorizados no producen transición", () => {
+  for (const patient of [conclusion(), conclusion({ status: "completed" }), conclusion({ status: "deleted" })]) {
+    const code = patient.status === "concluded" ? "xxxx" : "a2b3";
+    const decision = resolveConclusionAccess(PATIENT_ID, patient, code, "session", NOW);
+    assert.equal(decision.ok, false);
+    assert.equal(decision.statusCode, 401);
+    assert.equal(decision.update, undefined);
+  }
+});
+
+test("47. DTO de conclusión excluye conversationSummary, PIN y PII", () => {
+  const dto = buildConclusionPatientDto(PATIENT_ID, conclusion());
+  assert.deepEqual(Object.keys(dto).sort(), ["displayName", "finalConclusion", "id", "status"]);
+  const serialized = JSON.stringify(dto);
+  for (const forbidden of ["conversationSummary", "accessPin", "email", "telefono", "coordinatorEmail", "answers"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});
+
+test("48. questionnaireConfirmedName tiene prioridad como displayName", () => {
+  assert.equal(buildConclusionPatientDto(PATIENT_ID, conclusion()).displayName, "Nombre Elegido");
+});
+
+test("49. displayName usa nombre y finalmente Paciente", () => {
+  assert.equal(buildConclusionPatientDto(PATIENT_ID, conclusion({ questionnaireConfirmedName: "" })).displayName, "Nombre Administrativo");
+  assert.equal(buildConclusionPatientDto(PATIENT_ID, conclusion({ questionnaireConfirmedName: "", nombre: "" })).displayName, "Paciente");
+});
+
+test("50. DTO no incluye audio cuando no existe", () => {
+  const dto = buildConclusionPatientDto(PATIENT_ID, conclusion({ audioConclusion: undefined }));
+  assert.equal("audioConclusion" in dto, false);
+});
+
+test("51. audio inline puede incluirse únicamente en el DTO autenticado", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ audioConclusion: "data:audio/wav;base64,UklGRg==" }), "a2b3", "direct", NOW);
+  assert.equal(decision.patient?.audioConclusion, "data:audio/wav;base64,UklGRg==");
+});
+
+test("52. referencia de audio no se devuelve al paciente", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ audioConclusion: "audio_ref_private" }), "a2b3", "direct", NOW);
+  assert.equal(decision.audioRef, "audio_ref_private");
+  assert.equal("audioConclusion" in (decision.patient || {}), false);
+});
+
+test("53. una URL externa no se acepta como audio inline", () => {
+  const decision = resolveConclusionAccess(PATIENT_ID, conclusion({ audioConclusion: "https://example.invalid/private.mp3" }), "a2b3", "direct", NOW);
+  assert.equal("audioConclusion" in (decision.patient || {}), false);
+  assert.equal(decision.audioRef, undefined);
 });

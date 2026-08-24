@@ -89,6 +89,24 @@ async function seedPatient(id: string) {
   await db.collection("patients").doc(id).set(clonePatientFixture(id));
 }
 
+async function seedConclusionPatient(id: string, overrides: Record<string, unknown> = {}) {
+  await db.collection("patients").doc(id).set({
+    id,
+    coordinatorEmail: "coordinator@tests.invalid",
+    nombre: "Nombre Administrativo",
+    questionnaireConfirmedName: "Nombre Elegido",
+    email: "private@tests.invalid",
+    telefono: "private-phone",
+    accessPin: SYNTHETIC_ACCESS_PIN,
+    status: "concluded",
+    conclusionViews: 0,
+    finalConclusion: "CONCLUSION_PUBLICA_INTEGRATION",
+    conversationSummary: "INTERNAL_SUMMARY_INTEGRATION",
+    answers: { q1: "a" },
+    ...overrides
+  });
+}
+
 async function seedFixtures() {
   await clearCollection("patientAccessRateLimits");
   await clearCollection("patients");
@@ -125,6 +143,19 @@ function patchAction(id: string, action: string, payload: Record<string, unknown
     method: "PATCH",
     headers: { "x-forwarded-for": ip },
     body: JSON.stringify({ accessPin: SYNTHETIC_ACCESS_PIN, action, payload })
+  });
+}
+
+function postConclusion(
+  id: string,
+  channel: "session" | "direct",
+  accessPin = SYNTHETIC_ACCESS_PIN,
+  ip = "192.0.2.40"
+) {
+  return http(`/api/patient-access/${id}/conclusion`, {
+    method: "POST",
+    headers: { "x-forwarded-for": ip },
+    body: JSON.stringify({ accessPin, channel })
   });
 }
 
@@ -400,4 +431,123 @@ test("integration webhook local 500 no revierte sent a viewed", async () => {
   assert.equal(stored.lastSoyBienestarStatusSyncEvent, "questionnaire_started");
   assert.equal(stored.lastSoyBienestarStatusSyncStatus, "error");
   assert.equal(requestsFor("questionnaire_started").length, 1);
+});
+
+test("integration conclusion-status no escribe y limita su contrato", async () => {
+  const id = "patient_test_conclusion_status";
+  await seedConclusionPatient(id, { conclusionViews: 1 });
+  const beforeData = (await db.collection("patients").doc(id).get()).data();
+  const { response, body } = await http(`/api/patient-access/${id}/conclusion-status`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(body, { success: true, state: "available" });
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData);
+});
+
+test("integration conclusion PIN incorrecto no modifica vista e incrementa rate limit", async () => {
+  const id = "patient_test_conclusion_bad_pin";
+  const ip = "192.0.2.41";
+  await seedConclusionPatient(id);
+  const beforeData = (await db.collection("patients").doc(id).get()).data();
+  const { response } = await postConclusion(id, "direct", "xxxx", ip);
+  assert.equal(response.status, 401);
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).data()?.failedAttempts, 1);
+});
+
+test("integration conclusion PIN correcto limpia rate limit", async () => {
+  const id = "patient_test_conclusion_rate_reset";
+  const ip = "192.0.2.42";
+  await seedConclusionPatient(id);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  assert.equal((await postConclusion(id, "direct", "xxxx", ip)).response.status, 401);
+  assert.equal((await postConclusion(id, "direct", SYNTHETIC_ACCESS_PIN, ip)).response.status, 200);
+  assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).exists, false);
+});
+
+test("integration conclusion session preserva semántica concluded y finalized sin límite", async () => {
+  const concludedId = "patient_test_conclusion_session_concluded";
+  await seedConclusionPatient(concludedId, { status: "concluded", conclusionViews: 2 });
+  assert.equal((await postConclusion(concludedId, "session")).response.status, 200);
+  const concluded = (await db.collection("patients").doc(concludedId).get()).data()!;
+  assert.equal(concluded.status, "finalized");
+  assert.equal(concluded.conclusionViews, 3);
+  assert.equal(typeof concluded.dateConclusionViewed, "number");
+
+  const finalizedId = "patient_test_conclusion_session_finalized";
+  await seedConclusionPatient(finalizedId, { status: "finalized", conclusionViews: 7 });
+  assert.equal((await postConclusion(finalizedId, "session")).response.status, 200);
+  const finalized = (await db.collection("patients").doc(finalizedId).get()).data()!;
+  assert.equal(finalized.status, "finalized");
+  assert.equal(finalized.conclusionViews, 8);
+});
+
+test("integration conclusion direct permite vistas cero y uno, y bloquea la tercera", async () => {
+  const id = "patient_test_conclusion_direct_sequence";
+  await seedConclusionPatient(id, { conclusionViews: 0 });
+  assert.equal((await postConclusion(id, "direct")).response.status, 200);
+  assert.equal((await db.collection("patients").doc(id).get()).data()?.conclusionViews, 1);
+  assert.equal((await postConclusion(id, "direct")).response.status, 200);
+  assert.equal((await db.collection("patients").doc(id).get()).data()?.conclusionViews, 2);
+  const beforeThird = (await db.collection("patients").doc(id).get()).data();
+  const third = await postConclusion(id, "direct");
+  assert.equal(third.response.status, 410);
+  assert.deepEqual(third.body, { success: false, expired: true });
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeThird);
+});
+
+test("integration conclusion direct concurrente concede una sola segunda vista", async () => {
+  const id = "patient_test_conclusion_direct_concurrent";
+  await seedConclusionPatient(id, { status: "finalized", conclusionViews: 1 });
+  const results = await Promise.all([
+    postConclusion(id, "direct", SYNTHETIC_ACCESS_PIN, "192.0.2.43"),
+    postConclusion(id, "direct", SYNTHETIC_ACCESS_PIN, "192.0.2.43")
+  ]);
+  assert.deepEqual(results.map(result => result.response.status).sort(), [200, 410]);
+  assert.equal((await db.collection("patients").doc(id).get()).data()?.conclusionViews, 2);
+});
+
+test("integration conclusion DTO devuelve solo contenido público tras PIN", async () => {
+  const id = "patient_test_conclusion_dto";
+  await seedConclusionPatient(id);
+  const status = await http(`/api/patient-access/${id}/conclusion-status`);
+  assert.equal(JSON.stringify(status.body).includes("CONCLUSION_PUBLICA_INTEGRATION"), false);
+  const { response, body } = await postConclusion(id, "direct");
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body).sort(), ["patient", "success"]);
+  assert.deepEqual(Object.keys(body.patient).sort(), ["displayName", "finalConclusion", "id", "status"]);
+  assert.equal(body.patient.finalConclusion, "CONCLUSION_PUBLICA_INTEGRATION");
+  assert.equal(body.patient.displayName, "Nombre Elegido");
+  const serialized = JSON.stringify(body);
+  for (const forbidden of ["conversationSummary", "accessPin", "email", "telefono", "coordinatorEmail", "answers", "soybienestarContext", "preInformeSoyBienestar"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});
+
+test("integration conclusion audio inline solo aparece tras PIN", async () => {
+  const id = "patient_test_conclusion_inline_audio";
+  const audio = "data:audio/wav;base64,UklGRg==";
+  await seedConclusionPatient(id, { audioConclusion: audio });
+  const status = await http(`/api/patient-access/${id}/conclusion-status`);
+  assert.equal(JSON.stringify(status.body).includes(audio), false);
+  const unlocked = await postConclusion(id, "direct");
+  assert.equal(unlocked.body.patient.audioConclusion, audio);
+});
+
+test("integration conclusion resuelve audio_ref sin modificar audios", async () => {
+  const id = "patient_test_conclusion_ref_audio";
+  const audioRef = "audio_ref_patient_conclusion_integration";
+  const generalAudioId = "audio_ref_general_integration";
+  const privateAudio = { kind: "patient_conclusion", data: "data:audio/wav;base64,UFJJVkFURQ==", usedBy: 9, stable: true };
+  const generalAudio = { kind: "question", data: "data:audio/wav;base64,R0VORVJSTA==", usedBy: 3, stable: true };
+  await db.collection("audios").doc(audioRef).set(privateAudio);
+  await db.collection("audios").doc(generalAudioId).set(generalAudio);
+  await seedConclusionPatient(id, { audioConclusion: audioRef });
+
+  const unlocked = await postConclusion(id, "direct");
+  assert.equal(unlocked.response.status, 200);
+  assert.equal(unlocked.body.patient.audioConclusion, privateAudio.data);
+  assert.equal(JSON.stringify(unlocked.body).includes(audioRef), false);
+  assert.deepEqual((await db.collection("audios").doc(audioRef).get()).data(), privateAudio);
+  assert.deepEqual((await db.collection("audios").doc(generalAudioId).get()).data(), generalAudio);
 });

@@ -31,6 +31,26 @@ export interface PatientActionResponse {
   idempotent?: boolean;
 }
 
+export type PatientConclusionState = 'available' | 'expired' | 'unavailable';
+
+export interface PatientConclusionStatusResponse {
+  success: boolean;
+  state: PatientConclusionState;
+}
+
+export interface PatientConclusionDto {
+  id: string;
+  status: 'finalized';
+  displayName: string;
+  finalConclusion: string | null;
+  audioConclusion?: string;
+}
+
+export interface PatientConclusionResponse {
+  success: true;
+  patient: PatientConclusionDto;
+}
+
 export class PatientAccessApiError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
@@ -60,6 +80,18 @@ export const PatientAccessApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accessPin })
+    });
+  },
+
+  conclusionStatus(patientId: string) {
+    return requestJson<PatientConclusionStatusResponse>(patientUrl(patientId, 'conclusion-status'));
+  },
+
+  conclusion(patientId: string, accessPin: string, channel: 'session' | 'direct') {
+    return requestJson<PatientConclusionResponse>(patientUrl(patientId, 'conclusion'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessPin, channel })
     });
   },
 

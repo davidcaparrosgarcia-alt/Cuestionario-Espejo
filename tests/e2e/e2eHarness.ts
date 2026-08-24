@@ -6,6 +6,12 @@ export const E2E_PIN = 'a2b3';
 export const PATIENT_SENT = 'patient_e2e_sent';
 export const PATIENT_VIEWED = 'patient_e2e_viewed';
 export const PATIENT_COMPLETED = 'patient_e2e_completed';
+export const PATIENT_CONCLUDED = 'patient_e2e_concluded';
+export const PATIENT_FINALIZED = 'patient_e2e_finalized';
+export const PATIENT_CONCLUSION_AUDIO_REF = 'audio_ref_patient_conclusion_e2e';
+export const PATIENT_CONCLUSION_PUBLIC_TEXT = 'CONCLUSION_PUBLICA_E2E';
+export const PATIENT_CONCLUSION_INTERNAL_TEXT = 'INTERNAL_SUMMARY_MUST_NEVER_REACH_BROWSER';
+export const PATIENT_CONCLUSION_AUDIO_DATA = 'data:audio/wav;base64,UklGRg==';
 
 const assertHarnessEnvironment = () => {
   const firestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
@@ -79,6 +85,27 @@ export async function seedE2EFixtures() {
   batch.set(db.collection('patients').doc(PATIENT_COMPLETED), patient(PATIENT_COMPLETED, 'completed', {
     answers: { q1: 'a', q2: 'b', q3: 'a' }, dateAnswered: 1_700_000_000_000
   }));
+  batch.set(db.collection('patients').doc(PATIENT_CONCLUDED), patient(PATIENT_CONCLUDED, 'concluded', {
+    conclusionViews: 0,
+    nombre: 'Alias Inicial',
+    questionnaireConfirmedName: 'Nombre Elegido',
+    finalConclusion: PATIENT_CONCLUSION_PUBLIC_TEXT,
+    conversationSummary: PATIENT_CONCLUSION_INTERNAL_TEXT,
+    audioConclusion: PATIENT_CONCLUSION_AUDIO_REF
+  }));
+  batch.set(db.collection('patients').doc(PATIENT_FINALIZED), patient(PATIENT_FINALIZED, 'finalized', {
+    conclusionViews: 1,
+    nombre: 'Alias Inicial',
+    questionnaireConfirmedName: 'Nombre Elegido',
+    finalConclusion: PATIENT_CONCLUSION_PUBLIC_TEXT,
+    conversationSummary: PATIENT_CONCLUSION_INTERNAL_TEXT
+  }));
+  batch.set(db.collection('audios').doc(PATIENT_CONCLUSION_AUDIO_REF), {
+    kind: 'patient_conclusion',
+    data: PATIENT_CONCLUSION_AUDIO_DATA,
+    usedBy: 0,
+    stable: 'must-remain-unchanged'
+  });
   await batch.commit();
 }
 
@@ -87,7 +114,16 @@ export async function getPatientFixture(id: string) {
   return snapshot.data() as Record<string, unknown>;
 }
 
+export async function getAudioFixture(id: string) {
+  const snapshot = await db.collection('audios').doc(id).get();
+  return snapshot.data() as Record<string, unknown>;
+}
+
 export function patientSessionUrl(id: string) {
   const token = Buffer.from(JSON.stringify({ id, nombre: 'Paciente E2E', status: 'sent' }), 'utf8').toString('base64');
   return `/#/session?p=${encodeURIComponent(token)}`;
+}
+
+export function patientConclusionUrl(id: string) {
+  return `/#/conclusion?id=${encodeURIComponent(id)}`;
 }

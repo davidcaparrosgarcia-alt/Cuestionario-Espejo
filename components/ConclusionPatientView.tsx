@@ -1,15 +1,16 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, Button, Logo, Input } from './UI';
-import { PatientData, GlobalConfig } from '../types';
+import { Card, Button, Logo } from './UI';
+import { GlobalConfig } from '../types';
 import { DataService } from '../services/dataService';
+import { PatientAccessApi, PatientAccessApiError, PatientConclusionDto } from '../services/patientAccessApi';
 
 interface ConclusionPatientViewProps {
   patientId: string;
 }
 
 export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ patientId }) => {
-  const [patient, setPatient] = useState<PatientData | null>(null);
+  const [patient, setPatient] = useState<PatientConclusionDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [expired, setExpired] = useState(false);
@@ -18,34 +19,27 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
+  const [pinFeedback, setPinFeedback] = useState('');
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    // Cargar pacientes y config
+    // La configuración pública y el estado mínimo se cargan sin descargar la ficha del paciente.
     const loadData = async () => {
         try {
             const config = await DataService.getGlobalConfig({} as any);
             setGlobalConfig(config);
 
-            const found = await DataService.getPatientById(patientId);
-            
-            if (found) {
-                // Si ya ha sido visto demasiadas veces, marcar expirado
-                if ((found.conclusionViews || 0) >= 2) {
-                    setExpired(true);
-                    setLoading(false);
-                } else {
-                    setPatient(found);
-                    setLoading(false);
-                }
-            } else {
+            const status = await PatientAccessApi.conclusionStatus(patientId);
+            if (status.state === 'expired') {
+                setExpired(true);
+            } else if (status.state === 'unavailable') {
                 setError("No se ha encontrado el registro.");
-                setLoading(false);
             }
         } catch (e) {
             setError("Error al cargar la conclusión.");
+        } finally {
             setLoading(false);
         }
     };
@@ -54,23 +48,27 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
   }, [patientId]);
 
   const verifyPin = async () => {
-      if (patient && pinInput === patient.accessPin) {
+      setPinFeedback('');
+      try {
+          const conclusion = await PatientAccessApi.conclusion(patientId, pinInput, 'direct');
+          setPatient(conclusion.patient);
+          setPinInput('');
           setIsUnlocked(true);
-          
-          // Incrementar contador de vistas al desbloquear con éxito
-          try {
-             await DataService.updatePatient(patientId, { 
-                 conclusionViews: (patient.conclusionViews || 0) + 1,
-                 status: 'finalized' as const,
-                 dateConclusionViewed: Date.now()
-             });
-          } catch(e) {
-             console.error("Error actualizando vistas", e);
-          }
-
-      } else {
+      } catch (error) {
+        if (error instanceof PatientAccessApiError && error.status === 410) {
+          setExpired(true);
+          return;
+        }
+        if (error instanceof PatientAccessApiError && error.status === 401) {
           setPinError(true);
           setTimeout(() => setPinError(false), 2000);
+          return;
+        }
+        if (error instanceof PatientAccessApiError && error.status === 429) {
+          setPinFeedback('Demasiados intentos. Espera unos minutos e inténtalo de nuevo.');
+          return;
+        }
+        setPinFeedback('No se ha podido verificar el acceso. Inténtalo de nuevo más tarde.');
       }
   };
 
@@ -91,7 +89,7 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
     </div>
   );
 
-  if (!patient) return <div className="min-h-screen flex items-center justify-center bg-[#faf9f6]"><h2>{error || "Error"}</h2></div>;
+  if (error) return <div className="min-h-screen flex items-center justify-center bg-[#faf9f6]"><h2>{error}</h2></div>;
 
   // PANTALLA DE BLOQUEO POR PIN
   if (!isUnlocked) {
@@ -115,12 +113,15 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
                         onKeyPress={e => e.key === 'Enter' && pinInput.length >= 4 && verifyPin()}
                     />
                     {pinError && <p className="text-red-500 text-xs font-bold mt-2 animate-pulse">Clave incorrecta</p>}
+                    {pinFeedback && <p className="text-red-500 text-xs font-bold mt-2">{pinFeedback}</p>}
                 </div>
                 <Button onClick={verifyPin} disabled={pinInput.length < 4} className="w-full py-4 text-lg">Ver mis resultados</Button>
             </Card>
         </div>
       );
   }
+
+  if (!patient) return <div className="min-h-screen flex items-center justify-center bg-[#faf9f6]"><h2>{error || "Error"}</h2></div>;
 
   // PANTALLA DE CONCLUSIÓN (DESBLOQUEADA)
   return (
@@ -141,7 +142,7 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
                 <div className="bg-gradient-to-r from-blue-900 to-indigo-900 p-8 md:p-14 text-white relative">
                     <div className="relative z-10">
                         <h2 className="text-3xl md:text-5xl font-friendly font-bold mb-4 leading-tight">Análisis Terapéutico</h2>
-                        <p className="text-blue-100 text-lg">Preparado para: <span className="font-bold text-white ml-2 uppercase tracking-wide">{patient.nombre}</span></p>
+                        <p className="text-blue-100 text-lg">Preparado para: <span className="font-bold text-white ml-2 uppercase tracking-wide">{patient.displayName}</span></p>
                     </div>
 
                     {patient.audioConclusion && (
@@ -157,7 +158,7 @@ export const ConclusionPatientView: React.FC<ConclusionPatientViewProps> = ({ pa
                 
                 <div className="p-8 md:p-14">
                     <div className="prose prose-lg prose-slate max-w-none text-slate-700 leading-loose whitespace-pre-line text-justify font-medium">
-                        {patient.finalConclusion || patient.conversationSummary || "Estamos terminando de procesar tu informe."}
+                        {patient.finalConclusion || "Estamos terminando de procesar tu informe."}
                     </div>
                 </div>
 

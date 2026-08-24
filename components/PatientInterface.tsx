@@ -165,7 +165,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     isEditorMode ? initialPatientData : { id: initialPatientData.id }
   );
   const validatedAccessPinRef = useRef<string>('');
-  const temporaryLegacyConclusionPathRef = useRef(false);
+  const conclusionAccessRef = useRef(false);
 
   useEffect(() => () => {
     validatedAccessPinRef.current = '';
@@ -234,7 +234,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             setIsPatientHydrating(true);
             try {
                 const bootstrap = await PatientAccessApi.bootstrap(currentPatientData.id);
-                temporaryLegacyConclusionPathRef.current = bootstrap.next === 'conclusion';
+                conclusionAccessRef.current = bootstrap.next === 'conclusion';
 
                 if (bootstrap.next === 'completed') {
                     setCurrentPatientData({ id: currentPatientData.id, status: 'completed' });
@@ -248,14 +248,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
                 }
 
                 if (bootstrap.next === 'conclusion') {
-                    // TEMPORARY LEGACY CONCLUSION PATH — TO BE REMOVED IN CONCLUSION MIGRATION
-                    const fullPatient = await DataService.getPatientById(currentPatientData.id);
-                    if (!fullPatient) {
-                        setPatientHydrationError('Enlace de paciente no válido o caducado.');
-                        return;
-                    }
-                    setCurrentPatientData(fullPatient);
-                    if (fullPatient.answers) setAnswersSafely(fullPatient.answers);
+                    setCurrentPatientData({ id: currentPatientData.id });
                     setStep('pin_validation');
                 }
             } catch (e) {
@@ -273,7 +266,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
   useEffect(() => {
     if (!isEditorMode && initialPatientData?.id && initialPatientData.id !== currentPatientData.id) {
       validatedAccessPinRef.current = '';
-      temporaryLegacyConclusionPathRef.current = false;
+      conclusionAccessRef.current = false;
       setCurrentPatientData({ id: initialPatientData.id });
       setPatientHydrationError(null);
     }
@@ -1212,35 +1205,18 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
     try {
       setIsPatientHydrating(true);
 
-      if (temporaryLegacyConclusionPathRef.current) {
-        // TEMPORARY LEGACY CONCLUSION PATH — TO BE REMOVED IN CONCLUSION MIGRATION
-        const legacyPatient = await DataService.getPatientById(String(currentPatientData.id));
-        const expectedPin = normalizePatientAccessCode(legacyPatient?.accessPin || '');
-        if (!legacyPatient || expectedPin.length !== 4 || enteredPin !== expectedPin) {
-          setPinInput("");
-          addMessage("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.", 'ia');
-          playOrSpeak("La clave introducida es incorrecta. Por favor, inténtalo de nuevo.");
-          showToast("Clave incorrecta. Revisa la clave personal recibida con tu enlace.");
-          return;
-        }
-
-        setCurrentPatientData(legacyPatient);
-        patientDataRef.current = legacyPatient;
+      if (conclusionAccessRef.current) {
+        const conclusion = await PatientAccessApi.conclusion(
+          String(currentPatientData.id),
+          enteredPin,
+          'session'
+        );
+        const conclusionPatient = conclusion.patient as Partial<PatientData>;
+        setCurrentPatientData(conclusionPatient);
+        patientDataRef.current = conclusionPatient;
+        validatedAccessPinRef.current = '';
         setPinInput("");
         setStep("conclusion_view");
-
-        if (legacyPatient.status === 'concluded') {
-          DataService.updatePatient(legacyPatient.id, {
-            status: 'finalized',
-            dateConclusionViewed: Date.now(),
-            conclusionViews: (legacyPatient.conclusionViews || 0) + 1
-          }).catch(e => console.error("Error updating status to finalized", e));
-        } else if (legacyPatient.status === 'finalized') {
-          DataService.updatePatient(legacyPatient.id, {
-            dateConclusionViewed: Date.now(),
-            conclusionViews: (legacyPatient.conclusionViews || 0) + 1
-          }).catch(e => console.error("Error updating conclusion views", e));
-        }
         return;
       }
 
