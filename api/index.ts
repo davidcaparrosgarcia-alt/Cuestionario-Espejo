@@ -477,7 +477,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
         const snap = await db.collection("patients")
           .where("soybienestarUid", "==", soybienestarUid)
           .get();
-        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.data()));
+        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.id, d.data()));
         if (docs.length > 0) {
           docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
           existingPatientDoc = docs[0];
@@ -495,7 +495,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
         const snap = await db.collection("patients")
           .where("sourceRequestId", "==", targetRequestId)
           .get();
-        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.data()));
+        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.id, d.data()));
         if (docs.length > 0) {
           docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
           existingPatientDoc = docs[0];
@@ -512,7 +512,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
           .get();
         const docs = snap.docs.filter(d => {
           const data = d.data();
-          if (!canReuseDirectQuestionnaireRecord(data)) return false;
+          if (!canReuseDirectQuestionnaireRecord(d.id, data)) return false;
           const isSoybienestarLinked = data.source === "soybienestar" ||
             data.directAccessCreated === true ||
             Boolean(data.soybienestarUid) ||

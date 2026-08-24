@@ -272,10 +272,12 @@ test("32. HipnoDigest nunca entra en operaciones questionnaire", () => {
   }
 });
 
-test("33. direct-questionnaire-link ignora HipnoDigest", () => {
-  assert.equal(canReuseDirectQuestionnaireRecord(questionnaire()), true);
-  assert.equal(canReuseDirectQuestionnaireRecord(questionnaire({ recordType: "hipnodigest_client" })), false);
-  assert.equal(canReuseDirectQuestionnaireRecord(questionnaire({ program: "hipnodigest" })), false);
+test("33. direct-questionnaire-link ignora HipnoDigest, UNKNOWN e identidad incoherente", () => {
+  assert.equal(canReuseDirectQuestionnaireRecord(PATIENT_ID, questionnaire()), true);
+  assert.equal(canReuseDirectQuestionnaireRecord(PATIENT_ID, questionnaire({ recordType: "hipnodigest_client" })), false);
+  assert.equal(canReuseDirectQuestionnaireRecord(PATIENT_ID, questionnaire({ program: "hipnodigest" })), false);
+  assert.equal(canReuseDirectQuestionnaireRecord(PATIENT_ID, { id: PATIENT_ID, nombre: "Legacy" }), false);
+  assert.equal(canReuseDirectQuestionnaireRecord(PATIENT_ID, questionnaire({ id: "different_patient" })), false);
 });
 
 test("34. ninguna operación de la API modifica audio", () => {

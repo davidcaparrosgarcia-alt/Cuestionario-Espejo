@@ -86,8 +86,11 @@ export function classifyPatientDocument(documentId: string, data: unknown): Pati
   return { kind: "QUESTIONNAIRE", identityMatches, status: data.status as QuestionnaireStatus };
 }
 
-export function canReuseDirectQuestionnaireRecord(data: unknown): boolean {
-  return isRecord(data) && data.status !== "deleted" && !isHipnoDigestDocument(data);
+export function canReuseDirectQuestionnaireRecord(documentId: string, data: unknown): boolean {
+  const classification = classifyPatientDocument(documentId, data);
+  return classification.kind === "QUESTIONNAIRE" &&
+    classification.identityMatches &&
+    classification.status !== "deleted";
 }
 
 export function normalizePatientAccessCode(value: unknown): string {
