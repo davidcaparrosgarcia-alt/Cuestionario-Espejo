@@ -9,7 +9,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "npm run test:unit",
+    "test:unit": "tsx --test tests/patientAccess.test.ts",
+    "test:integration": "node scripts/run-firestore-emulator-tests.mjs integration",
+    "test:integration:runner": "tsx --test tests/integration/patientAccess.integration.test.ts",
+    "test:security": "node scripts/run-firestore-emulator-tests.mjs security",
+    "test:security:runner": "tsx --test tests/security/firestore.security.test.ts",
+    "test:emulator": "node scripts/run-firestore-emulator-tests.mjs all",
+    "test:emulator:runner": "node scripts/run-emulator-layers.mjs"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.3.0",
@@ -30,10 +38,12 @@
     "vite": "^6.2.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^7.0.11",
     "autoprefixer": "^10.4.21",
+    "firebase-tools": "^15.28.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

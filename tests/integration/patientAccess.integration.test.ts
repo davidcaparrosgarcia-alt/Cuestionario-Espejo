@@ -1,0 +1,262 @@
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import type { Server } from "node:http";
+import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
+import { createRateLimitKey } from "../../api/patientAccess";
+import {
+  SYNTHETIC_ACCESS_PIN,
+  activeQuestionnaireFixture,
+  clonePatientFixture,
+  patientFixtures
+} from "../fixtures/patientAccessFixtures";
+import { assertFirestoreEmulatorSafety } from "../helpers/emulatorSafety";
+
+assertFirestoreEmulatorSafety();
+
+const { default: app } = await import("../../api/index");
+const db = getFirestore(admin.app(), "(default)");
+let server: Server;
+let baseUrl = "";
+
+async function clearCollection(name: string) {
+  const snapshot = await db.collection(name).get();
+  if (snapshot.empty) return;
+  const batch = db.batch();
+  snapshot.docs.forEach(document => batch.delete(document.ref));
+  await batch.commit();
+}
+
+async function seedPatient(id: string) {
+  await db.collection("patients").doc(id).set(clonePatientFixture(id));
+}
+
+async function seedFixtures() {
+  await clearCollection("patientAccessRateLimits");
+  await clearCollection("patients");
+  const batch = db.batch();
+  for (const [id, fixture] of Object.entries(patientFixtures)) {
+    batch.set(db.collection("patients").doc(id), structuredClone(fixture));
+  }
+  batch.set(db.collection("questionnaires").doc("active"), activeQuestionnaireFixture);
+  await batch.commit();
+}
+
+async function http(path: string, init: RequestInit = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": "192.0.2.10",
+      ...(init.headers || {})
+    }
+  });
+  return { response, body: await response.json() };
+}
+
+function postUnlock(id: string, accessPin = SYNTHETIC_ACCESS_PIN, ip = "192.0.2.10") {
+  return http(`/api/patient-access/${id}/unlock`, {
+    method: "POST",
+    headers: { "x-forwarded-for": ip },
+    body: JSON.stringify({ accessPin })
+  });
+}
+
+function patchAction(id: string, action: string, payload: Record<string, unknown>, ip = "192.0.2.10") {
+  return http(`/api/patient-access/${id}/action`, {
+    method: "PATCH",
+    headers: { "x-forwarded-for": ip },
+    body: JSON.stringify({ accessPin: SYNTHETIC_ACCESS_PIN, action, payload })
+  });
+}
+
+before(async () => {
+  await seedFixtures();
+  server = await new Promise<Server>((resolve, reject) => {
+    const listeningServer = app.listen(0, "127.0.0.1", () => resolve(listeningServer));
+    listeningServer.on("error", reject);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("No se pudo obtener el puerto HTTP de test.");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+});
+
+after(async () => {
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await admin.app().delete();
+});
+
+test("integration bootstrap devuelve exclusivamente el contrato esperado para todos los estados", async () => {
+  const expected: Record<string, string> = {
+    patient_test_pending: "questionnaire",
+    patient_test_sent: "questionnaire",
+    patient_test_viewed: "questionnaire",
+    patient_test_completed: "completed",
+    patient_test_concluded: "conclusion",
+    patient_test_finalized: "conclusion",
+    patient_test_deleted: "unavailable",
+    patient_test_hipnodigest_recordtype: "unavailable",
+    patient_test_hipnodigest_program: "unavailable",
+    patient_test_unknown: "unavailable",
+    patient_test_identity_mismatch: "unavailable",
+    patient_test_missing: "unavailable"
+  };
+
+  for (const [id, next] of Object.entries(expected)) {
+    const { response, body } = await http(`/api/patient-access/${id}/bootstrap`);
+    assert.equal(response.status, 200, id);
+    assert.deepEqual(body, { success: true, next }, id);
+  }
+});
+
+test("integration unlock correcto persiste sent a viewed y limita el DTO", async () => {
+  await seedPatient("patient_test_sent");
+  const { response, body } = await postUnlock("patient_test_sent");
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.next, "questionnaire");
+  assert.equal(body.patient.status, "viewed");
+  assert.deepEqual(Object.keys(body).sort(), ["next", "patient", "success", "syncStatus"]);
+  assert.deepEqual(Object.keys(body.patient).sort(), [
+    "answers", "id", "lastAnswerSavedAt", "lastAnsweredQuestionId", "lastAnsweredQuestionIndex",
+    "nombre", "questionnaireConfirmedName", "questionnaireConfirmedNameAt", "sexo", "status"
+  ]);
+  const serialized = JSON.stringify(body);
+  for (const forbidden of ["accessPin", "proposedAccessCode", "personalAccessCode", "email", "telefono", "coordinatorEmail"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+  assert.equal((await db.collection("patients").doc("patient_test_sent").get()).data()?.status, "viewed");
+});
+
+test("integration PIN incorrecto devuelve 401, incrementa bucket y no modifica patient", async () => {
+  const id = "patient_test_rate_limit";
+  const ip = "192.0.2.20";
+  await seedPatient(id);
+  const beforeData = (await db.collection("patients").doc(id).get()).data();
+  assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 401);
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).data()?.failedAttempts, 1);
+});
+
+test("integration rate limit devuelve cinco 401 y despues 429", async () => {
+  const id = "patient_test_rate_limit";
+  const ip = "192.0.2.21";
+  await seedPatient(id);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  await db.collection("patientAccessRateLimits").doc(key).delete();
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 401, `fallo ${attempt}`);
+  }
+  assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 429);
+  assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).data()?.failedAttempts, 5);
+});
+
+test("integration PIN correcto resetea el bucket antes del bloqueo", async () => {
+  const id = "patient_test_rate_limit_reset";
+  const ip = "192.0.2.22";
+  await seedPatient(id);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  await db.collection("patientAccessRateLimits").doc(key).delete();
+  assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 401);
+  assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 401);
+  assert.equal((await postUnlock(id, SYNTHETIC_ACCESS_PIN, ip)).response.status, 200);
+  assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).exists, false);
+});
+
+test("integration confirm_name cambia solo los dos campos autorizados", async () => {
+  const id = "patient_test_action";
+  await seedPatient(id);
+  const beforeData = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal((await patchAction(id, "confirm_name", { questionnaireConfirmedName: "Nombre Sintetico" })).response.status, 200);
+  const afterData = (await db.collection("patients").doc(id).get()).data()!;
+  const changed = Object.keys(afterData).filter(key => JSON.stringify(afterData[key]) !== JSON.stringify(beforeData[key])).sort();
+  assert.deepEqual(changed, ["questionnaireConfirmedName", "questionnaireConfirmedNameAt"]);
+});
+
+test("integration save_progress persiste una respuesta y preserva las anteriores", async () => {
+  const id = "patient_test_action";
+  await seedPatient(id);
+  assert.equal((await patchAction(id, "save_progress", { questionId: "q2", answer: "b", questionIndex: 1 })).response.status, 200);
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.deepEqual(stored.answers, { q1: "a", q2: "b" });
+  assert.equal(stored.lastAnsweredQuestionId, "q2");
+  assert.equal(stored.lastAnsweredQuestionIndex, 1);
+  assert.equal(stored.stableField, "preserve");
+});
+
+test("integration save_progress rechaza preguntas inexistentes y hidden sin escribir", async () => {
+  for (const questionId of ["q_missing", "q_hidden"]) {
+    const id = "patient_test_action";
+    await seedPatient(id);
+    const beforeData = (await db.collection("patients").doc(id).get()).data();
+    assert.equal((await patchAction(id, "save_progress", { questionId, answer: "x", questionIndex: 0 })).response.status, 422, questionId);
+    assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData, questionId);
+  }
+});
+
+test("integration action rechaza campos arbitrarios sin escribir", async () => {
+  const id = "patient_test_action";
+  await seedPatient(id);
+  const beforeData = (await db.collection("patients").doc(id).get()).data();
+  const { response } = await http(`/api/patient-access/${id}/action`, {
+    method: "PATCH",
+    body: JSON.stringify({ accessPin: SYNTHETIC_ACCESS_PIN, action: "save_progress", payload: { questionId: "q2", answer: "b" }, arbitrary: true })
+  });
+  assert.equal(response.status, 400);
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData);
+});
+
+test("integration complete persiste answers, completed, dateAnswered y aiReportStatus pending", async () => {
+  const id = "patient_test_complete";
+  await seedPatient(id);
+  const { response, body } = await patchAction(id, "complete", { answers: { q2: "b", q3: "c" } });
+  assert.equal(response.status, 200);
+  assert.equal(body.idempotent, false);
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.deepEqual(stored.answers, { q1: "a", q2: "b", q3: "c" });
+  assert.equal(stored.status, "completed");
+  assert.equal(typeof stored.dateAnswered, "number");
+  assert.equal(stored.aiReportStatus, "pending");
+});
+
+test("integration complete repetido es idempotente y conserva dateAnswered", async () => {
+  const id = "patient_test_complete";
+  await seedPatient(id);
+  const first = await patchAction(id, "complete", { answers: { q2: "b" } });
+  const dateAnswered = (await db.collection("patients").doc(id).get()).data()!.dateAnswered;
+  const second = await patchAction(id, "complete", { answers: { q2: "c" } });
+  const finalData = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal(first.body.idempotent, false);
+  assert.equal(second.body.idempotent, true);
+  assert.equal(finalData.dateAnswered, dateAnswered);
+  assert.equal(finalData.answers.q2, "b");
+});
+
+test("integration dos unlock simultaneos producen una sola transicion real", async () => {
+  const id = "patient_test_concurrent_unlock";
+  await seedPatient(id);
+  const results = await Promise.all([
+    postUnlock(id, SYNTHETIC_ACCESS_PIN, "192.0.2.30"),
+    postUnlock(id, SYNTHETIC_ACCESS_PIN, "192.0.2.30")
+  ]);
+  assert.deepEqual(results.map(result => result.response.status), [200, 200]);
+  assert.equal(results.filter(result => "syncStatus" in result.body).length, 1);
+  assert.equal((await db.collection("patients").doc(id).get()).data()?.status, "viewed");
+});
+
+test("integration dos complete simultaneos producen una decision no idempotente", async () => {
+  const id = "patient_test_concurrent_complete";
+  await seedPatient(id);
+  const results = await Promise.all([
+    patchAction(id, "complete", { answers: { q2: "b" } }, "192.0.2.31"),
+    patchAction(id, "complete", { answers: { q2: "b" } }, "192.0.2.31")
+  ]);
+  assert.deepEqual(results.map(result => result.response.status), [200, 200]);
+  assert.equal(results.filter(result => result.body.idempotent === false).length, 1);
+  assert.equal(results.filter(result => result.body.idempotent === true).length, 1);
+  assert.equal(results.filter(result => "syncStatus" in result.body).length, 1);
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal(stored.status, "completed");
+  assert.equal(typeof stored.dateAnswered, "number");
+});
