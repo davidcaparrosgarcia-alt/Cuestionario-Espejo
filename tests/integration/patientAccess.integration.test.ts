@@ -1,23 +1,81 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import { createRateLimitKey } from "../../api/patientAccess";
+import { PATIENT_ACCESS_RATE_LIMIT_WINDOW_MS, createRateLimitKey } from "../../api/patientAccess";
 import {
   SYNTHETIC_ACCESS_PIN,
   activeQuestionnaireFixture,
   clonePatientFixture,
   patientFixtures
 } from "../fixtures/patientAccessFixtures";
-import { assertFirestoreEmulatorSafety } from "../helpers/emulatorSafety";
+import { assertFirestoreEmulatorSafety, assertSafeLocalWebhookTarget } from "../helpers/emulatorSafety";
 
+assertFirestoreEmulatorSafety();
+
+interface WebhookRequestRecord {
+  event: string | null;
+  linkedQuestionnairePatientId: string | null;
+  status: string | null;
+  headers: {
+    contentType: string | null;
+    bridgeSecret: string | null;
+  };
+  body: Record<string, unknown>;
+}
+
+const webhookRequests: WebhookRequestRecord[] = [];
+let webhookResponseStatus = 200;
+const webhookServer = createServer(async (request, response) => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  const received = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<string, unknown>;
+  const { accessCode: _accessCode, accessPin: _accessPin, ...bodyWithoutPins } = received;
+  webhookRequests.push({
+    event: typeof received.event === "string" ? received.event : null,
+    linkedQuestionnairePatientId: typeof received.linkedQuestionnairePatientId === "string"
+      ? received.linkedQuestionnairePatientId
+      : null,
+    status: typeof received.status === "string" ? received.status : null,
+    headers: {
+      contentType: request.headers["content-type"] || null,
+      bridgeSecret: typeof request.headers["x-bridge-secret"] === "string"
+        ? request.headers["x-bridge-secret"]
+        : null
+    },
+    body: bodyWithoutPins
+  });
+  response.statusCode = webhookResponseStatus;
+  response.setHeader("content-type", "application/json");
+  response.end(JSON.stringify({ success: webhookResponseStatus < 400 }));
+});
+
+await new Promise<void>((resolve, reject) => {
+  webhookServer.listen(0, "127.0.0.1", resolve);
+  webhookServer.on("error", reject);
+});
+const webhookAddress = webhookServer.address();
+if (!webhookAddress || typeof webhookAddress === "string") {
+  throw new Error("No se pudo obtener el puerto del webhook local de test.");
+}
+process.env.SOYBIENESTAR_WEBHOOK_URL = `http://127.0.0.1:${webhookAddress.port}/synthetic-webhook`;
+process.env.SOYBIENESTAR_BRIDGE_SECRET = "synthetic-emulator-bridge-secret";
 assertFirestoreEmulatorSafety();
 
 const { default: app } = await import("../../api/index");
 const db = getFirestore(admin.app(), "(default)");
 let server: Server;
 let baseUrl = "";
+
+function resetWebhook(status = 200) {
+  webhookRequests.length = 0;
+  webhookResponseStatus = status;
+}
+
+function requestsFor(event: string) {
+  return webhookRequests.filter(request => request.event === event);
+}
 
 async function clearCollection(name: string) {
   const snapshot = await db.collection(name).get();
@@ -83,6 +141,7 @@ before(async () => {
 
 after(async () => {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  await new Promise<void>((resolve, reject) => webhookServer.close(error => error ? reject(error) : resolve()));
   await admin.app().delete();
 });
 
@@ -164,6 +223,36 @@ test("integration PIN correcto resetea el bucket antes del bloqueo", async () =>
   assert.equal((await db.collection("patientAccessRateLimits").doc(key).get()).exists, false);
 });
 
+test("integration rate limit expirado abre una ventana nueva sin esperar", async () => {
+  const id = "patient_test_rate_limit_expiry";
+  const ip = "192.0.2.23";
+  await seedPatient(id);
+  const key = createRateLimitKey(process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET!, id, ip);
+  const expiredWindowStartedAt = Date.now() - PATIENT_ACCESS_RATE_LIMIT_WINDOW_MS - 5_000;
+  await db.collection("patientAccessRateLimits").doc(key).set({
+    failedAttempts: 5,
+    windowStartedAt: expiredWindowStartedAt,
+    expiresAt: expiredWindowStartedAt + PATIENT_ACCESS_RATE_LIMIT_WINDOW_MS,
+    updatedAt: expiredWindowStartedAt
+  });
+
+  assert.equal((await postUnlock(id, "xxxx", ip)).response.status, 401);
+  const renewed = (await db.collection("patientAccessRateLimits").doc(key).get()).data()!;
+  assert.equal(renewed.failedAttempts, 1);
+  assert.ok(renewed.windowStartedAt > expiredWindowStartedAt + PATIENT_ACCESS_RATE_LIMIT_WINDOW_MS);
+  assert.equal(renewed.expiresAt, renewed.windowStartedAt + PATIENT_ACCESS_RATE_LIMIT_WINDOW_MS);
+});
+
+test("integration safety rechaza cualquier webhook que no sea HTTP local con secreto sintetico", () => {
+  assert.doesNotThrow(() => assertSafeLocalWebhookTarget("", ""));
+  assert.doesNotThrow(() => assertSafeLocalWebhookTarget("http://127.0.0.1:8123/hook", "synthetic-emulator-secret"));
+  assert.doesNotThrow(() => assertSafeLocalWebhookTarget("http://localhost:8123/hook", "synthetic-emulator-secret"));
+  assert.throws(() => assertSafeLocalWebhookTarget("https://127.0.0.1:8123/hook", "synthetic-emulator-secret"), /SAFETY ABORT/);
+  assert.throws(() => assertSafeLocalWebhookTarget("http://example.invalid:8123/hook", "synthetic-emulator-secret"), /SAFETY ABORT/);
+  assert.throws(() => assertSafeLocalWebhookTarget("http://192.0.2.1:8123/hook", "synthetic-emulator-secret"), /SAFETY ABORT/);
+  assert.throws(() => assertSafeLocalWebhookTarget("http://127.0.0.1:8123/hook", "possible-real-secret"), /SAFETY ABORT/);
+});
+
 test("integration confirm_name cambia solo los dos campos autorizados", async () => {
   const id = "patient_test_action";
   await seedPatient(id);
@@ -233,21 +322,31 @@ test("integration complete repetido es idempotente y conserva dateAnswered", asy
   assert.equal(finalData.answers.q2, "b");
 });
 
-test("integration dos unlock simultaneos producen una sola transicion real", async () => {
-  const id = "patient_test_concurrent_unlock";
+test("integration dos unlock SoyBienestar simultaneos emiten exactamente un questionnaire_started real", async () => {
+  const id = "patient_test_soybienestar_unlock";
   await seedPatient(id);
+  resetWebhook();
   const results = await Promise.all([
     postUnlock(id, SYNTHETIC_ACCESS_PIN, "192.0.2.30"),
     postUnlock(id, SYNTHETIC_ACCESS_PIN, "192.0.2.30")
   ]);
   assert.deepEqual(results.map(result => result.response.status), [200, 200]);
-  assert.equal(results.filter(result => "syncStatus" in result.body).length, 1);
+  assert.equal(results.filter(result => result.body.syncStatus === "ok").length, 1);
   assert.equal((await db.collection("patients").doc(id).get()).data()?.status, "viewed");
+  const started = requestsFor("questionnaire_started");
+  assert.equal(started.length, 1);
+  assert.equal(started[0].linkedQuestionnairePatientId, id);
+  assert.equal(started[0].status, "viewed");
+  assert.equal(started[0].headers.bridgeSecret, "synthetic-emulator-bridge-secret");
+  assert.equal(started[0].headers.contentType, "application/json");
+  assert.equal("accessPin" in started[0].body, false);
+  assert.equal("accessCode" in started[0].body, false);
 });
 
-test("integration dos complete simultaneos producen una decision no idempotente", async () => {
-  const id = "patient_test_concurrent_complete";
+test("integration dos complete SoyBienestar simultaneos emiten exactamente un questionnaire_completed real", async () => {
+  const id = "patient_test_soybienestar_complete";
   await seedPatient(id);
+  resetWebhook();
   const results = await Promise.all([
     patchAction(id, "complete", { answers: { q2: "b" } }, "192.0.2.31"),
     patchAction(id, "complete", { answers: { q2: "b" } }, "192.0.2.31")
@@ -255,8 +354,50 @@ test("integration dos complete simultaneos producen una decision no idempotente"
   assert.deepEqual(results.map(result => result.response.status), [200, 200]);
   assert.equal(results.filter(result => result.body.idempotent === false).length, 1);
   assert.equal(results.filter(result => result.body.idempotent === true).length, 1);
-  assert.equal(results.filter(result => "syncStatus" in result.body).length, 1);
+  assert.equal(results.filter(result => result.body.syncStatus === "ok").length, 1);
   const stored = (await db.collection("patients").doc(id).get()).data()!;
   assert.equal(stored.status, "completed");
   assert.equal(typeof stored.dateAnswered, "number");
+  const completed = requestsFor("questionnaire_completed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].linkedQuestionnairePatientId, id);
+  assert.equal(completed[0].status, "completed");
+  assert.equal(completed[0].headers.bridgeSecret, "synthetic-emulator-bridge-secret");
+  assert.equal(completed[0].headers.contentType, "application/json");
+  assert.equal("accessPin" in completed[0].body, false);
+  assert.equal("accessCode" in completed[0].body, false);
+});
+
+test("integration webhook local 500 no revierte completed", async () => {
+  const id = "patient_test_soybienestar_webhook_failure";
+  await seedPatient(id);
+  resetWebhook(500);
+  const { response, body } = await patchAction(id, "complete", { answers: { q2: "b", q3: "c" } }, "192.0.2.32");
+  assert.equal(response.status, 200);
+  assert.equal(body.idempotent, false);
+  assert.equal(body.syncStatus, "error");
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal(stored.status, "completed");
+  assert.equal(typeof stored.dateAnswered, "number");
+  assert.deepEqual(stored.answers, { q1: "a", q2: "b", q3: "c" });
+  assert.equal(stored.lastSoyBienestarStatusSyncEvent, "questionnaire_completed");
+  assert.equal(stored.lastSoyBienestarStatusSyncStatus, "error");
+  const completed = requestsFor("questionnaire_completed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].linkedQuestionnairePatientId, id);
+  assert.equal(completed[0].status, "completed");
+});
+
+test("integration webhook local 500 no revierte sent a viewed", async () => {
+  const id = "patient_test_soybienestar_started_failure";
+  await seedPatient(id);
+  resetWebhook(500);
+  const { response, body } = await postUnlock(id, SYNTHETIC_ACCESS_PIN, "192.0.2.33");
+  assert.equal(response.status, 200);
+  assert.equal(body.syncStatus, "error");
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal(stored.status, "viewed");
+  assert.equal(stored.lastSoyBienestarStatusSyncEvent, "questionnaire_started");
+  assert.equal(stored.lastSoyBienestarStatusSyncStatus, "error");
+  assert.equal(requestsFor("questionnaire_started").length, 1);
 });

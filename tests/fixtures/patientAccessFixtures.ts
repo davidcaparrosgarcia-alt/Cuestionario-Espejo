@@ -32,10 +32,31 @@ export const patientFixtures: Record<string, Record<string, unknown>> = {
   patient_test_identity_mismatch: patient("different_synthetic_identity", "sent"),
   patient_test_rate_limit: patient("patient_test_rate_limit", "sent"),
   patient_test_rate_limit_reset: patient("patient_test_rate_limit_reset", "sent"),
+  patient_test_rate_limit_expiry: patient("patient_test_rate_limit_expiry", "sent"),
   patient_test_action: patient("patient_test_action", "viewed", { answers: { q1: "a" }, stableField: "preserve" }),
   patient_test_complete: patient("patient_test_complete", "viewed", { answers: { q1: "a" } }),
-  patient_test_concurrent_unlock: patient("patient_test_concurrent_unlock", "sent"),
-  patient_test_concurrent_complete: patient("patient_test_concurrent_complete", "viewed", { answers: { q1: "a" } })
+  patient_test_soybienestar_unlock: patient("patient_test_soybienestar_unlock", "sent", {
+    source: "soybienestar",
+    soybienestarUid: "synthetic_uid_unlock_test",
+    sourceRequestId: "synthetic_request_unlock_test"
+  }),
+  patient_test_soybienestar_complete: patient("patient_test_soybienestar_complete", "viewed", {
+    source: "soybienestar",
+    soybienestarUid: "synthetic_uid_complete_test",
+    sourceRequestId: "synthetic_request_complete_test",
+    answers: { q1: "a" }
+  }),
+  patient_test_soybienestar_webhook_failure: patient("patient_test_soybienestar_webhook_failure", "viewed", {
+    source: "soybienestar",
+    soybienestarUid: "synthetic_uid_failure_test",
+    sourceRequestId: "synthetic_request_failure_test",
+    answers: { q1: "a" }
+  }),
+  patient_test_soybienestar_started_failure: patient("patient_test_soybienestar_started_failure", "sent", {
+    source: "soybienestar",
+    soybienestarUid: "synthetic_uid_started_failure_test",
+    sourceRequestId: "synthetic_request_started_failure_test"
+  })
 };
 
 export const activeQuestionnaireFixture = {
