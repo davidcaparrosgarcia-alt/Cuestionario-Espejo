@@ -1329,7 +1329,10 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
 
         const patientId = currentPatientData.id || patientDataRef.current?.id;
         const accessPin = validatedAccessPinRef.current;
-        if (!patientId || !accessPin) return false;
+        if (!patientId || !accessPin) {
+            showToast("No se ha podido guardar tu nombre. Revisa la conexión e inténtalo de nuevo.");
+            return false;
+        }
 
         try {
             await PatientAccessApi.action(patientId, accessPin, 'confirm_name', {
@@ -1337,6 +1340,7 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
             });
         } catch (error) {
             console.error("No se pudo guardar el nombre confirmado del cuestionario.", error);
+            showToast("No se ha podido guardar tu nombre. Revisa la conexión e inténtalo de nuevo.");
             return false;
         }
 

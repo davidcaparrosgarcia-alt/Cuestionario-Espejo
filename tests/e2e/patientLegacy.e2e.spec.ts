@@ -24,6 +24,7 @@ type BrowserEvidence = {
   externalViolations: string[];
   consoleErrors: string[];
   expectedUnauthorizedConsoleErrors: string[];
+  expectedConfirmNameFailureConsoleErrors: string[];
   pageErrors: string[];
   failedRequests: string[];
   redirectIntent: string[];
@@ -33,9 +34,10 @@ type BrowserEvidence = {
   gatewayResponses: string[];
 };
 
-async function installBrowserIsolation(page: Page): Promise<BrowserEvidence> {
+async function installBrowserIsolation(page: Page, expectConfirmNameFailure = false): Promise<BrowserEvidence> {
   const evidence: BrowserEvidence = {
-    hosts: new Set(), externalViolations: [], consoleErrors: [], expectedUnauthorizedConsoleErrors: [], pageErrors: [],
+    hosts: new Set(), externalViolations: [], consoleErrors: [], expectedUnauthorizedConsoleErrors: [],
+    expectedConfirmNameFailureConsoleErrors: [], pageErrors: [],
     failedRequests: [], redirectIntent: [], mockedEndpoints: [], prohibitedLegacyRequests: [],
     gatewayRequests: [], gatewayResponses: []
   };
@@ -76,6 +78,13 @@ async function installBrowserIsolation(page: Page): Promise<BrowserEvidence> {
     if (message.type() !== 'error') return;
     if (message.text() === 'Failed to load resource: the server responded with a status of 401 (Unauthorized)') {
       evidence.expectedUnauthorizedConsoleErrors.push(message.text());
+      return;
+    }
+    if (expectConfirmNameFailure && (
+      message.text() === 'Failed to load resource: the server responded with a status of 503 (Service Unavailable)' ||
+      message.text().startsWith('No se pudo guardar el nombre confirmado del cuestionario.')
+    )) {
+      evidence.expectedConfirmNameFailureConsoleErrors.push(message.text());
       return;
     }
     evidence.consoleErrors.push(message.text());
@@ -139,7 +148,12 @@ async function installBrowserIsolation(page: Page): Promise<BrowserEvidence> {
   return evidence;
 }
 
-function assertCleanBrowserEvidence(evidence: BrowserEvidence, expectedRedirect = false, expectedUnauthorized = false) {
+function assertCleanBrowserEvidence(
+  evidence: BrowserEvidence,
+  expectedRedirect = false,
+  expectedUnauthorized = false,
+  expectedConfirmNameFailure = false
+) {
   expect(evidence.externalViolations).toEqual([]);
   expect(evidence.consoleErrors).toEqual([]);
   expect(evidence.pageErrors).toEqual([]);
@@ -150,6 +164,12 @@ function assertCleanBrowserEvidence(evidence: BrowserEvidence, expectedRedirect 
     expect(evidence.gatewayResponses.some(entry => entry.includes('/unlock 401'))).toBe(true);
   } else {
     expect(evidence.expectedUnauthorizedConsoleErrors).toEqual([]);
+  }
+  if (expectedConfirmNameFailure) {
+    expect(evidence.expectedConfirmNameFailureConsoleErrors.length).toBeGreaterThanOrEqual(1);
+    expect(evidence.gatewayResponses.some(entry => entry.includes('/action 503'))).toBe(true);
+  } else {
+    expect(evidence.expectedConfirmNameFailureConsoleErrors).toEqual([]);
   }
   if (expectedRedirect) expect(evidence.redirectIntent).toEqual([REDIRECT_TARGET]);
   else expect(evidence.redirectIntent).toEqual([]);
@@ -252,6 +272,49 @@ test('baseline legacy: PIN correcto, persistencia, reload, revisión y completed
   expect(evidence.gatewayRequests.some(request => request.method === 'PATCH' && request.action === 'complete')).toBe(true);
   expect(await page.evaluate(() => (window as any).__CE_E2E_DIRECT_PATIENT_CALLS__)).toEqual([]);
   assertCleanBrowserEvidence(evidence, true);
+});
+
+test('confirm_name muestra feedback, no avanza y permite reintentar tras un 503', async ({ page }) => {
+  const evidence = await installBrowserIsolation(page, true);
+  let rejectFirstConfirmName = true;
+
+  await page.route('**/api/patient-access/*/action', async route => {
+    const request = route.request();
+    const body = JSON.parse(request.postData() || '{}');
+    if (rejectFirstConfirmName && body.action === 'confirm_name') {
+      rejectFirstConfirmName = false;
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Synthetic confirm_name failure' })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto(patientSessionUrl(PATIENT_SENT));
+  await enterPin(page, evidence, PATIENT_SENT, E2E_PIN);
+  await expect(page.getByPlaceholder('Escribe aquí...')).toBeVisible();
+  await waitForPatient(PATIENT_SENT, patient => patient.status === 'viewed');
+
+  await page.getByPlaceholder('Escribe aquí...').fill('Paciente');
+  await page.getByRole('button', { name: 'Enviar' }).click();
+
+  await expect(page.getByText('No se ha podido guardar tu nombre. Revisa la conexión e inténtalo de nuevo.')).toBeVisible();
+  await expect(page.getByText('Situación sintética uno')).not.toBeVisible();
+  const afterFailure = await getPatientFixture(PATIENT_SENT);
+  expect(afterFailure.status).toBe('viewed');
+  expect(afterFailure.questionnaireConfirmedName).toBeUndefined();
+
+  await page.getByPlaceholder('Escribe aquí...').fill('Paciente');
+  await page.getByRole('button', { name: 'Enviar' }).click();
+
+  await waitForPatient(PATIENT_SENT, patient => patient.questionnaireConfirmedName === 'Paciente');
+  await expect(page.getByText('Situación sintética uno')).toBeVisible();
+  expect(rejectFirstConfirmName).toBe(false);
+  expect(await page.evaluate(() => (window as any).__CE_E2E_DIRECT_PATIENT_CALLS__)).toEqual([]);
+  assertCleanBrowserEvidence(evidence, false, false, true);
 });
 
 test('baseline legacy: PIN incorrecto no permite entrar ni modifica paciente', async ({ page }) => {
