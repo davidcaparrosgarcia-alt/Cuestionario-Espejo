@@ -6,6 +6,20 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
+import {
+  PATIENT_ACCESS_RATE_LIMIT_COLLECTION,
+  activeQuestionIds,
+  bootstrapResponse,
+  canReuseDirectQuestionnaireRecord,
+  createRateLimitKey,
+  isRateLimitBlocked,
+  isPatientAccessRateLimitConfigured,
+  patientAccessCodeMatches,
+  recordFailedRateLimitAttempt,
+  resolvePatientAction,
+  resolveUnlock,
+  validateActionEnvelope
+} from "./patientAccess";
 
 // Initialize Firebase Admin
 let firebaseConfig: any = {};
@@ -463,7 +477,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
         const snap = await db.collection("patients")
           .where("soybienestarUid", "==", soybienestarUid)
           .get();
-        const docs = snap.docs.filter(d => d.data().status !== "deleted");
+        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.data()));
         if (docs.length > 0) {
           docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
           existingPatientDoc = docs[0];
@@ -481,7 +495,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
         const snap = await db.collection("patients")
           .where("sourceRequestId", "==", targetRequestId)
           .get();
-        const docs = snap.docs.filter(d => d.data().status !== "deleted");
+        const docs = snap.docs.filter(d => canReuseDirectQuestionnaireRecord(d.data()));
         if (docs.length > 0) {
           docs.sort((a, b) => (b.data().timestamp || b.data().dateSent || 0) - (a.data().timestamp || a.data().dateSent || 0));
           existingPatientDoc = docs[0];
@@ -498,7 +512,7 @@ app.post("/api/direct-questionnaire-link", async (req, res) => {
           .get();
         const docs = snap.docs.filter(d => {
           const data = d.data();
-          if (data.status === "deleted") return false;
+          if (!canReuseDirectQuestionnaireRecord(data)) return false;
           const isSoybienestarLinked = data.source === "soybienestar" ||
             data.directAccessCreated === true ||
             Boolean(data.soybienestarUid) ||
@@ -2469,6 +2483,222 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
   } catch (error: any) {
     console.error("[SoyBienestar] Error en notify-soybienestar-status:", error);
     return res.status(500).json({ error: error.message });
+  }
+});
+
+function getPatientAccessRateLimitSecret(): string {
+  return process.env.PATIENT_ACCESS_RATE_LIMIT_SECRET || "";
+}
+
+function getPatientAccessClientIp(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded[0]) {
+    return String(forwarded[0]).split(",")[0].trim();
+  }
+  return req.socket.remoteAddress || req.ip || "unknown";
+}
+
+function getPatientAccessRateLimitRef(req: express.Request, patientId: string, secret: string) {
+  const rateLimitKey = createRateLimitKey(secret, patientId, getPatientAccessClientIp(req));
+  return db.collection(PATIENT_ACCESS_RATE_LIMIT_COLLECTION).doc(rateLimitKey);
+}
+
+function patientAccessLogId(patientId: string): string {
+  return patientId.slice(0, 8);
+}
+
+app.get("/api/patient-access/:id/bootstrap", async (req, res) => {
+  const patientId = String(req.params.id || "").trim();
+  if (!patientId || patientId.length > 256) {
+    return res.json({ success: true, next: "unavailable" });
+  }
+
+  try {
+    const patientDoc = await db.collection("patients").doc(patientId).get();
+    return res.json(bootstrapResponse(patientId, patientDoc.exists ? patientDoc.data() : null));
+  } catch (error: any) {
+    console.error("[PATIENT ACCESS] action=bootstrap result=error", {
+      patient: patientAccessLogId(patientId),
+      code: error?.code || "unknown"
+    });
+    return res.status(503).json({ success: false, next: "unavailable", error: "Acceso temporalmente no disponible." });
+  }
+});
+
+app.post("/api/patient-access/:id/unlock", async (req, res) => {
+  const patientId = String(req.params.id || "").trim();
+  const accessPin = req.body?.accessPin;
+  if (!patientId || patientId.length > 256 || typeof accessPin !== "string") {
+    return res.status(400).json({ success: false, error: "Solicitud no valida." });
+  }
+
+  const rateLimitSecret = getPatientAccessRateLimitSecret();
+  if (!isPatientAccessRateLimitConfigured(rateLimitSecret)) {
+    return res.status(503).json({ success: false, error: "Configuracion de seguridad incompleta." });
+  }
+
+  try {
+    const patientRef = db.collection("patients").doc(patientId);
+    const rateLimitRef = getPatientAccessRateLimitRef(req, patientId, rateLimitSecret);
+    const now = Date.now();
+
+    const result: any = await db.runTransaction(async transaction => {
+      const rateLimitDoc = await transaction.get(rateLimitRef);
+      const rateLimitData = rateLimitDoc.exists ? rateLimitDoc.data() : null;
+      if (isRateLimitBlocked(rateLimitData, now)) {
+        return { rateLimited: true };
+      }
+
+      const patientDoc = await transaction.get(patientRef);
+      const patientData = patientDoc.exists ? patientDoc.data() : null;
+      const decision = resolveUnlock(patientId, patientData, accessPin);
+      if (!decision.ok) {
+        transaction.set(rateLimitRef, recordFailedRateLimitAttempt(rateLimitData, now));
+        return { unauthorized: true };
+      }
+
+      if (rateLimitDoc.exists) transaction.delete(rateLimitRef);
+      if (decision.update) transaction.set(patientRef, decision.update, { merge: true });
+      return { decision };
+    });
+
+    if (result.rateLimited) {
+      return res.status(429).json({ success: false, error: "Demasiados intentos. Intentalo mas tarde." });
+    }
+    if (result.unauthorized) {
+      return res.status(401).json({ success: false, error: "Acceso no autorizado." });
+    }
+
+    const decision = result.decision;
+    let syncStatus: string | undefined;
+    if (decision.notifyStarted && decision.patientForNotification) {
+      try {
+        const syncResult = await notifySoyBienestarFromPatient(
+          db,
+          patientId,
+          decision.patientForNotification,
+          "questionnaire_started",
+          "viewed"
+        );
+        syncStatus = syncResult.status;
+      } catch (error: any) {
+        syncStatus = "error";
+        console.error("[PATIENT ACCESS] action=unlock sideEffect=questionnaire_started result=error", {
+          patient: patientAccessLogId(patientId),
+          code: error?.code || "unknown"
+        });
+      }
+    }
+
+    return res.json(syncStatus ? { ...decision.response, syncStatus } : decision.response);
+  } catch (error: any) {
+    console.error("[PATIENT ACCESS] action=unlock result=error", {
+      patient: patientAccessLogId(patientId),
+      code: error?.code || "unknown"
+    });
+    return res.status(500).json({ success: false, error: "No se pudo completar el acceso." });
+  }
+});
+
+app.patch("/api/patient-access/:id/action", async (req, res) => {
+  const patientId = String(req.params.id || "").trim();
+  const envelope = validateActionEnvelope(req.body);
+  if (!patientId || patientId.length > 256) {
+    return res.status(400).json({ success: false, error: "Solicitud no valida." });
+  }
+  if (envelope.ok === false) {
+    const statusCode = envelope.error === "Accion no permitida." ? 422 : 400;
+    return res.status(statusCode).json({ success: false, error: envelope.error });
+  }
+
+  const rateLimitSecret = getPatientAccessRateLimitSecret();
+  if (!isPatientAccessRateLimitConfigured(rateLimitSecret)) {
+    return res.status(503).json({ success: false, error: "Configuracion de seguridad incompleta." });
+  }
+
+  try {
+    const patientRef = db.collection("patients").doc(patientId);
+    const rateLimitRef = getPatientAccessRateLimitRef(req, patientId, rateLimitSecret);
+    const questionnaireRef = db.collection("questionnaires").doc("active");
+    const now = Date.now();
+
+    const result: any = await db.runTransaction(async transaction => {
+      const rateLimitDoc = await transaction.get(rateLimitRef);
+      const rateLimitData = rateLimitDoc.exists ? rateLimitDoc.data() : null;
+      if (isRateLimitBlocked(rateLimitData, now)) {
+        return { rateLimited: true };
+      }
+
+      const patientDoc = await transaction.get(patientRef);
+      const patientData = patientDoc.exists ? patientDoc.data() : null;
+      if (!patientAccessCodeMatches(patientData, envelope.accessPin)) {
+        transaction.set(rateLimitRef, recordFailedRateLimitAttempt(rateLimitData, now));
+        return { unauthorized: true };
+      }
+
+      let questionIds: Set<string> | null = null;
+      if (envelope.action !== "confirm_name") {
+        const questionnaireDoc = await transaction.get(questionnaireRef);
+        questionIds = activeQuestionIds(questionnaireDoc.exists ? questionnaireDoc.data() : null);
+      }
+
+      const decision = resolvePatientAction(
+        patientId,
+        patientData,
+        envelope.action,
+        envelope.payload,
+        questionIds,
+        now
+      );
+
+      if (rateLimitDoc.exists) transaction.delete(rateLimitRef);
+      if (!decision.ok) return { decision };
+      if (decision.update) transaction.set(patientRef, decision.update, { merge: true });
+      return { decision };
+    });
+
+    if (result.rateLimited) {
+      return res.status(429).json({ success: false, error: "Demasiados intentos. Intentalo mas tarde." });
+    }
+    if (result.unauthorized) {
+      return res.status(401).json({ success: false, error: "Acceso no autorizado." });
+    }
+
+    const decision = result.decision;
+    if (!decision.ok) {
+      return res.status(decision.statusCode || 409).json({ success: false, error: decision.reason || "Accion no permitida." });
+    }
+
+    let syncStatus: string | undefined;
+    if (decision.notifyCompleted && decision.patientForNotification) {
+      try {
+        const syncResult = await notifySoyBienestarFromPatient(
+          db,
+          patientId,
+          decision.patientForNotification,
+          "questionnaire_completed",
+          "completed"
+        );
+        syncStatus = syncResult.status;
+      } catch (error: any) {
+        syncStatus = "error";
+        console.error("[PATIENT ACCESS] action=complete sideEffect=questionnaire_completed result=error", {
+          patient: patientAccessLogId(patientId),
+          code: error?.code || "unknown"
+        });
+      }
+    }
+
+    return res.json(syncStatus ? { ...decision.response, syncStatus } : decision.response);
+  } catch (error: any) {
+    console.error("[PATIENT ACCESS] action=action result=error", {
+      patient: patientAccessLogId(patientId),
+      code: error?.code || "unknown"
+    });
+    return res.status(500).json({ success: false, error: "No se pudo completar la accion." });
   }
 });
 
