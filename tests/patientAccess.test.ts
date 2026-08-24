@@ -431,3 +431,14 @@ test("53. una URL externa no se acepta como audio inline", () => {
   assert.equal("audioConclusion" in (decision.patient || {}), false);
   assert.equal(decision.audioRef, undefined);
 });
+
+test("54. DTO preserva exactamente el formato de finalConclusion", () => {
+  const finalConclusion = "\n  Primera línea.\n\nSegunda línea.  \n";
+  const dto = buildConclusionPatientDto(PATIENT_ID, conclusion({ finalConclusion }));
+  assert.equal(dto.finalConclusion, finalConclusion);
+});
+
+test("55. DTO convierte finalConclusion con solo whitespace a null", () => {
+  const dto = buildConclusionPatientDto(PATIENT_ID, conclusion({ finalConclusion: "   \n   " }));
+  assert.equal(dto.finalConclusion, null);
+});

@@ -244,8 +244,11 @@ export function buildConclusionPatientDto(
   data: Record<string, unknown>,
   resolvedAudio?: string | null
 ): PatientConclusionDto {
-  const finalConclusion = typeof data.finalConclusion === "string" && data.finalConclusion.trim()
-    ? data.finalConclusion.trim()
+  const rawFinalConclusion = typeof data.finalConclusion === "string"
+    ? data.finalConclusion
+    : null;
+  const finalConclusion = rawFinalConclusion && rawFinalConclusion.trim()
+    ? rawFinalConclusion
     : null;
   const patient: PatientConclusionDto = {
     id: documentId,
