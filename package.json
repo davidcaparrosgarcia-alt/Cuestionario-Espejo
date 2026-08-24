@@ -17,7 +17,10 @@
     "test:security": "node scripts/run-firestore-emulator-tests.mjs security",
     "test:security:runner": "tsx --test tests/security/firestore.security.test.ts",
     "test:emulator": "node scripts/run-firestore-emulator-tests.mjs all",
-    "test:emulator:runner": "node scripts/run-emulator-layers.mjs"
+    "test:emulator:runner": "node scripts/run-emulator-layers.mjs",
+    "test:e2e": "node scripts/run-browser-e2e-tests.mjs",
+    "test:e2e:runner": "playwright test",
+    "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@google-cloud/firestore": "^8.3.0",
@@ -39,6 +42,7 @@
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "^1.62.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^7.0.11",
