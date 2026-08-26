@@ -60,8 +60,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasAuthenticatedEmail() {
+      return isAuthenticated() &&
+             'email' in request.auth.token &&
+             request.auth.token.email is string;
+    }
+
     function isOwner(email) {
-      return isAuthenticated() && request.auth.token.email.lower() == email.lower();
+      return hasAuthenticatedEmail() &&
+             email is string &&
+             request.auth.token.email.lower() == email.lower();
     }
 
     function isAdmin() {
@@ -74,9 +82,23 @@ service cloud.firestore {
     }
 
     function isCoordinatorOf(patientData) {
-      return isAuthenticated() && 
-             'email' in request.auth.token && 
-             request.auth.token.email.lower() == patientData.coordinatorEmail.lower();
+      return hasAuthenticatedEmail() &&
+             patientData is map &&
+             'coordinatorEmail' in patientData &&
+             patientData.coordinatorEmail is string &&
+             request.auth.token.email == patientData.coordinatorEmail;
+    }
+
+    function isPrivatePatientConclusionAudio(audioData) {
+      return audioData is map &&
+             'kind' in audioData &&
+             audioData.kind == "patient_conclusion";
+    }
+
+    function isPrivateAudioOwner(audioData) {
+      return audioData is map &&
+             'coordinatorEmail' in audioData &&
+             isOwner(audioData.coordinatorEmail);
     }
 
     // ===============================================================
@@ -84,16 +106,32 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{email} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && (request.auth.token.email.lower() == email.lower() || isAdmin());
+      allow get: if isAdmin() || isOwner(email);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() || isOwner(email);
+      allow delete: if isAdmin() || isOwner(email);
     }
 
     match /patients/{patientId} {
-      allow get: if true; 
-      allow list: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if (isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin())) || (request.resource.data.id == resource.data.id);
-      allow delete: if isAuthenticated() && (isCoordinatorOf(resource.data) || isAdmin());
+      allow get, list: if isAdmin() || isCoordinatorOf(resource.data);
+      allow create: if isAdmin() || (
+        isCoordinatorOf(request.resource.data) &&
+        'id' in request.resource.data &&
+        request.resource.data.id is string &&
+        request.resource.data.id == patientId
+      );
+      allow update: if isAdmin() || (
+        isCoordinatorOf(resource.data) &&
+        isCoordinatorOf(request.resource.data) &&
+        'id' in resource.data &&
+        'id' in request.resource.data &&
+        resource.data.id is string &&
+        request.resource.data.id is string &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.id == patientId &&
+        request.resource.data.coordinatorEmail == resource.data.coordinatorEmail
+      );
+      allow delete: if isAdmin() || isCoordinatorOf(resource.data);
     }
 
     match /config/{configId} {
@@ -112,8 +150,37 @@ service cloud.firestore {
     }
 
     match /audios/{audioId} {
-      allow read: if true;
-      allow write: if isAuthenticated();
+      allow get: if !isPrivatePatientConclusionAudio(resource.data) ||
+                    isAdmin() ||
+                    isPrivateAudioOwner(resource.data);
+      allow list: if isAdmin();
+
+      allow create: if isAuthenticated() && (
+        !isPrivatePatientConclusionAudio(request.resource.data) ||
+        isAdmin() ||
+        isPrivateAudioOwner(request.resource.data)
+      );
+
+      allow update: if isAuthenticated() && (
+        (
+          !isPrivatePatientConclusionAudio(resource.data) &&
+          !isPrivatePatientConclusionAudio(request.resource.data)
+        ) ||
+        isAdmin() ||
+        (
+          isPrivatePatientConclusionAudio(resource.data) &&
+          isPrivatePatientConclusionAudio(request.resource.data) &&
+          isPrivateAudioOwner(resource.data) &&
+          request.resource.data.kind == resource.data.kind &&
+          request.resource.data.coordinatorEmail == resource.data.coordinatorEmail
+        )
+      );
+
+      allow delete: if isAuthenticated() && (
+        !isPrivatePatientConclusionAudio(resource.data) ||
+        isAdmin() ||
+        isPrivateAudioOwner(resource.data)
+      );
     }
 
     match /test/{testId} {

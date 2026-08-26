@@ -938,6 +938,12 @@ export const DataService = {
       const val = processedPatient.audioConclusion;
 
       if (isBase64Audio(val)) {
+        const coordinatorEmail = typeof patient.coordinatorEmail === 'string'
+          ? patient.coordinatorEmail.trim()
+          : '';
+        if (!coordinatorEmail) {
+          throw new Error('No se puede crear un audio de conclusión sin coordinatorEmail.');
+        }
         const existingRef = this._getAudioRef(baseKey, val);
         if (existingRef) {
           console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
@@ -957,6 +963,7 @@ export const DataService = {
             data: val,
             usedBy: {},
             kind: 'patient_conclusion',
+            coordinatorEmail,
             createdAt: audioCreatedAt,
             expiresAt: audioExpiresAt
           });
@@ -995,6 +1002,13 @@ export const DataService = {
       const val = processedData.audioConclusion;
 
       if (isBase64Audio(val)) {
+        const existingPatient = oldDoc.exists() ? oldDoc.data() : null;
+        const coordinatorEmail = existingPatient && typeof existingPatient.coordinatorEmail === 'string'
+          ? existingPatient.coordinatorEmail.trim()
+          : '';
+        if (!coordinatorEmail) {
+          throw new Error('No se puede crear un audio de conclusión sin coordinatorEmail en el paciente existente.');
+        }
         const existingRef = this._getAudioRef(baseKey, val);
         if (existingRef) {
           console.log(`[AUDIO-PERSIST] Reusing existing ref for ${baseKey} -> ${existingRef}`);
@@ -1015,6 +1029,7 @@ export const DataService = {
             data: val,
             usedBy: {},
             kind: 'patient_conclusion',
+            coordinatorEmail,
             createdAt: audioCreatedAt,
             expiresAt: audioExpiresAt
           });
