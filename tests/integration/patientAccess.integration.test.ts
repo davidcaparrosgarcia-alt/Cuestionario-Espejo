@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { createServer, type Server } from "node:http";
 import admin from "firebase-admin";
@@ -65,6 +66,12 @@ assertFirestoreEmulatorSafety();
 
 const { default: app } = await import("../../api/index");
 const db = getFirestore(admin.app(), "(default)");
+const frontendAuth = admin.auth(admin.app("frontend-auth-verifier"));
+const originalVerifyIdToken = frontendAuth.verifyIdToken.bind(frontendAuth);
+const syntheticCoordinatorTokens = new Map([
+  ["synthetic-owner-token", "coordinator@tests.invalid"],
+  ["synthetic-other-token", "other-coordinator@tests.invalid"]
+]);
 let server: Server;
 let baseUrl = "";
 
@@ -105,6 +112,37 @@ async function seedConclusionPatient(id: string, overrides: Record<string, unkno
     answers: { q1: "a" },
     ...overrides
   });
+}
+
+async function seedNotifyPatient(id: string, coordinatorEmail: string) {
+  await db.collection("patients").doc(id).set({
+    id,
+    coordinatorEmail,
+    source: "soybienestar",
+    soybienestarUid: `synthetic-${id}`,
+    status: "concluded",
+    finalConclusion: "CONCLUSION_SYNTHETIC_NOTIFY"
+  });
+}
+
+async function withEnvironment(
+  overrides: Record<string, string | undefined>,
+  run: () => Promise<void>
+) {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 async function seedFixtures() {
@@ -160,6 +198,11 @@ function postConclusion(
 }
 
 before(async () => {
+  (frontendAuth as any).verifyIdToken = async (token: string) => {
+    const email = syntheticCoordinatorTokens.get(token);
+    if (!email) throw new Error("Synthetic invalid Firebase token");
+    return { uid: `uid-${email}`, email };
+  };
   await seedFixtures();
   server = await new Promise<Server>((resolve, reject) => {
     const listeningServer = app.listen(0, "127.0.0.1", () => resolve(listeningServer));
@@ -171,6 +214,7 @@ before(async () => {
 });
 
 after(async () => {
+  (frontendAuth as any).verifyIdToken = originalVerifyIdToken;
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   await new Promise<void>((resolve, reject) => webhookServer.close(error => error ? reject(error) : resolve()));
   await admin.app().delete();
@@ -550,4 +594,188 @@ test("integration conclusion resuelve audio_ref sin modificar audios", async () 
   assert.equal(JSON.stringify(unlocked.body).includes(audioRef), false);
   assert.deepEqual((await db.collection("audios").doc(audioRef).get()).data(), privateAudio);
   assert.deepEqual((await db.collection("audios").doc(generalAudioId).get()).data(), generalAudio);
+});
+
+test("integration notify status sin Authorization devuelve 401 y no llama webhook", async () => {
+  resetWebhook();
+  const { response } = await http("/api/notify-soybienestar-status", {
+    method: "POST",
+    body: JSON.stringify({ patientId: "synthetic-missing-auth", event: "dossier_available" })
+  });
+  assert.equal(response.status, 401);
+  assert.equal(webhookRequests.length, 0);
+});
+
+test("integration notify status con token invalido devuelve 401 y no llama webhook", async () => {
+  resetWebhook();
+  const { response } = await http("/api/notify-soybienestar-status", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-invalid-token" },
+    body: JSON.stringify({ patientId: "synthetic-invalid-auth", event: "dossier_available" })
+  });
+  assert.equal(response.status, 401);
+  assert.equal(webhookRequests.length, 0);
+});
+
+test("integration notify status rechaza paciente de otro coordinador sin webhook ni sync", async () => {
+  const id = "patient_test_notify_other_owner";
+  await seedNotifyPatient(id, "owner@tests.invalid");
+  resetWebhook();
+  const beforeData = (await db.collection("patients").doc(id).get()).data();
+  const { response } = await http("/api/notify-soybienestar-status", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-other-token" },
+    body: JSON.stringify({ patientId: id, event: "dossier_available" })
+  });
+  assert.equal(response.status, 403);
+  assert.equal(webhookRequests.length, 0);
+  assert.deepEqual((await db.collection("patients").doc(id).get()).data(), beforeData);
+});
+
+test("integration notify status rechaza ownership ausente", async () => {
+  const id = "patient_test_notify_missing_owner";
+  await seedNotifyPatient(id, "");
+  resetWebhook();
+  const { response } = await http("/api/notify-soybienestar-status", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-owner-token" },
+    body: JSON.stringify({ patientId: id, event: "dossier_available" })
+  });
+  assert.equal(response.status, 403);
+  assert.equal(webhookRequests.length, 0);
+});
+
+test("integration notify status permite dossier_available al coordinador propietario", async () => {
+  const id = "patient_test_notify_owner";
+  await seedNotifyPatient(id, "  COORDINATOR@TESTS.INVALID  ");
+  resetWebhook();
+  const { response, body } = await http("/api/notify-soybienestar-status", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-owner-token" },
+    body: JSON.stringify({ patientId: id, event: "dossier_available" })
+  });
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(requestsFor("dossier_available").length, 1);
+  const stored = (await db.collection("patients").doc(id).get()).data()!;
+  assert.equal(stored.lastSoyBienestarStatusSyncEvent, "dossier_available");
+  assert.equal(stored.lastSoyBienestarStatusSyncStatus, "ok");
+});
+
+test("integration health devuelve solo contrato minimo sin acceder Firestore", async () => {
+  const originalCollection = (db as any).collection;
+  (db as any).collection = () => {
+    throw new Error("Health must not access Firestore");
+  };
+  try {
+    const { response, body } = await http("/api/health");
+    assert.equal(response.status, 200);
+    assert.deepEqual(Object.keys(body).sort(), ["status", "time"]);
+    assert.equal(body.status, "ok");
+    assert.equal(Number.isNaN(Date.parse(body.time)), false);
+  } finally {
+    (db as any).collection = originalCollection;
+  }
+});
+
+test("integration health checkFirestore devuelve 400 sin acceder Firestore", async () => {
+  const originalCollection = (db as any).collection;
+  (db as any).collection = () => {
+    throw new Error("Disabled health diagnostics must not access Firestore");
+  };
+  try {
+    const { response, body } = await http("/api/health?checkFirestore=1");
+    assert.equal(response.status, 400);
+    assert.deepEqual(body, { status: "error", error: "Diagnostic mode disabled." });
+  } finally {
+    (db as any).collection = originalCollection;
+  }
+});
+
+test("integration debug devuelve 404 en Production sin escribir Firestore", async () => {
+  const before = (await db.collection("patients").where("debugOnly", "==", true).get()).size;
+  await withEnvironment({ VERCEL_ENV: "production" }, async () => {
+    const { response, body } = await http("/api/debug-direct-patient-roundtrip", {
+      method: "POST",
+      headers: {
+        "x-bridge-secret": "synthetic-emulator-bridge-secret",
+        "x-debug-bridge": "true"
+      },
+      body: "{}"
+    });
+    assert.equal(response.status, 404);
+    assert.deepEqual(body, { error: "Not found" });
+  });
+  assert.equal((await db.collection("patients").where("debugOnly", "==", true).get()).size, before);
+});
+
+test("integration debug sin secret configurado devuelve 401 sin escribir", async () => {
+  const before = (await db.collection("patients").where("debugOnly", "==", true).get()).size;
+  await withEnvironment({
+    VERCEL_ENV: "preview",
+    SOYBIENESTAR_BRIDGE_SECRET: undefined,
+    QUESTIONNAIRE_BRIDGE_SECRET: undefined,
+    BRIDGE_SECRET: undefined
+  }, async () => {
+    const { response } = await http("/api/debug-direct-patient-roundtrip", {
+      method: "POST",
+      headers: { "x-debug-bridge": "true" },
+      body: "{}"
+    });
+    assert.equal(response.status, 401);
+  });
+  assert.equal((await db.collection("patients").where("debugOnly", "==", true).get()).size, before);
+});
+
+test("integration debug con secret incorrecto devuelve 401 sin escribir", async () => {
+  const before = (await db.collection("patients").where("debugOnly", "==", true).get()).size;
+  await withEnvironment({ VERCEL_ENV: "preview" }, async () => {
+    const { response } = await http("/api/debug-direct-patient-roundtrip", {
+      method: "POST",
+      headers: {
+        "x-bridge-secret": "synthetic-wrong-secret",
+        "x-debug-bridge": "true"
+      },
+      body: "{}"
+    });
+    assert.equal(response.status, 401);
+  });
+  assert.equal((await db.collection("patients").where("debugOnly", "==", true).get()).size, before);
+});
+
+test("integration debug exige x-debug-bridge antes de escribir", async () => {
+  const before = (await db.collection("patients").where("debugOnly", "==", true).get()).size;
+  await withEnvironment({ VERCEL_ENV: "preview" }, async () => {
+    const { response } = await http("/api/debug-direct-patient-roundtrip", {
+      method: "POST",
+      headers: { "x-bridge-secret": "synthetic-emulator-bridge-secret" },
+      body: "{}"
+    });
+    assert.equal(response.status, 400);
+  });
+  assert.equal((await db.collection("patients").where("debugOnly", "==", true).get()).size, before);
+});
+
+test("integration debug no Production permite roundtrip sintetico autorizado", async () => {
+  await withEnvironment({ VERCEL_ENV: "preview" }, async () => {
+    const { response, body } = await http("/api/debug-direct-patient-roundtrip", {
+      method: "POST",
+      headers: {
+        "x-bridge-secret": "synthetic-emulator-bridge-secret",
+        "x-debug-bridge": "true"
+      },
+      body: "{}"
+    });
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+    assert.equal(typeof body.accessPin, "string");
+    const stored = await db.collection("patients").doc(body.patientId).get();
+    assert.equal(stored.data()?.debugOnly, true);
+    await stored.ref.delete();
+  });
+});
+
+test("integration PatientInterface no contiene llamadas legacy notify status", () => {
+  const source = readFileSync(new URL("../../components/PatientInterface.tsx", import.meta.url), "utf8");
+  assert.equal(source.includes("/api/notify-soybienestar-status"), false);
 });

@@ -183,168 +183,28 @@ function resolveDefaultCoordinatorEmail() {
 }
 
 // API routes FIRST
-app.get("/api/health", async (req, res) => {
-  let firestoreCheck = "not_run";
-  let firestoreError = undefined;
-  let diagnosticWriteResult = undefined;
-  
-  let patientRequestsTotalCount = undefined;
-  let patientRequestsPendingCount = undefined;
-  let patientsTotalCount = undefined;
-  let patientsDirectSoybienestarCount = undefined;
-  let latestPatientRequestPreview = undefined;
-  let latestDirectPatientPreview = undefined;
-
-  const resolvedProjectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
-  const resolvedDbId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || "(default)";
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-
-  const frontendProjectId = firebaseConfig.projectId || null;
-  const frontendDbId = firebaseConfig.firestoreDatabaseId || "(default)";
-  const backendProjectId = resolvedProjectId || null;
-  const backendDbId = resolvedDbId || "(default)";
-
-  const firestoreMismatchWarning = 
-    (backendProjectId !== frontendProjectId) || (backendDbId !== frontendDbId);
-
-  const firestoreMismatchDetails = {
-    backendProjectId,
-    frontendProjectId,
-    backendDbId,
-    frontendDbId,
-    firebaseProjectIdEnv: process.env.FIREBASE_PROJECT_ID || null,
-    firestoreDatabaseIdEnv: process.env.FIRESTORE_DATABASE_ID || null
-  };
-
-  if (req.query.checkFirestore === '1') {
-    try {
-      // Diagnostic write/read
-      const diagRef = db.collection("diagnosticBridgeChecks").doc("latest");
-      const diagData = {
-        timestamp: Date.now(),
-        serverTime: new Date().toISOString(),
-        projectId: resolvedProjectId,
-        dbId: resolvedDbId,
-        nodeEnv: process.env.NODE_ENV || "unknown"
-      };
-      await diagRef.set(diagData);
-      const readBack = await diagRef.get();
-      
-      // Collection counts and previews
-      const reqSnap = await db.collection("patientRequests").limit(20).get();
-      patientRequestsTotalCount = reqSnap.size;
-      patientRequestsPendingCount = 0;
-      let latestReqDoc: any = null;
-      let latestReqTime = 0;
-
-      reqSnap.forEach(doc => {
-        const data = doc.data();
-        if (data.status === "pending") patientRequestsPendingCount!++;
-        if ((data.createdAt || 0) > latestReqTime) {
-          latestReqTime = data.createdAt;
-          latestReqDoc = { id: doc.id, ...data };
-        }
-      });
-
-      if (latestReqDoc) {
-        latestPatientRequestPreview = {
-          id: latestReqDoc.id,
-          source: latestReqDoc.source,
-          status: latestReqDoc.status,
-          createdAt: latestReqDoc.createdAt
-        };
-      }
-
-      const patSnap = await db.collection("patients").limit(20).get();
-      patientsTotalCount = patSnap.size;
-      patientsDirectSoybienestarCount = 0;
-      let latestDirectDoc: any = null;
-      let latestDirectTime = 0;
-
-      patSnap.forEach(doc => {
-        const data = doc.data();
-        const isDirect = data.source === "soybienestar" || data.directAccessCreated === true;
-        if (isDirect) patientsDirectSoybienestarCount!++;
-        
-        if (isDirect && (data.createdAt || data.timestamp || 0) > latestDirectTime) {
-          latestDirectTime = data.createdAt || data.timestamp;
-          latestDirectDoc = { id: doc.id, ...data };
-        }
-      });
-
-      if (latestDirectDoc) {
-        latestDirectPatientPreview = {
-          id: latestDirectDoc.id,
-          nombre: latestDirectDoc.nombre,
-          source: latestDirectDoc.source,
-          createdAt: latestDirectTime
-        };
-      }
-
-      firestoreCheck = "ok";
-      diagnosticWriteResult = {
-        path: "diagnosticBridgeChecks/latest",
-        success: true,
-        readBack: readBack.exists,
-        intendedProject: resolvedProjectId,
-        intendedDbId: resolvedDbId
-      };
-    } catch (e: any) {
-      firestoreCheck = "error";
-      firestoreError = {
-        message: e.message || String(e),
-        code: e.code,
-      };
-    }
+app.get("/api/health", (req, res) => {
+  if (req.query.checkFirestore === "1") {
+    return res.status(400).json({
+      status: "error",
+      error: "Diagnostic mode disabled."
+    });
   }
 
-  const clientEmailProjectHint = clientEmail ? (clientEmail.match(/@(.+?)\.iam/)?.[1] || "unknown") : null;
-
-  res.json({ 
+  return res.json({
     status: "ok",
-    backendProjectId,
-    backendDbId,
-    frontendProjectId,
-    frontendDbId,
-    firestoreMismatchWarning,
-    firestoreMismatchDetails,
-    backendAdmin: {
-      adminInitialized: !!admin.apps.length,
-      adminProjectId: admin.apps.length ? admin.app().options.projectId : null,
-      dbId: resolvedDbId,
-      firebaseProjectIdEnv: process.env.FIREBASE_PROJECT_ID || null,
-      firestoreDatabaseIdEnv: process.env.FIRESTORE_DATABASE_ID || null,
-      clientEmailProjectHint: clientEmailProjectHint,
-      firebaseConfigProjectId: firebaseConfig.projectId,
-      firebaseConfigFirestoreDatabaseId: firebaseConfig.firestoreDatabaseId
-    },
-    frontendConfig: {
-      projectId: firebaseConfig.projectId,
-      firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
-      authDomain: firebaseConfig.authDomain
-    },
-    defaultCoordinatorEmailConfigured: !!(process.env.DEFAULT_COORDINATOR_EMAIL || process.env.NOTIFICATION_EMAILS),
-    resolvedCoordinatorEmailPreview: resolveDefaultCoordinatorEmail(),
-    testWrites: diagnosticWriteResult,
-    firestoreCheck,
-    firestoreError,
-    patientRequestsTotalCount,
-    patientRequestsPendingCount,
-    patientsTotalCount,
-    patientsDirectSoybienestarCount,
-    latestPatientRequestPreview,
-    latestDirectPatientPreview,
-    bridgeSecretConfigured: !!process.env.QUESTIONNAIRE_BRIDGE_SECRET,
-    smtpConfigured: !!process.env.SMTP_USER && !!process.env.SMTP_PASS,
-    appPublicUrlEnv: process.env.APP_PUBLIC_URL || null,
     time: new Date().toISOString()
   });
 });
 
 app.post("/api/debug-direct-patient-roundtrip", async (req, res) => {
+  if (process.env.VERCEL_ENV === "production") {
+    return res.status(404).json({ error: "Not found" });
+  }
+
   try {
     const bridgeSecret = process.env.SOYBIENESTAR_BRIDGE_SECRET || process.env.QUESTIONNAIRE_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
-    if (req.headers['x-bridge-secret'] !== bridgeSecret) {
+    if (!bridgeSecret || req.headers['x-bridge-secret'] !== bridgeSecret) {
       return res.status(401).json({ error: "No autorizado" });
     }
     if (req.headers['x-debug-bridge'] !== 'true') {
@@ -2394,7 +2254,7 @@ app.post("/api/notify-dossier", requireCoordinatorAuth, async (req, res) => {
   }
 });
 
-app.post("/api/notify-soybienestar-status", async (req, res) => {
+app.post("/api/notify-soybienestar-status", requireCoordinatorAuth, async (req, res) => {
   try {
     const { patientId, event } = req.body;
     if (!patientId || !event) {
@@ -2412,6 +2272,14 @@ app.post("/api/notify-soybienestar-status", async (req, res) => {
     }
 
     const patient = patientDoc.data()!;
+    const coordinatorEmail = String((req as any).user?.email || "").trim().toLowerCase();
+    const patientCoordinatorEmail = typeof patient.coordinatorEmail === "string"
+      ? patient.coordinatorEmail.trim().toLowerCase()
+      : "";
+    if (!coordinatorEmail || !patientCoordinatorEmail || patientCoordinatorEmail !== coordinatorEmail) {
+      return res.status(403).json({ error: "No tienes permiso para acceder a este paciente" });
+    }
+
     const isDirect = patient.source === "soybienestar" || patient.soybienestarUid || patient.sourceRequestId;
     
     if (!isDirect) {

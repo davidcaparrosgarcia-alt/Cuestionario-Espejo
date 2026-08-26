@@ -1576,10 +1576,14 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     if (!patient.finalConclusion) return;
     if (patient.status !== "concluded" && patient.status !== "finalized") return;
     try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("No hay usuario autenticado");
+      const token = await user.getIdToken();
       const res = await fetch('/api/notify-soybienestar-status', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ patientId: patient.id, event: 'dossier_available' })
       });

@@ -706,24 +706,8 @@ export const PatientInterface: React.FC<PatientInterfaceProps> = ({ patientData:
       localStorage.setItem(`radar_completed_${patientId}`, 'true');
     }
 
-    // 3. El gateway ya emite questionnaire_completed para el flujo anónimo.
-    if (isEditorMode) {
-      try {
-        const syncRes = await fetchWithTimeout('/api/notify-soybienestar-status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patientId, event: 'questionnaire_completed' })
-        }, 20000);
-        const syncData = await syncRes.json().catch(() => null);
-        if (!syncRes.ok || syncData?.success !== true) {
-          console.error("[SoyBienestar Sync Error]", { status: syncRes.status, response: syncData });
-        } else {
-          console.log("[SoyBienestar Sync Success]", syncData);
-        }
-      } catch (e) {
-        console.error("[SoyBienestar Sync Error]", e);
-      }
-    }
+    // 3. El gateway ya emite questionnaire_completed para el flujo paciente normal.
+    // El modo editor no debe sincronizar eventos reales con SoyBienestar.
 
     // 4. Generar la valoración únicamente con las respuestas definitivas ya persistidas.
     setIsGeneratingReport(true);
