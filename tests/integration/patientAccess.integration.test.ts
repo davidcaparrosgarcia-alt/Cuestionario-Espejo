@@ -692,6 +692,30 @@ test("integration health checkFirestore devuelve 400 sin acceder Firestore", asy
   }
 });
 
+test("integration notify-dossier legacy devuelve 404 sin Firestore ni webhook", async () => {
+  resetWebhook();
+  const originalCollection = (db as any).collection;
+  (db as any).collection = () => {
+    throw new Error("Removed legacy endpoint must not access Firestore");
+  };
+  try {
+    const { response } = await http("/api/notify-dossier", {
+      method: "POST",
+      headers: { authorization: "Bearer synthetic-owner-token" },
+      body: JSON.stringify({
+        patient: {
+          id: "synthetic-removed-legacy-endpoint",
+          finalConclusion: "SYNTHETIC_ONLY"
+        }
+      })
+    });
+    assert.equal(response.status, 404);
+    assert.equal(webhookRequests.length, 0);
+  } finally {
+    (db as any).collection = originalCollection;
+  }
+});
+
 test("integration debug devuelve 404 en Production sin escribir Firestore", async () => {
   const before = (await db.collection("patients").where("debugOnly", "==", true).get()).size;
   await withEnvironment({ VERCEL_ENV: "production" }, async () => {
