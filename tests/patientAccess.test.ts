@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   PATIENT_ACCESS_RATE_LIMIT_MAX_FAILURES,
   activeQuestionIds,
@@ -441,4 +442,12 @@ test("54. DTO preserva exactamente el formato de finalConclusion", () => {
 test("55. DTO convierte finalConclusion con solo whitespace a null", () => {
   const dto = buildConclusionPatientDto(PATIENT_ID, conclusion({ finalConclusion: "   \n   " }));
   assert.equal(dto.finalConclusion, null);
+});
+
+test("56. Vercel ESM entrypoint uses explicit .js patientAccess import", () => {
+  const source = readFileSync(new URL("../api/index.ts", import.meta.url), "utf8");
+
+  assert.equal(source.includes('from "./patientAccess.js"'), true);
+  assert.equal(source.includes('from "./patientAccess";'), false);
+  assert.equal(source.includes('from "./patientAccess.ts"'), false);
 });

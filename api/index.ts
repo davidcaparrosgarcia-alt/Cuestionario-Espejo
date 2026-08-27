@@ -23,7 +23,7 @@ import {
   resolveUnlock,
   validateActionEnvelope,
   validateConclusionEnvelope
-} from "./patientAccess";
+} from "./patientAccess.js";
 
 // Initialize Firebase Admin
 let firebaseConfig: any = {};
