@@ -186,7 +186,7 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     const loadPatients = async () => {
       try {
         const config = await DataService.getGlobalConfig({
-            accessCode: '66099',
+            accessCode: 'REDACTED_LEGACY_SECRET',
             clinicalPrompt: DEFAULT_CLINICAL_PROMPT,
             conclusionPrompt: DEFAULT_CONCLUSION_PROMPT,
             questionnaireMessage: `Hola [Nombre],\n\nAquí tienes tu enlace directo para realizar el Cuestionario Espejo:\n[Link]\n\nIMPORTANTE: Tu clave de acceso personal para ver los resultados finales será: [PIN]\nPor favor, guárdala bien, ya que la necesitarás obligatoriamente más adelante para desbloquear la conclusión.\n\nGracias.`,

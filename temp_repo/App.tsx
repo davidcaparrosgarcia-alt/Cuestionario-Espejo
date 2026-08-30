@@ -21,11 +21,11 @@ import { DataService } from './services/dataService';
 // Credenciales Maestras (Mantener como fallback o admin por defecto si es necesario)
 const MASTER_USER = {
   email: 'cuestionarioespejo@gmail.com',
-  pin: '66099',
+  pin: 'REDACTED_LEGACY_SECRET',
   nombre: 'Administrador Maestro'
 };
 
-const DEFAULT_ACCESS_CODE = '66099';
+const DEFAULT_ACCESS_CODE = 'REDACTED_LEGACY_SECRET';
 
 // Decodificador seguro para leer el Base64 generado en CoordinatorDashboard (con soporte UTF-8)
 const safeAtob = (str: string) => {
