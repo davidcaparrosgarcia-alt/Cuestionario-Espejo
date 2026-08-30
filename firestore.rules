@@ -72,17 +72,37 @@ service cloud.firestore {
              request.auth.token.email.lower() == email.lower();
     }
 
+    function hasAuthorizedCoordinatorIdentity() {
+      let identity = get(/databases/$(database)/documents/authorizedCoordinators/$(request.auth.uid)).data;
+      return hasAuthenticatedEmail() &&
+             exists(/databases/$(database)/documents/authorizedCoordinators/$(request.auth.uid)) &&
+             identity.uid == request.auth.uid &&
+             identity.email == request.auth.token.email.lower() &&
+             identity.role == "admin" &&
+             identity.active == true;
+    }
+
+    function hasValidCoordinatorSession() {
+      let session = get(/databases/$(database)/documents/coordinatorSessions/$(request.auth.uid)).data;
+      return isAuthenticated() &&
+             'auth_time' in request.auth.token &&
+             exists(/databases/$(database)/documents/coordinatorSessions/$(request.auth.uid)) &&
+             session.uid == request.auth.uid &&
+             session.authTime == request.auth.token.auth_time &&
+             session.expiresAt is timestamp &&
+             request.time < session.expiresAt;
+    }
+
+    function hasCoordinatorAccess() {
+      return hasAuthorizedCoordinatorIdentity() && hasValidCoordinatorSession();
+    }
+
     function isAdmin() {
-      return isAuthenticated() && 
-             (request.auth.uid == "7D079IDPnkcvJxB8sNSEbLKS1EY2" || 
-              ('email' in request.auth.token && (
-                request.auth.token.email == "davidcaparrosgarcia@gmail.com" ||
-                request.auth.token.email == "cuestionarioespejo@gmail.com"
-              )));
+      return hasCoordinatorAccess();
     }
 
     function isCoordinatorOf(patientData) {
-      return hasAuthenticatedEmail() &&
+      return hasCoordinatorAccess() &&
              patientData is map &&
              'coordinatorEmail' in patientData &&
              patientData.coordinatorEmail is string &&
@@ -96,7 +116,8 @@ service cloud.firestore {
     }
 
     function isPrivateAudioOwner(audioData) {
-      return audioData is map &&
+      return hasCoordinatorAccess() &&
+             audioData is map &&
              'coordinatorEmail' in audioData &&
              isOwner(audioData.coordinatorEmail);
     }
@@ -106,10 +127,25 @@ service cloud.firestore {
     // ===============================================================
 
     match /users/{email} {
-      allow get: if isAdmin() || isOwner(email);
+      allow get: if isAdmin();
       allow list: if isAdmin();
-      allow create, update: if isAdmin() || isOwner(email);
-      allow delete: if isAdmin() || isOwner(email);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /authorizedCoordinators/{uid} {
+      allow read, write: if false;
+    }
+
+    match /coordinatorSessions/{uid} {
+      allow read, write: if false;
+    }
+
+    match /coordinatorAccessRateLimits/{bucketId} {
+      allow read, write: if false;
+    }
+
+    match /patientAccessRateLimits/{bucketId} {
+      allow read, write: if false;
     }
 
     match /patients/{patientId} {
@@ -146,7 +182,7 @@ service cloud.firestore {
 
     match /questionnaires/{docId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /audios/{audioId} {
@@ -155,13 +191,13 @@ service cloud.firestore {
                     isPrivateAudioOwner(resource.data);
       allow list: if isAdmin();
 
-      allow create: if isAuthenticated() && (
+      allow create: if hasCoordinatorAccess() && (
         !isPrivatePatientConclusionAudio(request.resource.data) ||
         isAdmin() ||
         isPrivateAudioOwner(request.resource.data)
       );
 
-      allow update: if isAuthenticated() && (
+      allow update: if hasCoordinatorAccess() && (
         (
           !isPrivatePatientConclusionAudio(resource.data) &&
           !isPrivatePatientConclusionAudio(request.resource.data)
@@ -176,7 +212,7 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isAuthenticated() && (
+      allow delete: if hasCoordinatorAccess() && (
         !isPrivatePatientConclusionAudio(resource.data) ||
         isAdmin() ||
         isPrivateAudioOwner(resource.data)

@@ -13,18 +13,24 @@ import {
   updateDoc,
   where
 } from "firebase/firestore";
+import { Timestamp } from "firebase/firestore";
 import { assertFirestoreEmulatorSafety, TEST_FIREBASE_PROJECT_ID } from "../helpers/emulatorSafety";
 
 const { host, port } = assertFirestoreEmulatorSafety();
 let testEnv: RulesTestEnvironment;
 const OWNER_EMAIL = "coordinator@tests.invalid";
 const OTHER_EMAIL = "other@tests.invalid";
-const ADMIN_UID = "7D079IDPnkcvJxB8sNSEbLKS1EY2";
+const ADMIN_UID = "admin-uid";
+const OWNER_UID = "owner-uid";
+const AUTH_TIME = 1_800_000_000;
 
 const anonymousDb = () => testEnv.unauthenticatedContext().firestore();
-const ownerDb = () => testEnv.authenticatedContext("owner-uid", { email: OWNER_EMAIL }).firestore();
-const otherDb = () => testEnv.authenticatedContext("other-uid", { email: OTHER_EMAIL }).firestore();
-const adminDb = () => testEnv.authenticatedContext(ADMIN_UID, { email: "admin@tests.invalid" }).firestore();
+const ownerDb = () => testEnv.authenticatedContext(OWNER_UID, { email: OWNER_EMAIL, auth_time: AUTH_TIME }).firestore();
+const otherDb = () => testEnv.authenticatedContext("other-uid", { email: OTHER_EMAIL, auth_time: AUTH_TIME }).firestore();
+const adminDb = () => testEnv.authenticatedContext(ADMIN_UID, { email: "admin@tests.invalid", auth_time: AUTH_TIME }).firestore();
+const noSessionDb = () => testEnv.authenticatedContext("no-session-uid", { email: "no-session@tests.invalid", auth_time: AUTH_TIME }).firestore();
+const expiredDb = () => testEnv.authenticatedContext("expired-uid", { email: "expired@tests.invalid", auth_time: AUTH_TIME }).firestore();
+const authTimeMismatchDb = () => testEnv.authenticatedContext("mismatch-uid", { email: "mismatch@tests.invalid", auth_time: AUTH_TIME + 1 }).firestore();
 const patient = (id: string, coordinatorEmail = OWNER_EMAIL) => ({ id, coordinatorEmail, status: "sent", accessPin: "a2b3" });
 
 before(async () => {
@@ -34,7 +40,18 @@ before(async () => {
   });
   await testEnv.withSecurityRulesDisabled(async context => {
     const db = context.firestore();
+    const future = Timestamp.fromMillis(Date.now() + 60 * 60 * 1000);
+    const past = Timestamp.fromMillis(Date.now() - 60 * 1000);
     await Promise.all([
+      setDoc(doc(db, "authorizedCoordinators", OWNER_UID), { uid: OWNER_UID, email: OWNER_EMAIL, role: "admin", active: true }),
+      setDoc(doc(db, "coordinatorSessions", OWNER_UID), { uid: OWNER_UID, email: OWNER_EMAIL, role: "admin", authTime: AUTH_TIME, expiresAt: future }),
+      setDoc(doc(db, "authorizedCoordinators", ADMIN_UID), { uid: ADMIN_UID, email: "admin@tests.invalid", role: "admin", active: true }),
+      setDoc(doc(db, "coordinatorSessions", ADMIN_UID), { uid: ADMIN_UID, email: "admin@tests.invalid", role: "admin", authTime: AUTH_TIME, expiresAt: future }),
+      setDoc(doc(db, "authorizedCoordinators", "no-session-uid"), { uid: "no-session-uid", email: "no-session@tests.invalid", role: "admin", active: true }),
+      setDoc(doc(db, "authorizedCoordinators", "expired-uid"), { uid: "expired-uid", email: "expired@tests.invalid", role: "admin", active: true }),
+      setDoc(doc(db, "coordinatorSessions", "expired-uid"), { uid: "expired-uid", email: "expired@tests.invalid", role: "admin", authTime: AUTH_TIME, expiresAt: past }),
+      setDoc(doc(db, "authorizedCoordinators", "mismatch-uid"), { uid: "mismatch-uid", email: "mismatch@tests.invalid", role: "admin", active: true }),
+      setDoc(doc(db, "coordinatorSessions", "mismatch-uid"), { uid: "mismatch-uid", email: "mismatch@tests.invalid", role: "admin", authTime: AUTH_TIME, expiresAt: future }),
       setDoc(doc(db, "patients", "patient_owner"), patient("patient_owner")),
       setDoc(doc(db, "patients", "patient_other"), patient("patient_other", OTHER_EMAIL)),
       setDoc(doc(db, "patients", "patient_owner_update"), patient("patient_owner_update")),
@@ -79,47 +96,47 @@ test("05 anonymous patient DELETE is denied", async () => {
 test("06 coordinator own patient GET passes", async () => {
   assert.equal((await assertSucceeds(getDoc(doc(ownerDb(), "patients", "patient_owner")))).exists(), true);
 });
-test("07 coordinator other patient GET is denied", async () => {
-  await assertFails(getDoc(doc(ownerDb(), "patients", "patient_other")));
+test("07 authorized admin can GET another coordinator patient", async () => {
+  await assertSucceeds(getDoc(doc(ownerDb(), "patients", "patient_other")));
 });
 test("08 coordinator own patient filtered query passes", async () => {
   const snapshot = await assertSucceeds(getDocs(query(collection(ownerDb(), "patients"), where("coordinatorEmail", "==", OWNER_EMAIL))));
   assert.ok(snapshot.size >= 1);
 });
-test("09 coordinator other-email query is denied", async () => {
-  await assertFails(getDocs(query(collection(ownerDb(), "patients"), where("coordinatorEmail", "==", OTHER_EMAIL))));
+test("09 authorized admin can query another coordinator email", async () => {
+  await assertSucceeds(getDocs(query(collection(ownerDb(), "patients"), where("coordinatorEmail", "==", OTHER_EMAIL))));
 });
-test("10 coordinator unfiltered patient list is denied", async () => {
-  await assertFails(getDocs(collection(ownerDb(), "patients")));
+test("10 authorized admin can list patients", async () => {
+  await assertSucceeds(getDocs(collection(ownerDb(), "patients")));
 });
 test("11 coordinator create own patient passes", async () => {
   const id = "patient_create_own";
   await assertSucceeds(setDoc(doc(ownerDb(), "patients", id), patient(id)));
 });
-test("12 coordinator create for other coordinator is denied", async () => {
+test("12 authorized admin can create for another coordinator", async () => {
   const id = "patient_create_other";
-  await assertFails(setDoc(doc(ownerDb(), "patients", id), patient(id, OTHER_EMAIL)));
+  await assertSucceeds(setDoc(doc(ownerDb(), "patients", id), patient(id, OTHER_EMAIL)));
 });
-test("13 coordinator create with id mismatch is denied", async () => {
-  await assertFails(setDoc(doc(ownerDb(), "patients", "patient_path_id"), patient("different_id")));
+test("13 authorized admin keeps unrestricted administrative create", async () => {
+  await assertSucceeds(setDoc(doc(ownerDb(), "patients", "patient_path_id"), patient("different_id")));
 });
 test("14 coordinator update own patient passes", async () => {
   await assertSucceeds(updateDoc(doc(ownerDb(), "patients", "patient_owner_update"), { status: "viewed" }));
 });
-test("15 coordinator update other patient is denied", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "patients", "patient_other_update"), { status: "viewed" }));
+test("15 authorized admin can update another patient", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "patients", "patient_other_update"), { status: "viewed" }));
 });
-test("16 coordinator cannot change coordinatorEmail", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "patients", "patient_owner_update"), { coordinatorEmail: OTHER_EMAIL }));
+test("16 authorized admin can change coordinatorEmail", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "patients", "patient_owner_update"), { coordinatorEmail: OTHER_EMAIL }));
 });
-test("17 coordinator cannot change patient id", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "patients", "patient_owner_update"), { id: "changed_id" }));
+test("17 authorized admin can perform administrative patient correction", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "patients", "patient_owner_update"), { id: "changed_id" }));
 });
 test("18 coordinator delete own patient passes", async () => {
   await assertSucceeds(deleteDoc(doc(ownerDb(), "patients", "patient_owner_delete")));
 });
-test("19 coordinator delete other patient is denied", async () => {
-  await assertFails(deleteDoc(doc(ownerDb(), "patients", "patient_other_delete")));
+test("19 authorized admin can delete another patient", async () => {
+  await assertSucceeds(deleteDoc(doc(ownerDb(), "patients", "patient_other_delete")));
 });
 test("20 admin patient get list create update delete pass", async () => {
   const db = adminDb(); const id = "patient_admin_crud";
@@ -136,25 +153,25 @@ test("21 anonymous user GET is denied", async () => {
 test("22 coordinator own user GET passes", async () => {
   await assertSucceeds(getDoc(doc(ownerDb(), "users", OWNER_EMAIL)));
 });
-test("23 coordinator other user GET is denied", async () => {
-  await assertFails(getDoc(doc(ownerDb(), "users", OTHER_EMAIL)));
+test("23 authorized admin can GET another user", async () => {
+  await assertSucceeds(getDoc(doc(ownerDb(), "users", OTHER_EMAIL)));
 });
-test("24 coordinator users LIST is denied", async () => {
-  await assertFails(getDocs(collection(ownerDb(), "users")));
+test("24 authorized admin can LIST users", async () => {
+  await assertSucceeds(getDocs(collection(ownerDb(), "users")));
 });
-test("25 coordinator create own user passes", async () => {
+test("25 arbitrary authenticated account cannot create its own user", async () => {
   const email = "new-owner@tests.invalid";
-  const db = testEnv.authenticatedContext("new-owner", { email }).firestore();
-  await assertSucceeds(setDoc(doc(db, "users", email), { email, nombre: "New" }));
+  const db = testEnv.authenticatedContext("new-owner", { email, auth_time: AUTH_TIME }).firestore();
+  await assertFails(setDoc(doc(db, "users", email), { email, nombre: "New" }));
 });
-test("26 coordinator create other user is denied", async () => {
-  await assertFails(setDoc(doc(ownerDb(), "users", "foreign@tests.invalid"), { email: "foreign@tests.invalid" }));
+test("26 authorized admin can create another user", async () => {
+  await assertSucceeds(setDoc(doc(ownerDb(), "users", "foreign@tests.invalid"), { email: "foreign@tests.invalid" }));
 });
 test("27 coordinator update own user passes", async () => {
   await assertSucceeds(updateDoc(doc(ownerDb(), "users", OWNER_EMAIL), { nombre: "Updated owner" }));
 });
-test("28 coordinator update other user is denied", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "users", OTHER_EMAIL), { nombre: "Forbidden" }));
+test("28 authorized admin can update another user", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "users", OTHER_EMAIL), { nombre: "Authorized" }));
 });
 test("29 admin users access passes", async () => {
   const db = adminDb(); const email = "admin-created@tests.invalid";
@@ -186,8 +203,8 @@ test("35 admin GET patient_conclusion passes", async () => {
 test("36 anonymous LIST audios is denied", async () => {
   await assertFails(getDocs(collection(anonymousDb(), "audios")));
 });
-test("37 normal coordinator generic LIST audios is denied", async () => {
-  await assertFails(getDocs(collection(ownerDb(), "audios")));
+test("37 arbitrary authenticated account cannot LIST audios", async () => {
+  await assertFails(getDocs(collection(otherDb(), "audios")));
 });
 test("38 admin LIST audios passes", async () => {
   await assertSucceeds(getDocs(collection(adminDb(), "audios")));
@@ -198,8 +215,8 @@ test("39 authenticated coordinator CREATE general audio passes", async () => {
 test("40 coordinator CREATE own patient_conclusion passes", async () => {
   await assertSucceeds(setDoc(doc(ownerDb(), "audios", "audio_private_create_own"), { data: "private", kind: "patient_conclusion", coordinatorEmail: OWNER_EMAIL }));
 });
-test("41 coordinator CREATE patient_conclusion owned by another is denied", async () => {
-  await assertFails(setDoc(doc(ownerDb(), "audios", "audio_private_create_other"), { data: "private", kind: "patient_conclusion", coordinatorEmail: OTHER_EMAIL }));
+test("41 authorized admin can CREATE patient_conclusion for another coordinator", async () => {
+  await assertSucceeds(setDoc(doc(ownerDb(), "audios", "audio_private_create_other"), { data: "private", kind: "patient_conclusion", coordinatorEmail: OTHER_EMAIL }));
 });
 test("42 owner UPDATE patient_conclusion passes", async () => {
   await assertSucceeds(updateDoc(doc(ownerDb(), "audios", "audio_private_owner_update"), { data: "updated", usedBy: { patient: true } }));
@@ -207,11 +224,11 @@ test("42 owner UPDATE patient_conclusion passes", async () => {
 test("43 other coordinator UPDATE patient_conclusion is denied", async () => {
   await assertFails(updateDoc(doc(otherDb(), "audios", "audio_private_other_update"), { data: "forbidden" }));
 });
-test("44 owner cannot change private audio coordinatorEmail", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "audios", "audio_private_owner_email"), { coordinatorEmail: OTHER_EMAIL }));
+test("44 authorized admin can change private audio coordinatorEmail", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "audios", "audio_private_owner_email"), { coordinatorEmail: OTHER_EMAIL }));
 });
-test("45 owner cannot change private audio kind to public", async () => {
-  await assertFails(updateDoc(doc(ownerDb(), "audios", "audio_private_owner_kind"), { kind: "question" }));
+test("45 authorized admin can change private audio kind", async () => {
+  await assertSucceeds(updateDoc(doc(ownerDb(), "audios", "audio_private_owner_kind"), { kind: "question" }));
 });
 test("46 owner DELETE own patient_conclusion passes", async () => {
   await assertSucceeds(deleteDoc(doc(ownerDb(), "audios", "audio_private_owner_delete")));
@@ -228,4 +245,41 @@ test("49 anonymous GET questionnaires active passes", async () => {
 });
 test("50 anonymous GET question fixture passes", async () => {
   await assertSucceeds(getDoc(doc(anonymousDb(), "questions", "question_fixture")));
+});
+
+test("51 allowlist identity without secondary session is denied", async () => {
+  await assertFails(getDoc(doc(noSessionDb(), "patients", "patient_owner")));
+  await assertFails(getDocs(collection(noSessionDb(), "users")));
+});
+
+test("52 expired secondary session is denied", async () => {
+  await assertFails(getDoc(doc(expiredDb(), "patients", "patient_owner")));
+});
+
+test("53 secondary session from another auth_time is denied", async () => {
+  await assertFails(getDoc(doc(authTimeMismatchDb(), "patients", "patient_owner")));
+});
+
+test("54 UID with mismatched bound email is denied", async () => {
+  const db = testEnv.authenticatedContext(OWNER_UID, { email: OTHER_EMAIL, auth_time: AUTH_TIME }).firestore();
+  await assertFails(getDoc(doc(db, "patients", "patient_owner")));
+});
+
+test("55 arbitrary Google identity cannot read or create patients", async () => {
+  await assertFails(getDoc(doc(otherDb(), "patients", "patient_other")));
+  await assertFails(setDoc(doc(otherDb(), "patients", "patient_fourth_create"), patient("patient_fourth_create", OTHER_EMAIL)));
+});
+
+test("56 private authorization collections deny client CRUD even to valid admin", async () => {
+  for (const collectionName of ["authorizedCoordinators", "coordinatorSessions", "coordinatorAccessRateLimits", "patientAccessRateLimits"]) {
+    await assertFails(getDoc(doc(adminDb(), collectionName, ADMIN_UID)));
+    await assertFails(setDoc(doc(adminDb(), collectionName, "client-write"), { active: true }));
+    await assertFails(deleteDoc(doc(adminDb(), collectionName, ADMIN_UID)));
+  }
+});
+
+test("57 questionnaires remain public read but require valid coordinator session to write", async () => {
+  await assertSucceeds(getDoc(doc(anonymousDb(), "questionnaires", "active")));
+  await assertFails(setDoc(doc(otherDb(), "questionnaires", "blocked"), { questions: [] }));
+  await assertSucceeds(setDoc(doc(adminDb(), "questionnaires", "authorized"), { questions: [] }));
 });

@@ -6,10 +6,10 @@ export interface CoordinatorProfile {
 
 export interface AuthUser {
   email: string;
-  pin: string; // Clave del coordinador
+  pin?: string; // Campo legado; no se utiliza para autorización
   nombre: string;
-  securityQuestion: string;
-  securityAnswer: string;
+  securityQuestion?: string;
+  securityAnswer?: string;
   samplePatientDeleted?: boolean;
 }
 
@@ -168,7 +168,6 @@ export interface GlobalConfig {
   backgrounds?: string[]; // Array de URLs (máximo 2)
   
   // Nuevos campos de Ajustes
-  accessCode?: string;
   clinicalPrompt?: string;
   conclusionPrompt?: string;
   questionnaireMessage?: string;

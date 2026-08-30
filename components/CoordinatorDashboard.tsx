@@ -490,8 +490,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
   const [isTestingAI, setIsTestingAI] = useState(false);
   const [globalConfig, setGlobalConfig] = useState<any>(null);
   const [tempConfig, setTempConfig] = useState<any>(null);
-  const [showConfirmAccessCode, setShowConfirmAccessCode] = useState(false);
-  const [newAccessCode, setNewAccessCode] = useState('');
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -662,7 +660,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
     const loadPatients = async () => {
       try {
         const config = await DataService.getGlobalConfig({
-            accessCode: '66099',
             clinicalPrompt: DEFAULT_CLINICAL_PROMPT,
             conclusionPrompt: DEFAULT_CONCLUSION_PROMPT,
             questionnaireMessage: `Hola [Nombre],\n\nAquí tienes tu enlace directo para realizar el Cuestionario Espejo:\n[Link]\n\nIMPORTANTE: Tu clave de acceso personal para ver los resultados finales será: [PIN]\nPor favor, guárdala bien, ya que la necesitarás obligatoriamente más adelante para desbloquear la conclusión.\n\nGracias.`,
@@ -2190,13 +2187,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
       }
   };
 
-  const handleConfirmAccessCodeChange = () => {
-      setTempConfig({ ...tempConfig, accessCode: newAccessCode });
-      setShowConfirmAccessCode(false);
-      setNewAccessCode('');
-      triggerToast("Clave de acceso preparada para guardar");
-  };
-
   const openPatientDetails = async (p: PatientData) => {
     let freshPatient = p;
     try {
@@ -3564,36 +3554,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                                       </div>
                                   </section>
 
-                                  {/* SECCIÓN CLAVE DE ACCESO */}
-                                  <section className="space-y-4">
-                                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Clave de Acceso General</h3>
-                                      <div className="bg-amber-50 p-4 rounded-xl border border-amber-200 flex items-start gap-3">
-                                          <i className="fas fa-exclamation-triangle text-amber-500 mt-1"></i>
-                                          <p className="text-sm text-amber-800">
-                                              Esta clave condiciona el acceso inicial a la app. Su pérdida u olvido supone la imposibilidad de acceso, recuperación o cambio de clave.
-                                          </p>
-                                      </div>
-                                      <div className="flex items-end gap-4 max-w-md">
-                                          <div className="flex-1">
-                                              <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Clave Actual: <span className="text-blue-600 ml-1">{tempConfig.accessCode}</span></label>
-                                              <Input 
-                                                  label="Nueva Clave"
-                                                  placeholder="Nueva clave (5 dígitos)" 
-                                                  maxLength={5} 
-                                                  value={newAccessCode} 
-                                                  onChange={e => setNewAccessCode(e.target.value.replace(/\D/g, ''))}
-                                              />
-                                          </div>
-                                          <Button 
-                                            onClick={() => setShowConfirmAccessCode(true)} 
-                                            disabled={newAccessCode.length < 5}
-                                            className="mb-1"
-                                          >
-                                              Cambiar
-                                          </Button>
-                                      </div>
-                                  </section>
-
                                   {/* SECCIÓN PROMPTS IA */}
                                   <section className="space-y-6">
                                       <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest border-b pb-2">Instrucciones de IA (Prompts)</h3>
@@ -3790,30 +3750,6 @@ export const CoordinatorDashboard: React.FC<DashboardProps> = ({ profile, fullPr
                       <Button onClick={handleSaveSettings} className="bg-blue-600 hover:bg-blue-700">Guardar Todos los Ajustes</Button>
                   </div>
               </div>
-          </div>
-      )}
-
-      {/* MODAL CONFIRMACIÓN CLAVE ACCESO */}
-      {showConfirmAccessCode && (
-          <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm">
-              <Card className="w-full max-w-md shadow-2xl border-2 border-amber-200">
-                  <div className="text-center space-y-4">
-                      <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-2xl">
-                          <i className="fas fa-exclamation-triangle"></i>
-                      </div>
-                      <h3 className="text-xl font-bold text-slate-800">¿Confirmar cambio de clave?</h3>
-                      <p className="text-sm text-slate-600">
-                          Estás a punto de cambiar la clave general de acceso a <span className="font-bold text-blue-600 text-lg">{newAccessCode}</span>.
-                      </p>
-                      <p className="text-xs text-red-500 font-bold">
-                          RECUERDA: Si olvidas esta clave, no podrás acceder a la aplicación ni recuperarla.
-                      </p>
-                      <div className="flex gap-3 pt-4">
-                          <Button onClick={() => setShowConfirmAccessCode(false)} variant="outline" className="flex-1">Cancelar</Button>
-                          <Button onClick={handleConfirmAccessCodeChange} className="flex-1 bg-amber-500 hover:bg-amber-600">Confirmar Cambio</Button>
-                      </div>
-                  </div>
-              </Card>
           </div>
       )}
 

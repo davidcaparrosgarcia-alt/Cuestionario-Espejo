@@ -62,15 +62,27 @@ if (!webhookAddress || typeof webhookAddress === "string") {
 }
 process.env.SOYBIENESTAR_WEBHOOK_URL = `http://127.0.0.1:${webhookAddress.port}/synthetic-webhook`;
 process.env.SOYBIENESTAR_BRIDGE_SECRET = "synthetic-emulator-bridge-secret";
+process.env.COORDINATOR_ALLOWED_EMAILS = [
+  "coordinator@tests.invalid",
+  "other-coordinator@tests.invalid",
+  "third-coordinator@tests.invalid"
+].join(",");
+process.env.COORDINATOR_SECOND_FACTOR_CODE = "24680";
 assertFirestoreEmulatorSafety();
 
 const { default: app } = await import("../../api/index");
 const db = getFirestore(admin.app(), "(default)");
 const frontendAuth = admin.auth(admin.app("frontend-auth-verifier"));
 const originalVerifyIdToken = frontendAuth.verifyIdToken.bind(frontendAuth);
-const syntheticCoordinatorTokens = new Map([
-  ["synthetic-owner-token", "coordinator@tests.invalid"],
-  ["synthetic-other-token", "other-coordinator@tests.invalid"]
+const syntheticCoordinatorTokens = new Map<string, Record<string, any>>([
+  ["synthetic-owner-token", { uid: "owner-uid", email: "coordinator@tests.invalid", auth_time: 100 }],
+  ["synthetic-other-token", { uid: "other-uid", email: "other-coordinator@tests.invalid", auth_time: 100 }],
+  ["synthetic-third-token", { uid: "third-uid", email: "third-coordinator@tests.invalid", auth_time: 100 }],
+  ["synthetic-third-new-auth-token", { uid: "third-uid", email: "third-coordinator@tests.invalid", auth_time: 200 }],
+  ["synthetic-third-wrong-email-token", { uid: "third-uid", email: "coordinator@tests.invalid", auth_time: 100 }],
+  ["synthetic-outsider-token", { uid: "outsider-uid", email: "outsider@tests.invalid", auth_time: 100 }],
+  ["synthetic-unverified-token", { uid: "unverified-uid", email: "third-coordinator@tests.invalid", auth_time: 100, email_verified: false }],
+  ["synthetic-password-token", { uid: "password-uid", email: "third-coordinator@tests.invalid", auth_time: 100, provider: "password" }]
 ]);
 let server: Server;
 let baseUrl = "";
@@ -147,12 +159,24 @@ async function withEnvironment(
 
 async function seedFixtures() {
   await clearCollection("patientAccessRateLimits");
+  await clearCollection("coordinatorAccessRateLimits");
+  await clearCollection("coordinatorSessions");
+  await clearCollection("authorizedCoordinators");
   await clearCollection("patients");
   const batch = db.batch();
   for (const [id, fixture] of Object.entries(patientFixtures)) {
     batch.set(db.collection("patients").doc(id), structuredClone(fixture));
   }
   batch.set(db.collection("questionnaires").doc("active"), activeQuestionnaireFixture);
+  const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 60 * 60 * 1000);
+  for (const [uid, email] of [["owner-uid", "coordinator@tests.invalid"], ["other-uid", "other-coordinator@tests.invalid"]]) {
+    batch.set(db.collection("authorizedCoordinators").doc(uid), {
+      uid, email, role: "admin", active: true, createdAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now()
+    });
+    batch.set(db.collection("coordinatorSessions").doc(uid), {
+      uid, email, role: "admin", authTime: 100, verifiedAt: admin.firestore.Timestamp.now(), expiresAt
+    });
+  }
   await batch.commit();
 }
 
@@ -199,9 +223,13 @@ function postConclusion(
 
 before(async () => {
   (frontendAuth as any).verifyIdToken = async (token: string) => {
-    const email = syntheticCoordinatorTokens.get(token);
-    if (!email) throw new Error("Synthetic invalid Firebase token");
-    return { uid: `uid-${email}`, email };
+    const claims = syntheticCoordinatorTokens.get(token);
+    if (!claims) throw new Error("Synthetic invalid Firebase token");
+    return {
+      email_verified: true,
+      firebase: { sign_in_provider: claims.provider || "google.com" },
+      ...claims
+    };
   };
   await seedFixtures();
   server = await new Promise<Server>((resolve, reject) => {
@@ -594,6 +622,150 @@ test("integration conclusion resuelve audio_ref sin modificar audios", async () 
   assert.equal(JSON.stringify(unlocked.body).includes(audioRef), false);
   assert.deepEqual((await db.collection("audios").doc(audioRef).get()).data(), privateAudio);
   assert.deepEqual((await db.collection("audios").doc(generalAudioId).get()).data(), generalAudio);
+});
+
+test("coordinator verify sin Bearer e ID token invalido falla cerrado", async () => {
+  assert.equal((await http("/api/coordinator-access/status")).response.status, 401);
+  assert.equal((await http("/api/coordinator-access/verify", { method: "POST", body: JSON.stringify({ code: "24680" }) })).response.status, 401);
+  assert.equal((await http("/api/coordinator-access/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-invalid-token" },
+    body: JSON.stringify({ code: "24680" })
+  })).response.status, 401);
+});
+
+test("coordinator identidad fuera de allowlist se rechaza antes de crear datos", async () => {
+  const result = await http("/api/coordinator-access/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-outsider-token" },
+    body: JSON.stringify({ code: "24680" })
+  });
+  assert.equal(result.response.status, 403);
+  assert.equal((await db.collection("authorizedCoordinators").doc("outsider-uid").get()).exists, false);
+  assert.equal((await db.collection("coordinatorSessions").doc("outsider-uid").get()).exists, false);
+});
+
+test("coordinator exige email verificado y proveedor Google", async () => {
+  for (const token of ["synthetic-unverified-token", "synthetic-password-token"]) {
+    const result = await http("/api/coordinator-access/verify", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ code: "24680" })
+    });
+    assert.equal(result.response.status, 403, token);
+  }
+});
+
+test("coordinator primer acceso autorizado requiere segundo factor", async () => {
+  const result = await http("/api/coordinator-access/status", {
+    headers: { authorization: "Bearer synthetic-third-token" }
+  });
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.body, { success: true, authorized: false, status: "second_factor_required" });
+});
+
+test("coordinator cinco claves incorrectas activan rate limit sin crear binding", async () => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await http("/api/coordinator-access/verify", {
+      method: "POST",
+      headers: { authorization: "Bearer synthetic-third-token", "x-forwarded-for": "192.0.2.60" },
+      body: JSON.stringify({ code: "00000" })
+    });
+    assert.equal(result.response.status, 403, `attempt ${attempt + 1}`);
+  }
+  const blocked = await http("/api/coordinator-access/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-third-token", "x-forwarded-for": "192.0.2.60" },
+    body: JSON.stringify({ code: "24680" })
+  });
+  assert.equal(blocked.response.status, 429);
+  assert.equal((await db.collection("authorizedCoordinators").doc("third-uid").get()).exists, false);
+});
+
+test("coordinator primer acceso valido crea binding y sesion ligada a authTime", async () => {
+  const result = await http("/api/coordinator-access/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-third-token", "x-forwarded-for": "192.0.2.61" },
+    body: JSON.stringify({ code: "24680" })
+  });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.authorized, true);
+  assert.equal(JSON.stringify(result.body).includes("24680"), false);
+  const binding = (await db.collection("authorizedCoordinators").doc("third-uid").get()).data()!;
+  assert.deepEqual({ uid: binding.uid, email: binding.email, role: binding.role, active: binding.active }, {
+    uid: "third-uid", email: "third-coordinator@tests.invalid", role: "admin", active: true
+  });
+  const session = (await db.collection("coordinatorSessions").doc("third-uid").get()).data()!;
+  assert.equal(session.authTime, 100);
+  assert.ok(session.expiresAt.toMillis() > session.verifiedAt.toMillis());
+
+  const repeated = await http("/api/coordinator-access/verify", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-third-token", "x-forwarded-for": "192.0.2.62" },
+    body: JSON.stringify({ code: "24680" })
+  });
+  assert.equal(repeated.response.status, 200);
+  assert.equal(repeated.body.authorized, true);
+});
+
+test("coordinator status acepta sesion vigente y rechaza binding o authTime incoherentes", async () => {
+  const valid = await http("/api/coordinator-access/status", { headers: { authorization: "Bearer synthetic-third-token" } });
+  assert.equal(valid.response.status, 200);
+  assert.equal(valid.body.authorized, true);
+
+  const mismatch = await http("/api/coordinator-access/status", { headers: { authorization: "Bearer synthetic-third-wrong-email-token" } });
+  assert.equal(mismatch.response.status, 403);
+
+  const newAuthentication = await http("/api/coordinator-access/status", { headers: { authorization: "Bearer synthetic-third-new-auth-token" } });
+  assert.equal(newAuthentication.response.status, 200);
+  assert.equal(newAuthentication.body.status, "second_factor_required");
+});
+
+test("coordinator sesion expirada requiere segundo factor y logout elimina sesion", async () => {
+  await db.collection("coordinatorSessions").doc("third-uid").update({
+    expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() - 1000)
+  });
+  const expired = await http("/api/coordinator-access/status", { headers: { authorization: "Bearer synthetic-third-token" } });
+  assert.equal(expired.response.status, 200);
+  assert.equal(expired.body.status, "second_factor_required");
+
+  await db.collection("coordinatorSessions").doc("third-uid").update({
+    expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 60_000)
+  });
+  const logout = await http("/api/coordinator-access/logout", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-third-token" },
+    body: "{}"
+  });
+  assert.equal(logout.response.status, 200);
+  assert.equal((await db.collection("coordinatorSessions").doc("third-uid").get()).exists, false);
+});
+
+test("coordinator secret ausente falla cerrado con 503", async () => {
+  await withEnvironment({ COORDINATOR_SECOND_FACTOR_CODE: undefined }, async () => {
+    const result = await http("/api/coordinator-access/verify", {
+      method: "POST",
+      headers: { authorization: "Bearer synthetic-owner-token" },
+      body: JSON.stringify({ code: "24680" })
+    });
+    assert.equal(result.response.status, 503);
+  });
+});
+
+test("coordinator error Firestore falla cerrado", async () => {
+  const originalCollection = (db as any).collection;
+  (db as any).collection = () => {
+    throw new Error("Synthetic Firestore failure");
+  };
+  try {
+    const result = await http("/api/coordinator-access/status", {
+      headers: { authorization: "Bearer synthetic-owner-token" }
+    });
+    assert.equal(result.response.status, 503);
+    assert.equal(result.body.authorized, false);
+  } finally {
+    (db as any).collection = originalCollection;
+  }
 });
 
 test("integration notify status sin Authorization devuelve 401 y no llama webhook", async () => {

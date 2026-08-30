@@ -7,43 +7,11 @@ import { Button, Logo, Input, Card, Toast } from './components/UI';
 import { auth } from './services/firebase';
 import { 
   onAuthStateChanged, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
   signOut,
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
-import { doc, getDocFromServer, setDoc } from 'firebase/firestore';
-import { ref, uploadString, getDownloadURL } from 'firebase/storage';
-import { db, storage } from './services/firebase';
 import { DataService } from './services/dataService';
-
-// Credenciales Maestras (Mantener como fallback o admin por defecto si es necesario)
-const MASTER_USER = {
-  email: 'cuestionarioespejo@gmail.com',
-  pin: '66099',
-  nombre: 'Administrador Maestro'
-};
-
-const DEFAULT_ACCESS_CODE = '66099';
-const ACCESS_VERIFIED_SESSION_KEY = 'ce_access_verified_this_tab';
-const ACCESS_RELOAD_MARKER_KEY = 'ce_access_reload_marker';
-
-const getNavigationType = () => {
-  if (typeof window === 'undefined') return 'navigate';
-  const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-  return nav?.type || 'navigate';
-};
-
-const shouldRestoreAccessAfterReload = () => {
-  if (typeof window === 'undefined') return false;
-
-  const navigationType = getNavigationType();
-  const hadVerifiedAccess = window.sessionStorage.getItem(ACCESS_VERIFIED_SESSION_KEY) === 'true';
-  const hadReloadMarker = window.sessionStorage.getItem(ACCESS_RELOAD_MARKER_KEY) === 'true';
-
-  return navigationType === 'reload' && hadVerifiedAccess && hadReloadMarker;
-};
 
 // Decodificador seguro para leer el Base64 generado en CoordinatorDashboard (con soporte UTF-8)
 const safeAtob = (str: string) => {
@@ -65,29 +33,16 @@ const App: React.FC = () => {
     const hash = window.location.hash;
     if (hash.startsWith('#/session')) return 'PATIENT_SESSION';
     if (hash.startsWith('#/conclusion')) return 'CONCLUSION_VIEW';
-    if (hash === '#/coordinator') return 'COORDINATOR'; // Will be verified by auth
     return 'LANDING';
   });
   const [patientData, setPatientData] = useState<Partial<PatientData>>({});
   const [coordinator, setCoordinator] = useState<CoordinatorProfile | null>(null);
   const [isEditorMode, setIsEditorMode] = useState(false);
   const [conclusionPatientId, setConclusionPatientId] = useState<string | null>(null);
-  const [globalAccessCode, setGlobalAccessCode] = useState(DEFAULT_ACCESS_CODE);
-
-  const initialAccessGranted = shouldRestoreAccessAfterReload();
-
-  if (typeof window !== 'undefined' && !initialAccessGranted) {
-    window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
-    window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
-  }
-
-  const [accessGrantedThisLoad, setAccessGrantedThisLoad] = useState(initialAccessGranted);
-  const accessGrantedThisLoadRef = useRef(initialAccessGranted);
   const accessCodeInputNameRef = useRef(`ce-manual-${Math.random().toString(36).slice(2)}`);
 
-  // Nuevo estado ACCESS_CODE al inicio
   const [authStep, setAuthStep] = useState<'ACCESS_CODE' | 'SOCIAL_LOGIN'>(
-    initialAccessGranted ? 'SOCIAL_LOGIN' : 'ACCESS_CODE'
+    'SOCIAL_LOGIN'
   );
   
   const [accessCodeInput, setAccessCodeInput] = useState('');
@@ -95,77 +50,68 @@ const App: React.FC = () => {
   
   const [coordinatorData, setCoordinatorData] = useState<AuthUser | null>(null);
 
-  useEffect(() => {
-    const fetchConfig = async () => {
-        try {
-            const config = await DataService.getGlobalConfig({} as any);
-            if (config.accessCode) {
-                setGlobalAccessCode(config.accessCode);
-            }
-        } catch (e) {
-            console.error("Error fetching global config", e);
-        }
+  const denyCoordinatorAccess = () => {
+    setCoordinator(null);
+    setCoordinatorData(null);
+    setView('LANDING');
+    setAuthStep('SOCIAL_LOGIN');
+    if (window.location.hash === '#/coordinator') window.location.hash = '';
+  };
+
+  const openCoordinatorDashboard = async (user: NonNullable<typeof auth.currentUser>) => {
+    if (!user.email) {
+      denyCoordinatorAccess();
+      return;
+    }
+    const storedUser = await DataService.getUser(user.email).catch(() => null);
+    const profile: AuthUser = storedUser || {
+      email: user.email.toLowerCase(),
+      nombre: user.displayName || 'Coordinador'
     };
-    fetchConfig();
+    setCoordinator({ nombre: profile.nombre, email: profile.email });
+    setCoordinatorData(profile);
+    setView('COORDINATOR');
+    window.location.hash = '#/coordinator';
+  };
 
-    // Verificar si ya metió el código de acceso previamente en esta sesión
-    setAuthStep(initialAccessGranted ? 'SOCIAL_LOGIN' : 'ACCESS_CODE');
+  const checkCoordinatorStatus = async (user: NonNullable<typeof auth.currentUser>) => {
+    if (isPatientSessionHash()) return;
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch('/api/coordinator-access/status', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.authorized === true) {
+        await openCoordinatorDashboard(user);
+        return;
+      }
+      if (response.ok && data.status === 'second_factor_required') {
+        setCoordinator(null);
+        setCoordinatorData(null);
+        setView('LANDING');
+        setAuthStep('ACCESS_CODE');
+        return;
+      }
+      denyCoordinatorAccess();
+      showToast('Acceso no autorizado.');
+    } catch (error) {
+      console.error('Error comprobando autorización de coordinador', error instanceof Error ? error.name : 'unknown');
+      denyCoordinatorAccess();
+      showToast('Acceso no autorizado.');
+    }
+  };
 
-    // Escuchar cambios en el estado de autenticación de Firebase
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      const isGranted = accessGrantedThisLoadRef.current;
       const hash = window.location.hash;
       const isPatientSession = hash.startsWith('#/session') || hash.startsWith('#/conclusion');
-      
-      if (user && user.email) {
-        if (!isGranted) {
-          // Si está logueado en Firebase pero no ha metido el código, forzamos LANDING
-          setAuthStep('ACCESS_CODE');
-          if (!isPatientSession) {
-            setView('LANDING');
-          }
-          return;
-        }
+      if (isPatientSession) return;
 
-        // Si estamos en una sesión de paciente o conclusión, no redirigimos al dashboard
-        if (isPatientSession) {
-            return;
-        }
-
-        try {
-          const userData = await DataService.getUser(user.email);
-          if (userData) {
-            setCoordinator({ nombre: userData.nombre, email: userData.email });
-            setCoordinatorData(userData);
-            setView('COORDINATOR');
-            window.location.hash = '#/coordinator';
-          } else {
-            // Registro automático de Google
-            const newUser: AuthUser = {
-              email: user.email,
-              nombre: user.displayName || 'Coordinador',
-              pin: 'GOOGLE',
-              securityQuestion: 'Google Auth',
-              securityAnswer: 'google'
-            };
-            await DataService.saveUser(newUser);
-            setCoordinator({ nombre: newUser.nombre, email: newUser.email });
-            setCoordinatorData(newUser);
-            setView('COORDINATOR');
-            window.location.hash = '#/coordinator';
-          }
-        } catch (error) {
-          console.error("Error al obtener datos del usuario", error);
-          setCoordinator({ nombre: user.displayName || 'Coordinador', email: user.email });
-          setView('COORDINATOR');
-          window.location.hash = '#/coordinator';
-        }
+      if (user) {
+        await checkCoordinatorStatus(user);
       } else {
-        setCoordinator(null);
-        // Solo redirigimos a LANDING si no estamos viendo un paciente o conclusión
-        if (!hash.startsWith('#/session') && !hash.startsWith('#/conclusion')) {
-            setView('LANDING');
-        }
+        denyCoordinatorAccess();
       }
     });
 
@@ -217,17 +163,9 @@ const App: React.FC = () => {
               }
           }
       } else if (hash === '#/coordinator') {
-        const isGranted = accessGrantedThisLoadRef.current;
-
-        if (auth.currentUser && isGranted) {
-          setView('COORDINATOR');
-        } else {
-          setCoordinator(null);
-          setCoordinatorData(null);
-          setView('LANDING');
-          setAuthStep('ACCESS_CODE');
-          window.location.hash = '';
-        }
+        setView('LANDING');
+        if (auth.currentUser) void checkCoordinatorStatus(auth.currentUser);
+        else denyCoordinatorAccess();
       } else if (!hash || hash === '#/') {
         setView('LANDING');
       }
@@ -235,20 +173,9 @@ const App: React.FC = () => {
 
     window.addEventListener('hashchange', handleHashChange);
     handleHashChange();
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
-
-  useEffect(() => {
-    const markPotentialReload = () => {
-      if (accessGrantedThisLoadRef.current) {
-        window.sessionStorage.setItem(ACCESS_RELOAD_MARKER_KEY, 'true');
-      }
-    };
-
-    window.addEventListener('beforeunload', markPotentialReload);
-
     return () => {
-      window.removeEventListener('beforeunload', markPotentialReload);
+      unsubscribe();
+      window.removeEventListener('hashchange', handleHashChange);
     };
   }, []);
 
@@ -265,53 +192,44 @@ const App: React.FC = () => {
           showToast("Este enlace es solo para realizar el Cuestionario Espejo. Introduce la clave personal recibida con tu enlace.");
           return;
       }
-      if (accessCodeInput === globalAccessCode) {
-          setAccessGrantedThisLoad(true);
-          accessGrantedThisLoadRef.current = true;
-          window.sessionStorage.setItem(ACCESS_VERIFIED_SESSION_KEY, 'true');
-          window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
-          setAuthStep('SOCIAL_LOGIN');
-          setAccessCodeInput('');
-          showToast("Código aceptado");
-          
-          // Si ya está logueado en Firebase, forzamos la carga de datos
-          if (auth.currentUser && auth.currentUser.email) {
-              const user = auth.currentUser;
-              try {
-                  const userData = await DataService.getUser(user.email);
-                  if (userData) {
-                      setCoordinator({ nombre: userData.nombre, email: userData.email });
-                      setCoordinatorData(userData);
-                      setView('COORDINATOR');
-                      window.location.hash = '#/coordinator';
-                  } else {
-                      const newUser: AuthUser = {
-                          email: user.email,
-                          nombre: user.displayName || 'Coordinador',
-                          pin: 'GOOGLE',
-                          securityQuestion: 'Google Auth',
-                          securityAnswer: 'google'
-                      };
-                      await DataService.saveUser(newUser);
-                      setCoordinator({ nombre: newUser.nombre, email: newUser.email });
-                      setCoordinatorData(newUser);
-                      setView('COORDINATOR');
-                      window.location.hash = '#/coordinator';
-                  }
-              } catch (e) {
-                  console.error("Error al cargar usuario tras código", e);
-                  setCoordinator({ nombre: user.displayName || 'Coordinador', email: user.email });
-                  setView('COORDINATOR');
-                  window.location.hash = '#/coordinator';
-              }
-          }
-      } else {
-          showToast("Código de acceso incorrecto");
-          setAccessCodeInput('');
-          window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
-          window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
-          setAccessGrantedThisLoad(false);
-          accessGrantedThisLoadRef.current = false;
+      const user = auth.currentUser;
+      if (!user) {
+        denyCoordinatorAccess();
+        showToast('Acceso no autorizado.');
+        return;
+      }
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch('/api/coordinator-access/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ code: accessCodeInput })
+        });
+        const data = await response.json().catch(() => ({}));
+        setAccessCodeInput('');
+        if (response.ok && data.authorized === true) {
+          showToast('Código aceptado');
+          await openCoordinatorDashboard(user);
+          return;
+        }
+        if (response.status === 429) {
+          showToast('Demasiados intentos. Inténtalo de nuevo más tarde.');
+          return;
+        }
+        if (response.status === 403 && data.status === 'verification_failed') {
+          showToast('Código de acceso incorrecto');
+          return;
+        }
+        denyCoordinatorAccess();
+        showToast('Acceso no autorizado.');
+      } catch (error) {
+        console.error('Error verificando acceso de coordinador', error instanceof Error ? error.name : 'unknown');
+        setAccessCodeInput('');
+        denyCoordinatorAccess();
+        showToast('Acceso no autorizado.');
       }
   };
 
@@ -322,36 +240,7 @@ const App: React.FC = () => {
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
       showToast("Sesión iniciada. Cargando perfil...");
-      
-      if (user && user.email) {
-          try {
-              const userData = await DataService.getUser(user.email);
-              if (userData) {
-                  setCoordinator({ nombre: userData.nombre, email: userData.email });
-                  setCoordinatorData(userData);
-                  setView('COORDINATOR');
-                  window.location.hash = '#/coordinator';
-              } else {
-                  const newUser: AuthUser = {
-                      email: user.email,
-                      nombre: user.displayName || 'Coordinador',
-                      pin: 'GOOGLE',
-                      securityQuestion: 'Google Auth',
-                      securityAnswer: 'google'
-                  };
-                  await DataService.saveUser(newUser);
-                  setCoordinator({ nombre: newUser.nombre, email: newUser.email });
-                  setCoordinatorData(newUser);
-                  setView('COORDINATOR');
-                  window.location.hash = '#/coordinator';
-              }
-          } catch (e) {
-              console.error("Error al cargar usuario tras login de Google", e);
-              setCoordinator({ nombre: user.displayName || 'Coordinador', email: user.email });
-              setView('COORDINATOR');
-              window.location.hash = '#/coordinator';
-          }
-      }
+      await checkCoordinatorStatus(user);
     } catch (error: any) {
       console.error("Error Google Login:", error);
       if (error.code === 'auth/popup-blocked') {
@@ -364,18 +253,24 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
+      const user = auth.currentUser;
+      if (user) {
+        const token = await user.getIdToken();
+        await fetch('/api/coordinator-access/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+    } catch (error) {
+      console.error('Error cerrando sesión secundaria', error instanceof Error ? error.name : 'unknown');
+    } finally {
       await signOut(auth);
       setCoordinator(null);
+      setCoordinatorData(null);
       setView('LANDING');
-      window.sessionStorage.removeItem(ACCESS_VERIFIED_SESSION_KEY);
-      window.sessionStorage.removeItem(ACCESS_RELOAD_MARKER_KEY);
-      setAccessGrantedThisLoad(false);
-      accessGrantedThisLoadRef.current = false;
-      setAuthStep('ACCESS_CODE');
+      setAuthStep('SOCIAL_LOGIN');
       setAccessCodeInput('');
       window.location.hash = '';
-    } catch (e) {
-      showToast("Error al cerrar sesión");
     }
   };
 
@@ -422,9 +317,6 @@ const App: React.FC = () => {
              
              {authStep === 'SOCIAL_LOGIN' && (
                <Card className="mt-12 animate-in zoom-in-95 duration-500 shadow-2xl border-white/80 bg-white/90">
-                 <div className="flex justify-start mb-4">
-                   <button onClick={() => setAuthStep('ACCESS_CODE')} className="text-sm text-blue-600 font-bold hover:underline"><i className="fas fa-arrow-left"></i> Volver</button>
-                 </div>
                  <h3 className="text-3xl font-bold text-blue-900 mb-6">Iniciar Sesión</h3>
                  <p className="text-base text-slate-500 mb-8 font-medium">Acceso 100% seguro mediante Google.</p>
                  

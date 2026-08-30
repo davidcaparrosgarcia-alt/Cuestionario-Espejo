@@ -451,3 +451,20 @@ test("56. Vercel ESM entrypoint uses explicit .js patientAccess import", () => {
   assert.equal(source.includes('from "./patientAccess";'), false);
   assert.equal(source.includes('from "./patientAccess.ts"'), false);
 });
+
+test("57. coordinator authorization has no frontend secret, public config check or auto-provisioning", () => {
+  const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+  const dashboardSource = readFileSync(new URL("../components/CoordinatorDashboard.tsx", import.meta.url), "utf8");
+  const frontendSource = `${appSource}\n${dashboardSource}`;
+
+  for (const forbidden of [
+    ["DEFAULT", "ACCESS", "CODE"].join("_"),
+    ["config", "accessCode"].join("."),
+    ["global", "AccessCode"].join(""),
+    ["DataService", "saveUser"].join("."),
+    ["ce", "access", "verified", "this", "tab"].join("_")
+  ]) {
+    assert.equal(frontendSource.includes(forbidden), false, forbidden);
+  }
+  assert.equal(/accessCode\s*:\s*["']\d{5}["']/.test(frontendSource), false);
+});

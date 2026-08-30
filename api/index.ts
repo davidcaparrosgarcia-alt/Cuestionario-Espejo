@@ -131,29 +131,148 @@ const app = express();
 
 app.use(express.json({ limit: "100kb" }));
 
-// Middleware to verify Firebase Auth token for coordinator routes
-const requireCoordinatorAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+const COORDINATOR_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const COORDINATOR_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const COORDINATOR_RATE_LIMIT_MAX_FAILURES = 5;
+const COORDINATOR_RATE_LIMIT_COLLECTION = "coordinatorAccessRateLimits";
+
+function getCoordinatorAllowedEmails(): Set<string> | null {
+  const emails = String(process.env.COORDINATOR_ALLOWED_EMAILS || "")
+    .split(",")
+    .map(email => email.trim().toLowerCase())
+    .filter(Boolean);
+  const uniqueEmails = new Set(emails);
+  return uniqueEmails.size === 3 && uniqueEmails.size === emails.length ? uniqueEmails : null;
+}
+
+function getCoordinatorClientIp(req: express.Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const candidate = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0];
+  return String(candidate || req.socket.remoteAddress || "unknown").trim();
+}
+
+function coordinatorRateLimitKey(secret: string, uid: string, ipAddress: string): string {
+  return crypto.createHmac("sha256", secret).update(`${uid}\u0000${ipAddress}`).digest("hex");
+}
+
+function coordinatorCodeMatches(expected: string, received: unknown): boolean {
+  const expectedDigest = crypto.createHash("sha256").update(expected).digest();
+  const receivedDigest = crypto.createHash("sha256").update(String(received || "")).digest();
+  return crypto.timingSafeEqual(expectedDigest, receivedDigest);
+}
+
+function normalizedCoordinatorIdentity(decodedToken: any) {
+  const uid = typeof decodedToken?.uid === "string" ? decodedToken.uid.trim() : "";
+  const email = typeof decodedToken?.email === "string" ? decodedToken.email.trim().toLowerCase() : "";
+  const authTime = Number(decodedToken?.auth_time);
+  const provider = decodedToken?.firebase?.sign_in_provider;
+  return {
+    uid,
+    email,
+    authTime,
+    verifiedGoogleIdentity:
+      !!uid &&
+      !!email &&
+      decodedToken?.email_verified === true &&
+      provider === "google.com" &&
+      Number.isFinite(authTime)
+  };
+}
+
+type CoordinatorTokenResult =
+  | { ok: false; statusCode: number }
+  | { ok: true; decodedToken: admin.auth.DecodedIdToken };
+
+type CoordinatorAccessResolution =
+  | { ok: false; statusCode: number }
+  | {
+      ok: true;
+      authorized: boolean;
+      identity: ReturnType<typeof normalizedCoordinatorIdentity>;
+      decodedToken: admin.auth.DecodedIdToken;
+      expiresAt: number | null;
+    };
+
+async function verifyCoordinatorBearerToken(req: express.Request): Promise<CoordinatorTokenResult> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    console.error("Coordinator auth failed", {
-      reason: "missing_authorization_header",
-      projectId
-    });
-    return res.status(401).json({ error: "No autorizado", reason: "missing_authorization_header" });
+    return { ok: false as const, statusCode: 401 };
   }
   const token = authHeader.split("Bearer ")[1];
   try {
     const decodedToken = await admin.auth(frontendAuthApp).verifyIdToken(token);
-    (req as any).user = decodedToken;
-    next();
+    return { ok: true as const, decodedToken };
   } catch (error) {
     console.error("Coordinator auth failed", {
       reason: "invalid_firebase_token",
-      message: error instanceof Error ? error.message : String(error),
       backendProjectId: projectId,
       frontendAuthProjectId: FRONTEND_AUTH_PROJECT_ID
     });
-    res.status(401).json({ error: "No autorizado", reason: "invalid_firebase_token" });
+    return { ok: false as const, statusCode: 401 };
+  }
+}
+
+async function resolveCoordinatorAccess(req: express.Request): Promise<CoordinatorAccessResolution> {
+  const tokenResult = await verifyCoordinatorBearerToken(req);
+  if (tokenResult.ok === false) return { ok: false, statusCode: tokenResult.statusCode };
+
+  const allowedEmails = getCoordinatorAllowedEmails();
+  if (!allowedEmails) return { ok: false as const, statusCode: 503 };
+
+  const identity = normalizedCoordinatorIdentity(tokenResult.decodedToken);
+  if (!identity.verifiedGoogleIdentity || !allowedEmails.has(identity.email)) {
+    return { ok: false as const, statusCode: 403 };
+  }
+
+  const identitySnap = await db.collection("authorizedCoordinators").doc(identity.uid).get();
+  if (!identitySnap.exists) {
+    return { ok: true, authorized: false, identity, decodedToken: tokenResult.decodedToken, expiresAt: null };
+  }
+
+  const identityData = identitySnap.data() || {};
+  if (
+    identityData.uid !== identity.uid ||
+    identityData.email !== identity.email ||
+    identityData.role !== "admin" ||
+    identityData.active !== true
+  ) {
+    console.error("Coordinator identity binding mismatch", { uid: identity.uid });
+    return { ok: false as const, statusCode: 403 };
+  }
+
+  const sessionSnap = await db.collection("coordinatorSessions").doc(identity.uid).get();
+  const session = sessionSnap.data() || {};
+  const expiresAt = session.expiresAt?.toMillis?.() || 0;
+  const sessionValid =
+    sessionSnap.exists &&
+    session.uid === identity.uid &&
+    session.email === identity.email &&
+    session.role === "admin" &&
+    session.authTime === identity.authTime &&
+    expiresAt > Date.now();
+
+  return {
+    ok: true as const,
+    authorized: sessionValid,
+    identity,
+    decodedToken: tokenResult.decodedToken,
+    expiresAt: sessionValid ? expiresAt : null
+  };
+}
+
+// Coordinator routes require both the pre-authorized Google identity and a live secondary session.
+const requireCoordinatorAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  try {
+    const access = await resolveCoordinatorAccess(req);
+    if (access.ok === false) return res.status(access.statusCode).json({ error: "Acceso no autorizado." });
+    if (!access.authorized) return res.status(403).json({ error: "Acceso no autorizado." });
+    (req as any).user = access.decodedToken;
+    next();
+  } catch (error) {
+    console.error("Coordinator authorization failed closed", {
+      reason: error instanceof Error ? error.name : "unknown"
+    });
+    return res.status(503).json({ error: "Acceso no autorizado." });
   }
 };
 
@@ -195,6 +314,162 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     time: new Date().toISOString()
   });
+});
+
+app.get("/api/coordinator-access/status", async (req, res) => {
+  try {
+    const access = await resolveCoordinatorAccess(req);
+    if (access.ok === false) {
+      const status = access.statusCode === 403 ? "unauthorized_identity" : "unauthorized";
+      return res.status(access.statusCode).json({ success: false, authorized: false, status });
+    }
+    if (!access.authorized) {
+      return res.json({ success: true, authorized: false, status: "second_factor_required" });
+    }
+    return res.json({
+      success: true,
+      authorized: true,
+      status: "authorized",
+      expiresAt: new Date(access.expiresAt!).toISOString()
+    });
+  } catch (error) {
+    console.error("Coordinator status failed closed", { reason: error instanceof Error ? error.name : "unknown" });
+    return res.status(503).json({ success: false, authorized: false, status: "unavailable" });
+  }
+});
+
+app.post("/api/coordinator-access/verify", async (req, res) => {
+  try {
+    const tokenResult = await verifyCoordinatorBearerToken(req);
+    if (tokenResult.ok === false) {
+      return res.status(tokenResult.statusCode).json({ success: false, authorized: false, status: "unauthorized" });
+    }
+
+    const allowedEmails = getCoordinatorAllowedEmails();
+    if (!allowedEmails) {
+      return res.status(503).json({ success: false, authorized: false, status: "unavailable" });
+    }
+    const identity = normalizedCoordinatorIdentity(tokenResult.decodedToken);
+    if (!identity.verifiedGoogleIdentity || !allowedEmails.has(identity.email)) {
+      return res.status(403).json({ success: false, authorized: false, status: "unauthorized_identity" });
+    }
+
+    const existingIdentitySnap = await db.collection("authorizedCoordinators").doc(identity.uid).get();
+    if (existingIdentitySnap.exists) {
+      const existingIdentity = existingIdentitySnap.data() || {};
+      if (
+        existingIdentity.uid !== identity.uid ||
+        existingIdentity.email !== identity.email ||
+        existingIdentity.role !== "admin" ||
+        existingIdentity.active !== true
+      ) {
+        console.error("Coordinator identity binding mismatch", { uid: identity.uid });
+        return res.status(403).json({ success: false, authorized: false, status: "unauthorized_identity" });
+      }
+    }
+
+    const secondFactorCode = process.env.COORDINATOR_SECOND_FACTOR_CODE || "";
+    if (!secondFactorCode) {
+      return res.status(503).json({ success: false, authorized: false, status: "unavailable" });
+    }
+
+    const rateLimitRef = db.collection(COORDINATOR_RATE_LIMIT_COLLECTION).doc(
+      coordinatorRateLimitKey(secondFactorCode, identity.uid, getCoordinatorClientIp(req))
+    );
+    const now = Date.now();
+    const rateLimitSnap = await rateLimitRef.get();
+    const rateLimitData = rateLimitSnap.data() || {};
+    const windowStartedAt = Number(rateLimitData.windowStartedAt);
+    const withinWindow = Number.isFinite(windowStartedAt) && now - windowStartedAt < COORDINATOR_RATE_LIMIT_WINDOW_MS;
+    const failedAttempts = withinWindow ? Number(rateLimitData.failedAttempts) || 0 : 0;
+    if (failedAttempts >= COORDINATOR_RATE_LIMIT_MAX_FAILURES) {
+      return res.status(429).json({ success: false, authorized: false, status: "rate_limited" });
+    }
+
+    if (!coordinatorCodeMatches(secondFactorCode, req.body?.code)) {
+      const nextFailures = failedAttempts + 1;
+      const nextWindowStartedAt = withinWindow ? windowStartedAt : now;
+      await rateLimitRef.set({
+        uid: identity.uid,
+        failedAttempts: nextFailures,
+        windowStartedAt: nextWindowStartedAt,
+        expiresAt: admin.firestore.Timestamp.fromMillis(nextWindowStartedAt + COORDINATOR_RATE_LIMIT_WINDOW_MS),
+        updatedAt: admin.firestore.Timestamp.fromMillis(now)
+      });
+      return res.status(403).json({ success: false, authorized: false, status: "verification_failed" });
+    }
+
+    const identityRef = db.collection("authorizedCoordinators").doc(identity.uid);
+    const sessionRef = db.collection("coordinatorSessions").doc(identity.uid);
+    const verifiedAt = admin.firestore.Timestamp.fromMillis(now);
+    const expiresAt = admin.firestore.Timestamp.fromMillis(now + COORDINATOR_SESSION_TTL_MS);
+
+    await db.runTransaction(async transaction => {
+      const [boundIdentity, duplicateEmail] = await Promise.all([
+        transaction.get(identityRef),
+        transaction.get(db.collection("authorizedCoordinators").where("email", "==", identity.email).limit(1))
+      ]);
+      if (!duplicateEmail.empty && duplicateEmail.docs[0].id !== identity.uid) {
+        throw new Error("COORDINATOR_BINDING_CONFLICT");
+      }
+      if (boundIdentity.exists) {
+        const data = boundIdentity.data() || {};
+        if (data.uid !== identity.uid || data.email !== identity.email || data.role !== "admin" || data.active !== true) {
+          throw new Error("COORDINATOR_BINDING_CONFLICT");
+        }
+      }
+      transaction.set(identityRef, {
+        uid: identity.uid,
+        email: identity.email,
+        role: "admin",
+        active: true,
+        createdAt: boundIdentity.exists ? boundIdentity.data()?.createdAt || verifiedAt : verifiedAt,
+        updatedAt: verifiedAt
+      });
+      transaction.set(sessionRef, {
+        uid: identity.uid,
+        email: identity.email,
+        role: "admin",
+        authTime: identity.authTime,
+        verifiedAt,
+        expiresAt
+      });
+      transaction.delete(rateLimitRef);
+    });
+
+    return res.json({
+      success: true,
+      authorized: true,
+      status: "authorized",
+      expiresAt: expiresAt.toDate().toISOString()
+    });
+  } catch (error) {
+    const bindingConflict = error instanceof Error && error.message === "COORDINATOR_BINDING_CONFLICT";
+    console.error("Coordinator verification failed closed", {
+      reason: bindingConflict ? "binding_conflict" : error instanceof Error ? error.name : "unknown"
+    });
+    return res.status(bindingConflict ? 403 : 503).json({
+      success: false,
+      authorized: false,
+      status: bindingConflict ? "unauthorized_identity" : "unavailable"
+    });
+  }
+});
+
+app.post("/api/coordinator-access/logout", async (req, res) => {
+  try {
+    const tokenResult = await verifyCoordinatorBearerToken(req);
+    if (tokenResult.ok === false) {
+      return res.status(tokenResult.statusCode).json({ success: false, authorized: false });
+    }
+    const identity = normalizedCoordinatorIdentity(tokenResult.decodedToken);
+    if (!identity.uid) return res.status(401).json({ success: false, authorized: false });
+    await db.collection("coordinatorSessions").doc(identity.uid).delete();
+    return res.json({ success: true, authorized: false });
+  } catch (error) {
+    console.error("Coordinator logout failed closed", { reason: error instanceof Error ? error.name : "unknown" });
+    return res.status(503).json({ success: false, authorized: false });
+  }
 });
 
 app.post("/api/debug-direct-patient-roundtrip", async (req, res) => {
