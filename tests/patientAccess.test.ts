@@ -468,3 +468,18 @@ test("57. coordinator authorization has no frontend secret, public config check 
   }
   assert.equal(/accessCode\s*:\s*["']\d{5}["']/.test(frontendSource), false);
 });
+
+test("58. salir del editor falla cerrado hasta que coordinator-access revalida", () => {
+  const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+  const start = appSource.indexOf("onExitEditor={() => {");
+  const end = appSource.indexOf("\n            }}", start);
+  assert.ok(start >= 0 && end > start);
+
+  const exitHandler = appSource.slice(start, end);
+  assert.equal(exitHandler.includes("setIsEditorMode(false);"), true);
+  assert.equal(exitHandler.includes("setView('LANDING');"), true);
+  assert.equal(exitHandler.includes("void checkCoordinatorStatus(auth.currentUser);"), true);
+  assert.equal(exitHandler.includes("denyCoordinatorAccess();"), true);
+  assert.equal(exitHandler.includes("setView('COORDINATOR');"), false);
+  assert.equal(exitHandler.includes("window.location.hash"), false);
+});

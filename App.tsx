@@ -348,8 +348,12 @@ const App: React.FC = () => {
             isEditorMode={isEditorMode}
             onExitEditor={() => {
               setIsEditorMode(false);
-              setView('COORDINATOR');
-              window.location.hash = '#/coordinator';
+              setView('LANDING');
+              if (auth.currentUser) {
+                void checkCoordinatorStatus(auth.currentUser);
+              } else {
+                denyCoordinatorAccess();
+              }
             }}
           />
         ) : (

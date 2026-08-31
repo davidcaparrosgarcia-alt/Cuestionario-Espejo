@@ -634,6 +634,22 @@ test("coordinator verify sin Bearer e ID token invalido falla cerrado", async ()
   })).response.status, 401);
 });
 
+test("integration endpoint SMTP heredado eliminado devuelve 404", async () => {
+  const { response } = await http("/api/send-notification", {
+    method: "POST",
+    body: JSON.stringify({ email: "synthetic@example.invalid", requestData: {} })
+  });
+  assert.equal(response.status, 404);
+});
+
+test("integration send-questionnaire-email sigue exigiendo Bearer", async () => {
+  const { response } = await http("/api/send-questionnaire-email", {
+    method: "POST",
+    body: JSON.stringify({ patientId: "synthetic-missing-auth", to: "synthetic@example.invalid", subject: "Synthetic", body: "Synthetic" })
+  });
+  assert.equal(response.status, 401);
+});
+
 test("coordinator identidad fuera de allowlist se rechaza antes de crear datos", async () => {
   const result = await http("/api/coordinator-access/verify", {
     method: "POST",

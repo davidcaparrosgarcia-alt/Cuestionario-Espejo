@@ -1779,34 +1779,6 @@ ${appUrl}`;
   }
 });
 
-app.post("/api/send-notification", async (req, res) => {
-  const { email, requestData } = req.body;
-  
-  if (!email || !requestData) {
-    return res.status(400).json({ error: "Missing email or requestData" });
-  }
-
-  if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-    try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || '"Cuestionario Espejo" <noreply@example.com>',
-        to: email,
-        subject: "Nueva Petición de Cuestionario",
-        text: `Se ha recibido una nueva petición de cuestionario.\n\nNombre: ${requestData.nombre}\nEmail: ${requestData.email}\nTeléfono: ${requestData.telefono || 'N/A'}\n\nPor favor, revisa la aplicación para procesarla.`,
-        html: `<p>Se ha recibido una nueva petición de cuestionario.</p><ul><li><strong>Nombre:</strong> ${requestData.nombre}</li><li><strong>Email:</strong> ${requestData.email}</li><li><strong>Teléfono:</strong> ${requestData.telefono || 'N/A'}</li></ul><p>Por favor, revisa la aplicación para procesarla.</p>`,
-      });
-      console.log("Email notification sent to", email);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error sending email notification:", error);
-      res.status(500).json({ error: "Failed to send email" });
-    }
-  } else {
-    console.log("SMTP credentials not configured. Skipping email notification.");
-    res.json({ success: true, note: "SMTP not configured" });
-  }
-});
-
 app.get("/api/patient-requests", requireCoordinatorAuth, async (req, res) => {
   try {
     const snapshot = await db.collection("patientRequests").where("status", "==", "pending").get();
